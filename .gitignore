@@ -1,0 +1,11 @@
+*.json
+*.json.gz
+
+*.db
+*.db-shm
+*.db-wal
+
+server
+
+
+.env

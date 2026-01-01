@@ -6,20 +6,51 @@ import json
 import gzip
 import sqlite3
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from gallery_dl.extractor import twitter
 from typing import Any
 
 load_dotenv()
 
 def auth_token():
-    return  os.getenv("AUTH_TOKEN")
+    return  os.getenv("AUTH_TOKEN") 
 
 username =  sys.argv[1] if len(sys.argv) > 1 else "lulu463098"
 
 
 # print(username)
 # print(auth_token())
+
+def should_skip_processing(username):
+    """
+    检查是否应该跳过处理（最后修改在一天内）
+    """
+    conn = sqlite3.connect('twitter.db', timeout=5)
+    try:
+        conn.execute('PRAGMA journal_mode=WAL;')
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT last_modify FROM users WHERE username = ?", (username,))
+        result = cursor.fetchone()
+
+        if result:
+            last_modify = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
+            return (datetime.now() - last_modify) <= timedelta(days=1)
+
+        return False
+
+    except Exception as e:
+        print(f"查询错误: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+if should_skip_processing(username):
+    print("直接返回，不执行后续操作")
+    exit(1)
+    # 直接退出或返回
+
 
 def get_media_data_by_username(username:str):
     url = f"https://x.com/{username}/media"
@@ -175,39 +206,39 @@ def get_media_data_by_username(username:str):
 
 
 output = get_media_data_by_username(username)
-info: Any = output.get("account_info")  
+info: Any = output.get("account_info")
 # print(output)
 
-with open(f"{info.get('name')}.json", "w") as f:
-    json.dump(output, f)
+#with open(f"{info.get('name')}.json", "w") as f:
+#    json.dump(output, f)
 
 with gzip.open(f"{info.get('name')}.json.gz", "wt", encoding="utf-8", compresslevel=9) as f:
     f.write(json.dumps(output))
 
 # 存储入"twitter.db",是一个sqlite3数据库
-# 要求	query = `INSERT OR REPLACE INTO users (username, nick, status, last_modify)
+# 要求  query = `INSERT OR REPLACE INTO users (username, nick, status, last_modify)
 #                                      VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
 # 在建立连接后启用 WAL 模式和设置繁忙超时
 conn = sqlite3.connect('twitter.db', timeout=5)
 try:
     conn.execute('PRAGMA journal_mode=WAL;')  # 启用 WAL 模式
     cursor = conn.cursor()
-    
+
     # 使用 ON CONFLICT DO UPDATE SET 来精确控制冲突时的更新行为
     query = """
     INSERT INTO users (username, nick, status, last_modify)
     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(username) 
-    DO UPDATE SET 
+    ON CONFLICT(username)
+    DO UPDATE SET
         nick = excluded.nick,
         last_modify = CURRENT_TIMESTAMP
     -- 注意：这里没有更新 status 字段，因此冲突时会保留原有的 status 值
     """
-    
+
     # info: Any = output.get("account_info")
     cursor.execute(query, (info.get('name'), info.get('nick'), "SUCCESS")) # 新插入的行 status 为 "SUCCESS"
     conn.commit()  # 及时提交事务
-    
+
 except Exception as e:
     print(f"An error occurred: {e}") # 建议至少打印异常信息
     conn.rollback()

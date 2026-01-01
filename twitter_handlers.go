@@ -1,15 +1,18 @@
+// 2026.01.01
+// 似乎缺少了302的逻辑了。
+// 之前的修改版似乎是不见了。
+
 package twitter
 
 import (
 	"net/http"
 	"os"
-	"path"
 
-	tools "./Tools"
+	ginkit "github.com/Hana-ame/twitter-pic-go/Tools/ginkit"
 	"github.com/gin-gonic/gin"
 )
 
-// :fn
+// POST /?username=
 func CreateMetaData(c *gin.Context) {
 	username, ok := c.GetQuery("username")
 	if !ok || username == "" {
@@ -21,13 +24,14 @@ func CreateMetaData(c *gin.Context) {
 	c.Set("username", username)
 
 	_, err := curlMetaData(username)
-	if tools.AbortWithError(c, 500, err) {
+	if ginkit.AbortWithError(c, 500, err) {
 		return
 	}
 
 	c.AbortWithStatus(200)
 }
 
+// GET /:fn
 func GetMetaData(c *gin.Context) {
 	fn := c.Param("fn")
 	if fn == "" {
@@ -39,22 +43,17 @@ func GetMetaData(c *gin.Context) {
 
 	// 根据fn打开文件返回
 
-	f, err := os.Open(path.Join(os.Getenv("TWITTER_DIR"), fn))
-	if tools.AbortWithError(c, 500, err) {
+	f, err := os.Open(fn) // 都放在同一个文件夹。
+	if ginkit.AbortWithError(c, 500, err) {
 		return
 	}
+
 	fileInfo, err := f.Stat()
-	if tools.AbortWithError(c, 500, err) {
+	if ginkit.AbortWithError(c, 500, err) {
 		return
 	}
 
 	c.DataFromReader(200, fileInfo.Size(), "application/json", f, map[string]string{"content-encoding": "gzip"})
-	// result, err := tools.FileToJSON(path.Join(os.Getenv("TWITTER_DIR"), fn))
-	// if tools.AbortWithError(c, 404, err) {
-	// 	return
-	// }
-
-	// c.JSON(200, result)
 }
 
 // :fn
@@ -64,7 +63,7 @@ func GetLists(c *gin.Context) {
 
 	if ok {
 		r, err := getList(list, after)
-		if tools.AbortWithError(c, 500, err) {
+		if ginkit.AbortWithError(c, 500, err) {
 			return
 		}
 		c.JSON(200, r)
@@ -75,7 +74,7 @@ func GetLists(c *gin.Context) {
 	if ok {
 		by, _ := c.GetQuery("by")
 		r, err := getSearch(by, search)
-		if tools.AbortWithError(c, 500, err) {
+		if ginkit.AbortWithError(c, 500, err) {
 			return
 		}
 		c.JSON(200, r)

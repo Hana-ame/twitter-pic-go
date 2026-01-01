@@ -9,7 +9,7 @@ import (
 	"github.com/Hana-ame/twitter-pic-go/Tools/sqlite"
 )
 
-var db, _ = sqlite.NewSQLiteDB("./twitter/twitter.db")
+var db, _ = sqlite.NewSQLiteDB("./twitter.db")
 
 func CreateTable() error {
 	// 确保数据库连接有效
@@ -35,6 +35,7 @@ func CreateTable() error {
 	return nil
 }
 
+// 其实是python这边在做。
 // 将内容插入表中/更新（UPSERT操作）
 func commitUser(username, nick, status string) error {
 	// 使用INSERT OR REPLACE实现UPSERT（插入或更新）

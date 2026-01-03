@@ -9,7 +9,7 @@ import (
 	"github.com/Hana-ame/twitter-pic-go/Tools/sqlite"
 )
 
-var db, _ = sqlite.NewSQLiteDB("./twitter.db")
+var db, _ = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC")
 
 func CreateTable() error {
 	// 确保数据库连接有效
@@ -17,32 +17,48 @@ func CreateTable() error {
 		return fmt.Errorf("数据库连接不可用: %v", err)
 	}
 
-	// 补全 SQL 语句（添加 last_modify 字段的类型和默认值）
-	query := `CREATE TABLE IF NOT EXISTS users (
+	// 1. 创建表结构
+	// 注意：username 已经是 PRIMARY KEY，数据库会自动为它创建索引
+	queryTable := `CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
         nick TEXT,
 		status TEXT,
         last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );`
 
-	// 执行 SQL 并检查错误
-	_, err := db.Exec(query)
-	if err != nil {
+	if _, err := db.Exec(queryTable); err != nil {
 		return fmt.Errorf("创建表失败: %v", err)
 	}
 
-	log.Println("表创建或已存在检查完成")
+	// 2. 创建复合索引
+	// idx_users_status_modify 是索引名称
+	// (status, last_modify DESC) 匹配你的查询逻辑：等值过滤 status，倒序排列 last_modify
+	queryIndex := `CREATE INDEX IF NOT EXISTS idx_users_status_modify 
+                   ON users (status, last_modify DESC);`
+
+	if _, err := db.Exec(queryIndex); err != nil {
+		return fmt.Errorf("创建复合索引失败: %v", err)
+	}
+
+	log.Println("表和复合索引创建/检查完成")
 	return nil
 }
 
-// 其实是python这边在做。
-// 将内容插入表中/更新（UPSERT操作）
-func commitUser(username, nick, status string) error {
-	// 使用INSERT OR REPLACE实现UPSERT（插入或更新）
-	query := `INSERT OR REPLACE INTO users (username, nick, status, last_modify)
-              VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
+// Base query string to avoid repetition
+const userSelectQuery = `
+	SELECT u.username, u.last_modify, COALESCE(t.tags, '{}')
+	FROM users u
+	LEFT JOIN user_tags t ON u.username = t.username
+`
 
-	_, err := db.Exec(query, username, nick, status)
+// 做个delete方法就行了。
+func commitUser(username, status string) error {
+	query := `UPDATE users 
+          SET status = ?, 
+              last_modify = CURRENT_TIMESTAMP 
+          WHERE username = ?`
+
+	_, err := db.Exec(query, status, username)
 	if err != nil {
 		return fmt.Errorf("插入/更新用户失败: %v", err)
 	}
@@ -51,12 +67,11 @@ func commitUser(username, nick, status string) error {
 	return nil
 }
 
-// 按照时间倒序得到最新修改的10个status为success的用户名
-func getUserList() ([]string, error) {
-	query := `SELECT username FROM users 
-              WHERE status = 'SUCCESS' 
-              ORDER BY last_modify DESC 
-              LIMIT 10`
+func getUserList() ([]User, error) {
+	query := userSelectQuery + `
+		WHERE u.status = 'SUCCESS' 
+		ORDER BY u.last_modify DESC 
+		LIMIT 25`
 
 	rows, err := db.Query(query)
 	if err != nil {
@@ -64,96 +79,59 @@ func getUserList() ([]string, error) {
 	}
 	defer rows.Close()
 
-	var userList []string = make([]string, 0)
+	var users []User
 	for rows.Next() {
-		var username string
-		if err := rows.Scan(&username); err != nil {
-			return nil, fmt.Errorf("读取数据失败: %v", err)
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
 		}
-		userList = append(userList, username)
+		users = append(users, u)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历行时发生错误: %v", err)
-	}
-
-	return userList, nil
+	return users, nil
 }
 
-// 按照时间倒序得到某个用户名之后的10个用户名
-func getUserListAfter(username string) ([]string, error) {
-	// 先获取指定用户的last_modify时间
-	var targetTime string
-	query := "SELECT last_modify FROM users WHERE username = ?"
-	err := db.QueryRow(query, username).Scan(&targetTime)
+func getUserListAfter(username string) ([]User, error) {
+	// 1. Get the last_modify of the reference user
+	var lastModify time.Time
+
+	err := db.QueryRow("SELECT last_modify FROM users WHERE username = ?", username).Scan(&lastModify)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("用户不存在: %s", username)
 		}
 		return nil, fmt.Errorf("查询用户时间失败: %v", err)
 	}
-	parsedTime, _ := time.Parse("2006-01-02T15:04:05Z", targetTime) // 如果精确到秒且带Z
 
-	// 按照时间戳寻找之后的10个用户
-	query = `SELECT username FROM users 
-             WHERE last_modify < ? AND status = 'SUCCESS' 
-             ORDER BY last_modify DESC 
-	  		 LIMIT 10`
+	// 2. Query users older than that time
+	// 逻辑是：时间比我早，或者（时间跟我一样，但用户名/ID 比我小）
+	query := userSelectQuery + `
+    WHERE (u.last_modify < ? OR (u.last_modify = ? AND u.username < ?))
+    AND u.status = 'SUCCESS' 
+    ORDER BY u.last_modify DESC, u.username DESC 
+    LIMIT 25`
 
-	rows, err := db.Query(query, parsedTime.Format("2006-01-02 15:04:05"))
+	rows, err := db.Query(query, lastModify, lastModify, username)
 	if err != nil {
 		return nil, fmt.Errorf("查询后续用户失败: %v", err)
 	}
 	defer rows.Close()
 
-	var userList []string = make([]string, 0)
+	var users []User
 	for rows.Next() {
-		var nextUser string
-		if err := rows.Scan(&nextUser); err != nil {
-			return nil, fmt.Errorf("读取数据失败: %v", err)
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
 		}
-		userList = append(userList, nextUser)
+		users = append(users, u)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历行时发生错误: %v", err)
-	}
-
-	return userList, nil
+	return users[1:], nil // 这里会拿到当前这个？
 }
 
-// 通过nick查找，先查找"nick%"，再查找"%nick%"
-func getUserListByNick(nick string) ([]string, error) {
-	// 先查找以nick开头的用户
-	// query := `SELECT username FROM users
-	//           WHERE nick LIKE ? AND status = 'SUCCESS'
-	//           ORDER BY last_modify DESC`
-
-	// rows, err := db.Query(query, nick+"%")
-	// if err != nil {
-	// 	return nil, fmt.Errorf("查询用户失败: %v", err)
-	// }
-	// defer rows.Close()
-
-	var userList []string = make([]string, 0)
-	// for rows.Next() {
-	// 	var username string
-	// 	if err := rows.Scan(&username); err != nil {
-	// 		return nil, fmt.Errorf("读取数据失败: %v", err)
-	// 	}
-	// 	userList = append(userList, username)
-	// }
-
-	// if err := rows.Err(); err != nil {
-	// 	return nil, fmt.Errorf("遍历行时发生错误: %v", err)
-	// }
-
-	// // 如果没有找到完全匹配的，再查找包含nick的用户
-	// if len(userList) == 0 {
-	query := `SELECT username FROM users 
-                 WHERE nick LIKE ? AND status = 'SUCCESS'
-                 ORDER BY last_modify DESC
-				 LIMIT 10`
+func getUserListByNick(nick string) ([]User, error) {
+	query := userSelectQuery + `
+		WHERE u.nick LIKE ? AND u.status = 'SUCCESS'
+		ORDER BY u.last_modify DESC
+		LIMIT 15`
 
 	rows, err := db.Query(query, "%"+nick+"%")
 	if err != nil {
@@ -161,29 +139,22 @@ func getUserListByNick(nick string) ([]string, error) {
 	}
 	defer rows.Close()
 
+	var users []User
 	for rows.Next() {
-		var username string
-		if err := rows.Scan(&username); err != nil {
-			return nil, fmt.Errorf("读取数据失败: %v", err)
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
 		}
-		userList = append(userList, username)
+		users = append(users, u)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历行时发生错误: %v", err)
-	}
-	// }
-
-	return userList, nil
+	return users, nil
 }
 
-// 通过nick查找，先查找"nick%"，再查找"%nick%"
-func getUserListByUsername(username string) ([]string, error) {
-
-	query := `SELECT username FROM users 
-	WHERE username LIKE ? AND status = 'SUCCESS'
-	ORDER BY last_modify DESC
-	LIMIT 10`
+func getUserListByUsername(username string) ([]User, error) {
+	query := userSelectQuery + `
+		WHERE u.username LIKE ? AND u.status = 'SUCCESS'
+		ORDER BY u.last_modify DESC
+		LIMIT 15`
 
 	rows, err := db.Query(query, "%"+username+"%")
 	if err != nil {
@@ -191,19 +162,28 @@ func getUserListByUsername(username string) ([]string, error) {
 	}
 	defer rows.Close()
 
-	var userList []string = make([]string, 0)
+	var users []User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	return users, nil
+}
+
+func getUserTags(username string) (user User, err error) {
+	query := userSelectQuery + `WHERE u.username = ?`
+
+	rows, err := db.Query(query, username)
+	if err != nil {
+		return user, fmt.Errorf("查询用户失败: %v", err)
+	}
+	defer rows.Close()
 
 	for rows.Next() {
-		var username string
-		if err := rows.Scan(&username); err != nil {
-			return nil, fmt.Errorf("读取数据失败: %v", err)
-		}
-		userList = append(userList, username)
+		return scanUser(rows)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("遍历行时发生错误: %v", err)
-	}
-
-	return userList, nil
+	return user, fmt.Errorf("查询用户失败: 没有进入 rows.Next()")
 }

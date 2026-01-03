@@ -6,36 +6,44 @@ import json
 import gzip
 import sqlite3
 import traceback
-from datetime import datetime, timedelta
 from gallery_dl.extractor import twitter
 from typing import Any
+from datetime import datetime, timedelta, timezone  # 引入 timezone
 
 load_dotenv()
 
+
 def auth_token():
-    return  os.getenv("AUTH_TOKEN") 
-
-username =  sys.argv[1] if len(sys.argv) > 1 else "lulu463098"
+    return os.getenv("AUTH_TOKEN")
 
 
-# print(username)
-# print(auth_token())
+
+username = sys.argv[1] if len(sys.argv) > 1 else "lulu463098"
+
 
 def should_skip_processing(username):
     """
     检查是否应该跳过处理（最后修改在一天内）
     """
-    conn = sqlite3.connect('twitter.db', timeout=5)
+    conn = sqlite3.connect("twitter.db", timeout=5)
     try:
-        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
 
         cursor.execute("SELECT last_modify FROM users WHERE username = ?", (username,))
         result = cursor.fetchone()
 
         if result:
-            last_modify = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S")
-            return (datetime.now() - last_modify) <= timedelta(days=1)
+            # 关键修复：SQLite 存的是 UTC 字符串，解析时需指定 UTC
+            # SQLite 默认格式是 YYYY-MM-DD HH:MM:SS
+            last_modify = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone.utc
+            )
+
+            # 获取当前的 UTC 时间进行对比
+            now_utc = datetime.now(timezone.utc)
+
+            return (now_utc - last_modify) <= timedelta(days=1)
 
         return False
 
@@ -52,7 +60,7 @@ if should_skip_processing(username):
     # 直接退出或返回
 
 
-def get_media_data_by_username(username:str):
+def get_media_data_by_username(username: str):
     url = f"https://x.com/{username}/media"
 
     # is url valid?
@@ -62,10 +70,9 @@ def get_media_data_by_username(username:str):
 
     extractor = twitter.TwitterMediaExtractor(match)
 
-    config_dict = {"cookies": {"auth_token":auth_token()}}
+    config_dict = {"cookies": {"auth_token": auth_token()}}
 
     extractor.config = lambda key, default=None: config_dict.get(key, default)
-
 
     try:
         extractor.initialize()
@@ -207,42 +214,48 @@ def get_media_data_by_username(username:str):
 
 output = get_media_data_by_username(username)
 info: Any = output.get("account_info")
-# print(output)
 
-#with open(f"{info.get('name')}.json", "w") as f:
-#    json.dump(output, f)
+if not info:
+    print("未能获取到用户信息")
+    exit(1)
 
-with gzip.open(f"{info.get('name')}.json.gz", "wt", encoding="utf-8", compresslevel=9) as f:
+with gzip.open(
+    f"{info.get('name')}.json.gz", "wt", encoding="utf-8", compresslevel=9
+) as f:
     f.write(json.dumps(output))
 
-# 存储入"twitter.db",是一个sqlite3数据库
-# 要求  query = `INSERT OR REPLACE INTO users (username, nick, status, last_modify)
-#                                      VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
-# 在建立连接后启用 WAL 模式和设置繁忙超时
-conn = sqlite3.connect('twitter.db', timeout=5)
+# --- 数据库操作部分 ---
+conn = sqlite3.connect("twitter.db", timeout=5)
 try:
-    conn.execute('PRAGMA journal_mode=WAL;')  # 启用 WAL 模式
+    conn.execute("PRAGMA journal_mode=WAL;")
     cursor = conn.cursor()
 
-    # 使用 ON CONFLICT DO UPDATE SET 来精确控制冲突时的更新行为
-    query = """
+    # 1. 更新 users 表
+    # 使用 CURRENT_TIMESTAMP，SQLite 会自动存入当前 UTC 时间
+    user_query = """
     INSERT INTO users (username, nick, status, last_modify)
     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(username)
     DO UPDATE SET
         nick = excluded.nick,
         last_modify = CURRENT_TIMESTAMP
-    -- 注意：这里没有更新 status 字段，因此冲突时会保留原有的 status 值
     """
+    cursor.execute(user_query, (info.get("name"), info.get("nick"), "SUCCESS"))
 
-    # info: Any = output.get("account_info")
-    cursor.execute(query, (info.get('name'), info.get('nick'), "SUCCESS")) # 新插入的行 status 为 "SUCCESS"
-    conn.commit()  # 及时提交事务
+    # # 2. 确保 user_tags 表有对应记录（配合 Go 的 User 结构体）
+    # # 如果该用户在 tags 表没记录，则插入一条空的
+    # tags_query = """
+    # INSERT INTO user_tags (username, tags, last_modify)
+    # VALUES (?, r'{}', CURRENT_TIMESTAMP)
+    # ON CONFLICT(username) DO NOTHING
+    # """
+    # cursor.execute(tags_query, (info.get("name"),))
+
+    conn.commit()
+    print(f"用户 {info.get('name')} 数据已更新")
 
 except Exception as e:
-    print(f"An error occurred: {e}") # 建议至少打印异常信息
+    print(f"数据库操作失败: {e}")
     conn.rollback()
 finally:
     conn.close()
-
-# print(output)

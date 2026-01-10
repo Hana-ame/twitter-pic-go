@@ -4,7 +4,7 @@ import threading
 import socket
 
 def call(username):
-    os.system(f"py get_meta_data.py {username}")
+    os.system(f"timeout 300s py get_meta_data.py {username}")
 
 
 def handle_client(client_socket, client_address):

@@ -9,9 +9,14 @@ import (
 	"github.com/Hana-ame/twitter-pic-go/Tools/sqlite"
 )
 
-var db, _ = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC")
+var db *sql.DB
 
 func CreateTable() error {
+	var err error
+	db, err = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC")
+	if err != nil {
+		return err
+	}
 	// 确保数据库连接有效
 	if err := db.Ping(); err != nil {
 		return fmt.Errorf("数据库连接不可用: %v", err)

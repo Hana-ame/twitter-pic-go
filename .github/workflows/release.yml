@@ -49,7 +49,7 @@ jobs:
           fi
           
           # 执行编译
-          go build -v -o "$BINARY_NAME" .
+          go build -v -o "$BINARY_NAME" ./server/
           
           # 存储文件名供后续步骤使用
           echo "BINARY_NAME=$BINARY_NAME" >> $GITHUB_ENV

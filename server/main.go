@@ -16,6 +16,8 @@ func main() {
 
 	go twimg.Run(os.Getenv("TWIMG_ADDR"))
 
+	twitter.CreateTableV2()
+
 	r := gin.Default()
 	r.Use(middleware.CORS())
 

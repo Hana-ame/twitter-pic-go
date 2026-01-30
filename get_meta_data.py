@@ -242,14 +242,24 @@ try:
     """
     cursor.execute(user_query, (info.get("name"), info.get("nick"), "SUCCESS"))
 
-    # # 2. 确保 user_tags 表有对应记录（配合 Go 的 User 结构体）
-    # # 如果该用户在 tags 表没记录，则插入一条空的
-    # tags_query = """
-    # INSERT INTO user_tags (username, tags, last_modify)
-    # VALUES (?, r'{}', CURRENT_TIMESTAMP)
-    # ON CONFLICT(username) DO NOTHING
-    # """
-    # cursor.execute(tags_query, (info.get("name"),))
+    username = info.get("name")
+
+    # 1. 尝试按大小写不敏感匹配并更新 username 和时间
+    # COLLATE NOCASE 确保了如果数据库里是 'alice'，输入是 'Alice'，也能匹配上
+    update_query = """
+    UPDATE user_tags 
+    SET username = ?, last_modify = CURRENT_TIMESTAMP 
+    WHERE username = ? COLLATE NOCASE
+    """
+    cursor.execute(update_query, (username, username))
+
+    # 2. 如果没有记录被更新（说明该用户不存在），则执行插入
+    # if cursor.rowcount == 0:
+    #     insert_query = """
+    #     INSERT INTO user_tags (username, tags, last_modify)
+    #     VALUES (?, '{}', CURRENT_TIMESTAMP)
+    #     """
+    #     cursor.execute(insert_query, (username,))
 
     conn.commit()
     print(f"用户 {info.get('name')} 数据已更新")

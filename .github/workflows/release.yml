@@ -1,0 +1,77 @@
+name: Build and Release
+
+# 触发条件：当你推送以 v 开头的标签（如 v1.0.0）时触发
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build Binary
+    runs-on: ubuntu-latest
+    strategy:
+      # 矩阵模式：同时构建 Linux 和 Windows 的 AMD64 版本
+      matrix:
+        goos: [linux, windows]
+        goarch: [amd64]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5' # 指定你的 Go 版本
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          # 定义文件名，Windows 需要加上 .exe 后缀
+          BINARY_NAME=myapp-${{ matrix.goos }}-${{ matrix.goarch }}
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+          
+          # 执行编译
+          go build -v -o "$BINARY_NAME" .
+          
+          # 存储文件名供后续步骤使用
+          echo "BINARY_NAME=$BINARY_NAME" >> $GITHUB_ENV
+
+      - name: Upload Artifacts
+        # 先把构建好的文件存起来，方便后面 Release 步骤读取
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BINARY_NAME }}
+          path: ${{ env.BINARY_NAME }}
+
+  release:
+    name: Create Release
+    needs: build # 等 build 任务完成后再执行
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 必须有写入权限才能创建 Release
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Display structure of downloaded files
+        run: ls -R ./artifacts
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # 发布的二进制文件路径
+          files: ./artifacts/*
+          # 自动生成 Release Note（可选）
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

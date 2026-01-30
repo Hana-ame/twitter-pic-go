@@ -8,6 +8,9 @@ import (
 )
 
 func Run(addr string) {
+	if addr == "" {
+		return
+	}
 	// 1. 配置目标地址
 	target := "https://pbs.twimg.com"
 	targetURL, err := url.Parse(target)

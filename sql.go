@@ -5,20 +5,14 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"github.com/Hana-ame/twitter-pic-go/Tools/sqlite"
 )
 
-var db *sql.DB
+var DB *sql.DB
 
 func CreateTable() error {
-	var err error
-	db, err = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC")
-	if err != nil {
-		return err
-	}
+
 	// 确保数据库连接有效
-	if err := db.Ping(); err != nil {
+	if err := DB.Ping(); err != nil {
 		return fmt.Errorf("数据库连接不可用: %v", err)
 	}
 
@@ -31,7 +25,7 @@ func CreateTable() error {
         last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );`
 
-	if _, err := db.Exec(queryTable); err != nil {
+	if _, err := DB.Exec(queryTable); err != nil {
 		return fmt.Errorf("创建表失败: %v", err)
 	}
 
@@ -41,7 +35,7 @@ func CreateTable() error {
 	queryIndex := `CREATE INDEX IF NOT EXISTS idx_users_status_modify 
                    ON users (status, last_modify DESC);`
 
-	if _, err := db.Exec(queryIndex); err != nil {
+	if _, err := DB.Exec(queryIndex); err != nil {
 		return fmt.Errorf("创建复合索引失败: %v", err)
 	}
 
@@ -63,7 +57,7 @@ func commitUser(username, status string) error {
               last_modify = CURRENT_TIMESTAMP 
           WHERE username = ?`
 
-	_, err := db.Exec(query, status, username)
+	_, err := DB.Exec(query, status, username)
 	if err != nil {
 		return fmt.Errorf("插入/更新用户失败: %v", err)
 	}
@@ -78,7 +72,7 @@ func getUserList() ([]User, error) {
 		ORDER BY u.last_modify DESC 
 		LIMIT 25`
 
-	rows, err := db.Query(query)
+	rows, err := DB.Query(query)
 	if err != nil {
 		return nil, fmt.Errorf("查询用户列表失败: %v", err)
 	}
@@ -99,7 +93,7 @@ func getUserListAfter(username string) ([]User, error) {
 	// 1. Get the last_modify of the reference user
 	var lastModify time.Time
 
-	err := db.QueryRow("SELECT last_modify FROM users WHERE username = ?", username).Scan(&lastModify)
+	err := DB.QueryRow("SELECT last_modify FROM users WHERE username = ?", username).Scan(&lastModify)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("用户不存在: %s", username)
@@ -115,7 +109,7 @@ func getUserListAfter(username string) ([]User, error) {
     ORDER BY u.last_modify DESC, u.username DESC 
     LIMIT 25`
 
-	rows, err := db.Query(query, lastModify, lastModify, username)
+	rows, err := DB.Query(query, lastModify, lastModify, username)
 	if err != nil {
 		return nil, fmt.Errorf("查询后续用户失败: %v", err)
 	}
@@ -138,7 +132,7 @@ func getUserListByNick(nick string) ([]User, error) {
 		ORDER BY u.last_modify DESC
 		LIMIT 15`
 
-	rows, err := db.Query(query, "%"+nick+"%")
+	rows, err := DB.Query(query, "%"+nick+"%")
 	if err != nil {
 		return nil, fmt.Errorf("模糊查询用户失败: %v", err)
 	}
@@ -161,7 +155,7 @@ func getUserListByUsername(username string) ([]User, error) {
 		ORDER BY u.last_modify DESC
 		LIMIT 15`
 
-	rows, err := db.Query(query, "%"+username+"%")
+	rows, err := DB.Query(query, "%"+username+"%")
 	if err != nil {
 		return nil, fmt.Errorf("模糊查询用户失败: %v", err)
 	}
@@ -181,7 +175,7 @@ func getUserListByUsername(username string) ([]User, error) {
 func getUserTags(username string) (user User, err error) {
 	query := userSelectQuery + `WHERE u.username = ?`
 
-	rows, err := db.Query(query, username)
+	rows, err := DB.Query(query, username)
 	if err != nil {
 		return user, fmt.Errorf("查询用户失败: %v", err)
 	}

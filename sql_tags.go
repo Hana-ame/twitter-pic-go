@@ -46,7 +46,7 @@ func CreateTableV2() error {
         last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY(username) REFERENCES users(username)
     );`
-	if _, err := db.Exec(queryTags); err != nil {
+	if _, err := DB.Exec(queryTags); err != nil {
 		return fmt.Errorf("创建 user_tags 失败: %v", err)
 	}
 
@@ -59,7 +59,7 @@ func CreateTableV2() error {
         ua TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );`
-	if _, err := db.Exec(queryLogs); err != nil {
+	if _, err := DB.Exec(queryLogs); err != nil {
 		return fmt.Errorf("创建 request_logs 失败: %v", err)
 	}
 
@@ -74,14 +74,14 @@ func addTag(username string, inputMap map[string]int, ip, ua string) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`INSERT INTO request_logs (username, tags, ip, ua) VALUES (?, ?, ?, ?)`,
+	_, err = DB.Exec(`INSERT INTO request_logs (username, tags, ip, ua) VALUES (?, ?, ?, ?)`,
 		username, string(input), ip, ua)
 	if err != nil {
 		log.Printf("Warning: 记录日志失败: %v", err)
 	}
 
 	// 2. 开启事务
-	tx, err := db.Begin()
+	tx, err := DB.Begin()
 	if err != nil {
 		return err
 	}

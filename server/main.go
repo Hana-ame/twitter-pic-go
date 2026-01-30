@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/Hana-ame/twitter-pic-go"
 	"github.com/Hana-ame/twitter-pic-go/Tools/ginkit/middleware"
+	"github.com/Hana-ame/twitter-pic-go/Tools/sqlite"
 	"github.com/Hana-ame/twitter-pic-go/twimg"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -16,6 +18,12 @@ func main() {
 
 	go twimg.Run(os.Getenv("TWIMG_ADDR"))
 
+	var err error
+	twitter.DB, err = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC")
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
 	twitter.CreateTableV2()
 
 	r := gin.Default()

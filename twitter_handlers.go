@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/Hana-ame/twitter-pic-go/Tools/ginkit"
 	"github.com/Hana-ame/twitter-pic-go/limit"
@@ -57,7 +58,7 @@ func CreateMetaData(c *gin.Context) {
 		}
 		for k, v := range o {
 			if v > 0 {
-				o[k] = 5
+				o[k] = 1
 			} else if v < 0 {
 				o[k] = -1
 			} else {
@@ -202,7 +203,17 @@ func AddToGroup(g *gin.RouterGroup) {
 
 	limiter := limit.NewIPRateLimiter(2, 5)
 
-	g.POST("/:username", limit.RateLimitMiddleware(limiter), CreateMetaData)
+	banFile := "bans.txt"
+	banMgr := NewBanManagerFromFile(banFile)
+	// Update list every 10 minute
+	go func() {
+		for range time.Tick(10 * time.Minute) {
+			_ = banMgr.ReloadFromFile(banFile)
+		}
+	}()
+
+	// g.Use(StrictIPBanMiddleware(banMgr))
+	g.POST("/:username", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), CreateMetaData)
 	g.GET("/:fn", GetMetaData)
 	g.GET("/tags/:username", GetTags)
 	// g.POST("/tags/:username", PostTags) // 使用 ?donotrenew

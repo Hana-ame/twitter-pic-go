@@ -5,6 +5,7 @@ go 1.25.5
 require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/mattn/go-sqlite3 v1.14.32
+	github.com/phemmer/go-iptrie v0.0.0-20240326174613-ba542f5282c9
 	golang.org/x/time v0.14.0
 )
 

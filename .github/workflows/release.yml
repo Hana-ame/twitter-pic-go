@@ -19,11 +19,22 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          # 关键点：设置为 true 或 recursive 以拉取子模块
+          submodules: recursive
+          # 建议同时拉取所有历史，防止某些版本计算工具失效
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.25.5' # 指定你的 Go 版本
+          cache: true # 开启缓存，加快后续构建速度
+
+      - name: Install dependencies
+        run: |
+          # 确保拉取所有依赖
+          go mod tidy
 
       - name: Build
         env:

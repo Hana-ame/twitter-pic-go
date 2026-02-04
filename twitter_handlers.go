@@ -139,6 +139,10 @@ func GetMetaData(c *gin.Context) {
 		if ginkit.AbortWithError(c, 404, err) {
 			return
 		}
+		if user.Status != "SUCCESS" {
+			c.File("banned.json")
+			return
+		}
 		c.Redirect(302, c.Request.URL.String()+".json.gz?t="+user.LastModify.String())
 		return
 	}

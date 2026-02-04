@@ -45,7 +45,7 @@ func CreateTable() error {
 
 // Base query string to avoid repetition
 const userSelectQuery = `
-	SELECT u.username, u.last_modify, COALESCE(t.tags, '{}')
+	SELECT u.username, u.last_modify, u.status, COALESCE(t.tags, '{}')
 	FROM users u
 	LEFT JOIN user_tags t ON u.username = t.username
 `

@@ -30,6 +30,7 @@ type User struct {
 	Username   string         `json:"username"`
 	LastModify time.Time      `json:"last_modify"`
 	Tags       map[string]int `json:"tags"`
+	Status     string         `json:"status"`
 }
 
 func CreateTableV2() error {
@@ -126,8 +127,8 @@ func scanUser(rows *sql.Rows) (User, error) {
 	var u User
 	var tagsRaw string
 
-	// We select: u.username, u.last_modify, t.tags
-	err := rows.Scan(&u.Username, &u.LastModify, &tagsRaw)
+	// We select: u.username, u.last_modify, u.status t.tags
+	err := rows.Scan(&u.Username, &u.LastModify, &u.Status, &tagsRaw)
 	if err != nil {
 		return u, err
 	}

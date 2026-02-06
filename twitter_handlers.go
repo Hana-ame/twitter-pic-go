@@ -205,7 +205,7 @@ func CreateUser(c *gin.Context) {
 
 func AddToGroup(g *gin.RouterGroup) {
 
-	limiter := limit.NewIPRateLimiter(2, 5)
+	limiter := limit.NewFastLimiter(5)
 
 	banFile := "bans.txt"
 	banMgr := NewBanManagerFromFile(banFile)

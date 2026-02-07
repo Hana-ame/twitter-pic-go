@@ -22,7 +22,7 @@ import (
 // ?do_not_renew=true 用来添加tag
 func CreateMetaData(c *gin.Context) {
 	username := c.Param("username")
-	if username == "" {
+	if username == "" || username == "undefined" {
 		c.JSON(400, gin.H{
 			"error": "username is required",
 		})

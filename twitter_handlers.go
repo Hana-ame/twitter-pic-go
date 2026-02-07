@@ -205,7 +205,7 @@ func CreateUser(c *gin.Context) {
 
 func AddToGroup(g *gin.RouterGroup) {
 
-	limiter := limit.NewFastLimiter(5)
+	limiter := limit.NewFastLimiter(25)
 
 	banFile := "bans.txt"
 	banMgr := NewBanManagerFromFile(banFile)
@@ -217,7 +217,7 @@ func AddToGroup(g *gin.RouterGroup) {
 	}()
 
 	// g.Use(StrictIPBanMiddleware(banMgr))
-	g.POST("/:username", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), CreateMetaData)
+	g.POST("/:username", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), limit.GlobalRateLimitMiddleware(), CreateMetaData)
 	g.GET("/:fn", GetMetaData)
 	g.GET("/tags/:username", GetTags)
 	// g.POST("/tags/:username", PostTags) // 使用 ?donotrenew

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/Hana-ame/twitter-pic-go"
@@ -24,7 +25,10 @@ func main() {
 		fmt.Println(err)
 		return
 	}
-	twitter.CreateTableV2()
+	err = twitter.CreateTableV3()
+	if err != nil {
+		log.Println(err)
+	}
 
 	r := gin.Default()
 	r.Use(middleware.CORS())

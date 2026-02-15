@@ -203,6 +203,47 @@ func CreateUser(c *gin.Context) {
 	}
 }
 
+// 26.02.15
+// GLM5改的。
+
+// GET /emojis?username={}
+// 获取指定用户的所有 Emoji 计数
+func GetEmojis(c *gin.Context) {
+	username := c.Query("username")
+
+	// 调用之前实现的数据库方法
+	emojis, err := GetUserEmojis(username)
+	if ginkit.AbortWithError(c, http.StatusInternalServerError, err) {
+		return
+	}
+
+	c.JSON(200, emojis)
+}
+
+// POST /emojis?username={}&emoji={}
+// 为指定用户的某个 Emoji 投票 (+1)
+func VoteUpEmojiHandler(c *gin.Context) {
+	username := c.Query("username")
+	emoji := c.Query("emoji")
+
+	// Gin 会自动解析 URL 编码的 Emoji
+	if username == "" || emoji == "" {
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	// 调用之前实现的数据库方法
+	if err := VoteUpEmoji(username, emoji); err != nil {
+		if ginkit.AbortWithError(c, http.StatusInternalServerError, err) {
+			return
+		}
+	}
+
+	// 返回更新后的数据或者简单的成功状态
+	emojis, _ := GetUserEmojis(username)
+	c.JSON(200, emojis)
+}
+
 func AddToGroup(g *gin.RouterGroup) {
 
 	limiter := limit.NewFastLimiter(5)
@@ -225,4 +266,9 @@ func AddToGroup(g *gin.RouterGroup) {
 	// admin
 	g.DELETE("/:username", DeleteUser)
 	g.PUT("/:username", CreateUser)
+
+	// 26.02.15
+	// 新增 Emoji 路由
+	g.GET("/emojis", GetEmojis)
+	g.POST("/emojis", VoteUpEmojiHandler)
 }

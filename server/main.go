@@ -29,6 +29,10 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
+	err = twitter.RefreshAllRankings()
+	if err != nil {
+		log.Println(err)
+	}
 
 	r := gin.Default()
 	r.Use(middleware.CORS())

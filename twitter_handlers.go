@@ -211,6 +211,21 @@ func CreateUser(c *gin.Context) {
 func GetEmojis(c *gin.Context) {
 	username := c.Query("username")
 
+	if username == "" {
+		// 假设生成的数据文件名为 emojis.json，位于当前目录下
+		filePath := RankFileJSON
+
+		// 检查文件是否存在，提供更好的错误处理（可选但推荐）
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			c.String(http.StatusNotFound, "统计文件尚未生成")
+			return
+		}
+
+		// 直接返回文件内容
+		c.File(filePath)
+		return
+	}
+
 	// 调用之前实现的数据库方法
 	emojis, err := GetUserEmojis(username)
 	if ginkit.AbortWithError(c, http.StatusInternalServerError, err) {

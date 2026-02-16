@@ -179,8 +179,13 @@ func RefreshAllRankings() error {
 }
 
 // calculateRankMap 辅助函数：统计指定时间范围的数据
+// 逻辑：SQL 查出所有数据 -> Go 里面限制每个 Emoji 最多 200 条
 func calculateRankMap(timeRange string) (map[string][]RankItem, error) {
 	result := make(map[string][]RankItem)
+
+	// 1. SQL 查询
+	// 注意：必须 ORDER BY emoji ASC, votes DESC
+	// 这样查询结果会把同一个 Emoji 的数据挨在一起，且票数高的在前面
 	query := `
         SELECT emoji, username, COUNT(*) as votes
         FROM emoji_logs
@@ -195,14 +200,26 @@ func calculateRankMap(timeRange string) (map[string][]RankItem, error) {
 	}
 	defer rows.Close()
 
+	// 2. 在 Go 里面进行限制
 	for rows.Next() {
 		var emoji, username string
 		var votes int
 		if err := rows.Scan(&emoji, &username, &votes); err != nil {
 			return nil, err
 		}
-		result[emoji] = append(result[emoji], RankItem{Username: username, Votes: votes})
+
+		// 获取当前 emoji 的列表
+		list := result[emoji]
+
+		// 判断是否已经满了 200 个
+		if len(list) < 200 {
+			// 未满，追加进去
+			result[emoji] = append(list, RankItem{Username: username, Votes: votes})
+		}
+		// else: 已满 200 个，因为 SQL 已经排好序了（票数高的在前面），
+		// 所以后面的数据直接丢弃即可，不需要额外操作。
 	}
+
 	return result, nil
 }
 

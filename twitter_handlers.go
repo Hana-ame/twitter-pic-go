@@ -235,6 +235,28 @@ func GetEmojis(c *gin.Context) {
 	c.JSON(200, emojis)
 }
 
+func GetEmojisGz(c *gin.Context) {
+	filePath := RankFileGz
+
+	// 检查文件是否存在，提供更好的错误处理（可选但推荐）
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.String(http.StatusNotFound, "统计文件尚未生成")
+		return
+	}
+
+	f, err := os.Open(filePath) // 都放在同一个文件夹。
+	if ginkit.AbortWithError(c, 500, err) {
+		return
+	}
+
+	fileInfo, err := f.Stat()
+	if ginkit.AbortWithError(c, 500, err) {
+		return
+	}
+
+	c.DataFromReader(200, fileInfo.Size(), "application/json", f, map[string]string{"content-encoding": "gzip"})
+}
+
 // POST /emojis?username={}&emoji={}
 // 为指定用户的某个 Emoji 投票 (+1)
 func VoteUpEmojiHandler(c *gin.Context) {
@@ -284,6 +306,7 @@ func AddToGroup(g *gin.RouterGroup) {
 
 	// 26.02.15
 	// 新增 Emoji 路由
+	g.GET("/emojis.json.gz", GetEmojisGz)
 	g.GET("/emojis", GetEmojis)
 	g.POST("/emojis", VoteUpEmojiHandler)
 }

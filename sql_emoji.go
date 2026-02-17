@@ -165,9 +165,9 @@ func RefreshAllRankings() error {
 	}
 
 	// 3. 写入 Gzip 压缩文件
-	// if err := saveGzFile(RankFileGz, allData); err != nil {
-	// 	return err
-	// }
+	if err := saveGzFile(RankFileGz, allData); err != nil {
+		return err
+	}
 	if err := saveJSONFile(RankFileJSON, allData); err != nil {
 		return err
 	}

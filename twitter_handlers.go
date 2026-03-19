@@ -133,21 +133,24 @@ func GetTags(c *gin.Context) {
 func GetMetaData(c *gin.Context) {
 	fn := c.Param("fn")
 
+	username := strings.TrimSuffix(fn, ".json.gz")
+
+	user, err := getUserTags(username)
+	if ginkit.AbortWithError(c, 404, err) {
+		return
+	}
+
+	if user.Status != "SUCCESS" {
+		c.File("banned.json")
+		return
+	}
+
 	if _, ok := c.GetQuery("t"); !ok {
-		username := fn
-		user, err := getUserTags(username)
-		if ginkit.AbortWithError(c, 404, err) {
-			return
-		}
-		if user.Status != "SUCCESS" {
-			c.File("banned.json")
-			return
-		}
 		c.Redirect(302, c.Request.URL.String()+".json.gz?t="+user.LastModify.String())
 		return
 	}
 
-	if !strings.HasSuffix(fn, "json.gz") {
+	if !strings.HasSuffix(fn, ".json.gz") {
 		ginkit.AbortWithError(c, 403, fmt.Errorf("not allowed"))
 		return
 	}

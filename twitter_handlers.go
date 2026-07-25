@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -156,8 +157,13 @@ func GetMetaData(c *gin.Context) {
 	}
 
 	// 根据fn打开文件返回
-
-	f, err := os.Open(fn) // 都放在同一个文件夹。
+	safeFn := filepath.Base(fn)
+	if safeFn != fn {
+		// 说明 fn 包含路径分隔符，可能是攻击
+		ginkit.AbortWithError(c, 403, fmt.Errorf("not allowed"))
+		return
+	}
+	f, err := os.Open(safeFn) // 都放在同一个文件夹。
 	if ginkit.AbortWithError(c, 500, err) {
 		return
 	}

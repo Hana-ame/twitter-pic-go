@@ -30,7 +30,7 @@ def translate_logic(raw_text):
     # [ ! -f 文件名 ] 表示“如果文件不存在”
     # && 表示“则执行后面的命令”
     # 注意：这里假设你的运行环境是 Linux/macOS 或 Windows 的 Bash 环境
-    translated_command = f'[ ! -f {target_file} ] && timeout 300s py get_meta_data.py {username}'
+    translated_command = f'[ ! -f {target_file} ] && timeout 300s ~/twitter/venv/bin/python3 get_meta_data.py {username}'
     
     return translated_command
 

@@ -4,7 +4,7 @@ import threading
 import socket
 
 def call(username):
-    os.system(f"timeout 300s ~/twitter/venv/bin/python3 get_meta_data.py {username}")
+    os.system(f"timeout 300s ~/twitter/venv/bin/python3 get2.py {username}")
 
 
 def handle_client(client_socket, client_address):

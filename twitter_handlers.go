@@ -43,6 +43,7 @@ func CreateMetaData(c *gin.Context) {
 		// 只能在第一次添加的时候用，因为权重不同。
 		user, _ := getUserTags(username)
 		if len(user.Tags) > 0 { // 已经添加过了，不要这么做。
+			c.JSON(200, gin.H{"message": "already has tags, skipped"})
 			return
 		}
 
@@ -71,6 +72,7 @@ func CreateMetaData(c *gin.Context) {
 
 		curlMetaData(username)
 
+		c.JSON(200, gin.H{"message": "ok"})
 		return
 	}
 
@@ -84,6 +86,7 @@ func CreateMetaData(c *gin.Context) {
 
 		curlMetaData(username)
 
+		c.JSON(200, gin.H{"message": "ok"})
 		return
 	}
 
@@ -113,10 +116,11 @@ func CreateMetaData(c *gin.Context) {
 		}
 		addTag(username, o, ip, agent)
 
+		c.JSON(200, gin.H{"message": "ok"})
 		return
 	}
 
-	c.AbortWithStatus(200)
+	c.JSON(400, gin.H{"error": "conflicting flags"})
 }
 
 // GET /tags/:username

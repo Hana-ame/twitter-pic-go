@@ -123,7 +123,11 @@ func getUserListAfter(username string) ([]User, error) {
 		}
 		users = append(users, u)
 	}
-	return users[1:], nil // 这里会拿到当前这个？
+	// 注意：查询条件已经排除了 after 用户本身（last_modify < ? OR (last_modify = ? AND username < ?)），
+	// 所以这里不需要再跳过第一条。此前用 users[1:] 会导致每页静默丢一个用户，
+	// 且最后一页只剩 1 条时返回空数组，前端（LoadMoreButton append 模式）误判 noMore。
+	// 发现背景：review 代码 + 阅读前端 ~/twitter-pic-react/src/components/LoadMoreButton.jsx 后确认。
+	return users, nil
 }
 
 func getUserListByNick(nick string) ([]User, error) {

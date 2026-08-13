@@ -1,10 +1,14 @@
 import os
 # import sys
+import shlex
 import threading
 import socket
 
 def call(username):
-    os.system(f"timeout 300s ~/twitter/venv/bin/python3 get2.py {username}")
+    # 注意：username 来自网络（Go 服务器转发），必须 quote，
+    # 否则注入 `;`、`$()` 等字符会直接执行 shell 命令（RCE）。
+    # 发现背景：代码审阅时发现 os.system 直接拼接网络输入。
+    os.system(f"timeout 300s ~/twitter/venv/bin/python3 get2.py {shlex.quote(username)}")
 
 
 def handle_client(client_socket, client_address):

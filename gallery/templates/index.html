@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · Gallery</title>
+<style>
+:root {
+  --bg: #111318;
+  --panel: #191d24;
+  --panel2: #202630;
+  --border: #2d3542;
+  --text: #e6e9ef;
+  --muted: #8b95a7;
+  --accent: #4f8cff;
+  --accent2: #9b6cff;
+  --danger: #ff5c5c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
+a { color: var(--accent); text-decoration: none; }
+header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
+header h1 { font-size: 18px; margin: 0 12px 0 0; }
+nav { display: flex; gap: 6px; flex-wrap: wrap; }
+nav a { background: var(--panel2); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 7px 14px; font-size: 13px; }
+nav a.active { color: white; background: var(--accent); border-color: var(--accent); }
+.searchbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 0 auto; }
+.searchbar input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; width: 160px; outline: none; }
+.searchbar input:focus { border-color: var(--accent); }
+button { background: var(--accent); color: white; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
+button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+.layout { display: flex; min-height: calc(100vh - 55px); }
+aside { width: 240px; min-width: 240px; background: var(--panel); border-right: 1px solid var(--border); padding: 14px; overflow-y: auto; max-height: calc(100vh - 55px); position: sticky; top: 55px; }
+aside h3 { font-size: 13px; color: var(--muted); margin: 8px 0; text-transform: uppercase; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; font-size: 12px; color: var(--text); display: inline-flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.tag a { color: var(--text); }
+.tag a.exclude { color: var(--danger); }
+main { flex: 1; padding: 16px; }
+.breadcrumb { font-size: 14px; margin-bottom: 12px; color: var(--muted); }
+.folders { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.folder { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; min-width: 150px; }
+.folder:hover { border-color: var(--accent); }
+.folder .name { font-weight: 600; font-size: 14px; }
+.folder .count { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; transition: border-color .15s, transform .15s; }
+.card:hover { border-color: var(--accent); transform: translateY(-2px); }
+.card .thumb { width: 100%; height: 170px; object-fit: cover; display: block; background: #000; }
+.card .meta { padding: 8px 10px; }
+.card .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .badge { font-size: 11px; color: var(--accent2); }
+.pagination { display: flex; gap: 8px; align-items: center; margin: 18px 0; flex-wrap: wrap; }
+.pagination a, .pagination span { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; }
+.pagination span.info { background: transparent; border: none; color: var(--muted); }
+.empty { color: var(--muted); padding: 30px; text-align: center; }
+.cluster { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+.cluster h4 { margin: 0 0 8px; font-size: 14px; }
+.mini-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.mini-grid img, .mini-grid video { width: 100px; height: 75px; object-fit: cover; border-radius: 8px; background: #000; }
+.history-item { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.history-item .time { color: var(--muted); font-size: 12px; min-width: 150px; }
+.filterbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
+.filterbar a { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; color: var(--muted); }
+.filterbar a.active { color: white; background: var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🖼️ Gallery</h1>
+  <nav>
+    <a href="/" class="{{if or (eq .Mode "index") (eq .Mode "gallery")}}active{{end}}">浏览</a>
+    <a href="/tags" class="{{if eq .Mode "tags"}}active{{end}}">标签</a>
+    <a href="/recommendations" class="{{if eq .Mode "recommendations"}}active{{end}}">推荐</a>
+    <a href="/clusters" class="{{if eq .Mode "clusters"}}active{{end}}">聚类</a>
+    <a href="/history" class="{{if eq .Mode "history"}}active{{end}}">历史</a>
+  </nav>
+  <form class="searchbar" method="GET" action="/">
+    <input type="text" name="tags" placeholder="包含 tag1,tag2" value="{{.IncTagCSV}}">
+    <input type="text" name="exclude_tags" placeholder="排除 tag3" value="{{.ExcTagCSV}}">
+    {{if .Dir}}<input type="hidden" name="dir" value="{{.Dir}}">{{end}}
+    <button type="submit">搜索</button>
+    <a class="tag" href="/">重置</a>
+  </form>
+  <form method="POST" action="/rescan" style="margin:0;"><button type="submit" class="ghost">重新扫描</button></form>
+</header>
+<div class="layout">
+  <aside>
+    <h3>目录</h3>
+    <div class="tags">
+      {{if .UpURL}}<a class="tag" href="{{.UpURL}}">⬆ 上一级</a>{{end}}
+      {{range .Dirs}}<a class="tag" href="{{.Link}}">📁 {{.Name}} ({{.Count}})</a>{{end}}
+    </div>
+    <h3>Tags</h3>
+    <div class="tags">
+      {{range .Tags}}
+      <span class="tag">{{.Name}}({{.Count}}) <a href="{{.IncludeLink}}">＋</a> <a class="exclude" href="{{.ExcludeLink}}">－</a></span>
+      {{end}}
+    </div>
+  </aside>
+  <main>
+    {{if or (eq .Mode "index") (eq .Mode "gallery")}}
+      {{if eq .Mode "gallery"}}
+      <div class="breadcrumb"><a href="/">根目录</a>{{range $i, $part := .BreadParts}}{{if $part}} / <a href="{{index $.BreadLinks $i}}">{{$part}}</a>{{end}}{{end}}</div>
+      {{end}}
+
+      <div class="filterbar">
+        <a href="{{.TypeAllURL}}" class="{{if eq .TypeFilter ""}}active{{end}}">全部类型</a>
+        <a href="{{.TypeImageURL}}" class="{{if eq .TypeFilter "image"}}active{{end}}">图片</a>
+        <a href="{{.TypeVideoURL}}" class="{{if eq .TypeFilter "video"}}active{{end}}">视频</a>
+        <span style="width:8px;"></span>
+        <a href="{{.SortNameURL}}" class="{{if eq .SortKey "name"}}active{{end}}">名称</a>
+        <a href="{{.SortTimeURL}}" class="{{if eq .SortKey "time"}}active{{end}}">时间</a>
+        <a href="{{.SortSizeURL}}" class="{{if eq .SortKey "size"}}active{{end}}">大小</a>
+        <a href="{{.SortRandomURL}}" class="{{if eq .SortKey "random"}}active{{end}}">随机</a>
+        {{if eq .Mode "gallery"}}<a href="{{.RecursiveURL}}">{{if .Recursive}}停止递归{{else}}递归搜索{{end}}</a>{{end}}
+      </div>
+
+      {{if eq .Mode "index"}}<h2>目录分类</h2>{{end}}
+      <div class="folders">
+        {{range .Dirs}}
+        <a class="folder" href="{{.Link}}">
+          <div class="name">📁 {{.Name}}</div>
+          <div class="count">{{.Count}} 个直属 · {{.RecursiveCount}} 个总计</div>
+        </a>
+        {{end}}
+      </div>
+
+      {{if eq .Mode "index"}}<h2>最新媒体</h2>{{end}}
+      <div class="grid">
+        {{range .Items}}
+        <a class="card" href="{{.URL}}" target="_blank">
+          {{if or (eq .Type "video") (eq .Type "animated_gif")}}
+          <video class="thumb" preload="metadata" src="{{.URL}}"></video>
+          {{else}}
+          <img class="thumb" loading="lazy" src="{{.URL}}">
+          {{end}}
+          <div class="meta">
+            <div class="name">{{.Name}}</div>
+            <div class="badge">{{.Type}}{{if .Dir}} · {{.Dir}}{{end}}</div>
+            <div class="tags">
+              {{range .Tags}}<span class="tag">{{.}}</span>{{end}}
+            </div>
+          </div>
+        </a>
+        {{end}}
+      </div>
+      {{if not .Items}}<div class="empty">没有内容</div>{{end}}
+
+      <div class="pagination">
+        {{if and .PrevURL (gt .Page 1)}}<a href="{{.PrevURL}}">上一页</a>{{end}}
+        <span class="info">第 {{.Page}} / {{.TotalPages}} 页 · 共 {{.Total}} 条</span>
+        {{if and .NextURL (lt .Page .TotalPages)}}<a href="{{.NextURL}}">下一页</a>{{end}}
+      </div>
+    {{else if eq .Mode "tags"}}
+      <h2>标签</h2>
+      <form method="GET" action="/tags" class="searchbar" style="margin-bottom:12px;">
+        {{if .Dir}}<input type="hidden" name="dir" value="{{.Dir}}">{{end}}
+        <input type="text" name="q" placeholder="过滤标签" value="{{.TagFilter}}">
+        <button type="submit">过滤</button>
+      </form>
+      <div class="tags">
+        {{range .Tags}}
+        <span class="tag">{{.Name}}({{.Count}}) <a href="{{.IncludeLink}}">＋</a> <a class="exclude" href="{{.ExcludeLink}}">－</a></span>
+        {{end}}
+      </div>
+    {{else if eq .Mode "history"}}
+      <h2>访问历史</h2>
+      {{range .History}}
+      <div class="history-item">
+        <span class="time">{{.ViewedAt.Format "2006-01-02 15:04:05"}}</span>
+        <a href="{{.URL}}" target="_blank">{{.Path}}</a>
+        <span class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</span>
+      </div>
+      {{else}}<div class="empty">暂无访问记录</div>{{end}}
+    {{else if eq .Mode "recommendations"}}
+      <h2>为你推荐</h2>
+      <div class="grid">
+        {{range .Recommendations}}
+        <a class="card" href="{{.URL}}" target="_blank">
+          {{if or (eq .Type "video") (eq .Type "animated_gif")}}
+          <video class="thumb" preload="metadata" src="{{.URL}}"></video>
+          {{else}}
+          <img class="thumb" loading="lazy" src="{{.URL}}">
+          {{end}}
+          <div class="meta">
+            <div class="name">{{.Name}}</div>
+            <div class="badge">{{.Type}}{{if .Dir}} · {{.Dir}}{{end}}</div>
+            <div class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</div>
+          </div>
+        </a>
+        {{end}}
+      </div>
+      {{if not .Recommendations}}<div class="empty">暂无推荐</div>{{end}}
+    {{else if eq .Mode "clusters"}}
+      <h2>自动聚类</h2>
+      {{range .Clusters}}
+      <div class="cluster">
+        <h4>{{.ID}} · {{.Label}} ({{.Count}})</h4>
+        <div class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</div>
+        <div class="mini-grid">
+          {{range .Items}}
+          <a href="{{.URL}}" target="_blank">
+            {{if or (eq .Type "video") (eq .Type "animated_gif")}}
+            <video preload="metadata" src="{{.URL}}"></video>
+            {{else}}
+            <img loading="lazy" src="{{.URL}}">
+            {{end}}
+          </a>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+    {{end}}
+  </main>
+</div>
+</body>
+</html>

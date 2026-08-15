@@ -36,30 +36,33 @@ jobs:
           # 确保拉取所有依赖
           go mod tidy
 
-      - name: Build
+      - name: Build binaries
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         run: |
-          # 定义文件名，Windows 需要加上 .exe 后缀
-          BINARY_NAME=myapp-${{ matrix.goos }}-${{ matrix.goarch }}
+          set -e
+          TWITTER_BIN=twitter-${{ matrix.goos }}-${{ matrix.goarch }}
+          GALLERY_BIN=gallery-${{ matrix.goos }}-${{ matrix.goarch }}
           if [ "${{ matrix.goos }}" = "windows" ]; then
-            BINARY_NAME="${BINARY_NAME}.exe"
+            TWITTER_BIN="${TWITTER_BIN}.exe"
+            GALLERY_BIN="${GALLERY_BIN}.exe"
           fi
-          
-          # 执行编译
-          go build -v -o "$BINARY_NAME" ./server/
-          
-          # 存储文件名供后续步骤使用
-          echo "BINARY_NAME=$BINARY_NAME" >> $GITHUB_ENV
 
-      - name: Upload Artifacts
-        # 先把构建好的文件存起来，方便后面 Release 步骤读取
+          go build -v -o "$TWITTER_BIN" ./server/
+          go build -v -o "$GALLERY_BIN" ./gallery/
+
+          echo "TWITTER_BINARY_NAME=$TWITTER_BIN" >> $GITHUB_ENV
+          echo "GALLERY_BINARY_NAME=$GALLERY_BIN" >> $GITHUB_ENV
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.BINARY_NAME }}
-          path: ${{ env.BINARY_NAME }}
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            ${{ env.TWITTER_BINARY_NAME }}
+            ${{ env.GALLERY_BINARY_NAME }}
 
   release:
     name: Create Release

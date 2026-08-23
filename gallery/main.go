@@ -1,4 +1,4 @@
-package main
+package gallery
 
 import (
 	"database/sql"
@@ -49,8 +49,14 @@ func (s *Server) swap(next *Gallery) {
 	s.gallery = next
 }
 
-func main() {
-	addr := envOr("GALLERY_ADDR", ":8090")
+// Run starts the gallery HTTP server on the given address. If addr is empty,
+// it falls back to the GALLERY_ADDR env var, then ":8090".
+// Intended to be launched as a goroutine from the main binary so the whole
+// service ships as a single binary while gallery stays its own package.
+func Run(addr string) {
+	if addr == "" {
+		addr = envOr("GALLERY_ADDR", ":8090")
+	}
 	jsonDir := envOr("GALLERY_JSON_DIR", "./")
 	tagDBPath := envOr("GALLERY_TAG_DB", "./twitter.db")
 	dbPath := envOr("GALLERY_DB", "./gallery.db")

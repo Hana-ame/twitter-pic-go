@@ -36,7 +36,7 @@ jobs:
           # 确保拉取所有依赖
           go mod tidy
 
-      - name: Build binaries
+      - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -44,17 +44,14 @@ jobs:
         run: |
           set -e
           TWITTER_BIN=twitter-${{ matrix.goos }}-${{ matrix.goarch }}
-          GALLERY_BIN=gallery-${{ matrix.goos }}-${{ matrix.goarch }}
           if [ "${{ matrix.goos }}" = "windows" ]; then
             TWITTER_BIN="${TWITTER_BIN}.exe"
-            GALLERY_BIN="${GALLERY_BIN}.exe"
           fi
 
+          # gallery 已作为独立包并入同一二进制，由 GALLERY_ADDR 单独监听
           go build -v -o "$TWITTER_BIN" ./server/
-          go build -v -o "$GALLERY_BIN" ./gallery/
 
           echo "TWITTER_BINARY_NAME=$TWITTER_BIN" >> $GITHUB_ENV
-          echo "GALLERY_BINARY_NAME=$GALLERY_BIN" >> $GITHUB_ENV
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -62,7 +59,6 @@ jobs:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
             ${{ env.TWITTER_BINARY_NAME }}
-            ${{ env.GALLERY_BINARY_NAME }}
 
   release:
     name: Create Release

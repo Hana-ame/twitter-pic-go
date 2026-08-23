@@ -11,6 +11,7 @@ import (
 	"github.com/Hana-ame/twitter-pic-go"
 	"github.com/Hana-ame/twitter-pic-go/Tools/ginkit/middleware"
 	"github.com/Hana-ame/twitter-pic-go/Tools/sqlite"
+	"github.com/Hana-ame/twitter-pic-go/gallery"
 	"github.com/Hana-ame/twitter-pic-go/twimg"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -21,6 +22,9 @@ func main() {
 	godotenv.Load(".env")
 
 	go twimg.Run(os.Getenv("TWIMG_ADDR"))
+
+	// gallery 作为独立包运行在同一二进制内，单独监听 GALLERY_ADDR（默认 :8090）
+	go gallery.Run(os.Getenv("GALLERY_ADDR"))
 
 	var err error
 	twitter.DB, err = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC")

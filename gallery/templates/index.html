@@ -83,6 +83,9 @@ main { flex: 1; padding: 16px; }
 .pagination { display: flex; gap: 8px; align-items: center; margin: 18px 0; flex-wrap: wrap; }
 .pagination a, .pagination span { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; }
 .pagination span.info { background: transparent; border: none; color: var(--muted); }
+.pagination a:hover { border-color: var(--accent); }
+.pagination span.cur { background: var(--accent); color: #fff; border-color: var(--accent); }
+.pagination span.dots { background: transparent; border: none; color: var(--muted); }
 .empty { color: var(--muted); padding: 30px; text-align: center; }
 .cluster { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
 .cluster h4 { margin: 0 0 8px; font-size: 14px; }
@@ -603,6 +606,42 @@ function renderHomeFav(){
       <button type="button" class="row-unfav" title="取消收藏" onclick="event.preventDefault();toggleFav(this)" data-name="${a.Name}">★</button>
     </a>`).join('') + '</div>';
 }
+
+// ---------- 分页升级：页码窗口 + 首末页 ----------
+// 基于当前 URL 改 page 参数，自动兼容 browse / tags / 账号列表等所有模式。
+function pageHref(n) {
+  const u = new URL(location.href);
+  if (n > 1) u.searchParams.set('page', n); else u.searchParams.delete('page');
+  return u.pathname + (u.search || '');
+}
+function enhancePagination() {
+  const box = document.querySelector('.pagination');
+  if (!box) return;
+  const info = box.querySelector('.info');
+  if (!info) return;
+  const m = info.textContent.match(/第\s*(\d+)\s*\/\s*(\d+)/);
+  if (!m) return;
+  const cur = parseInt(m[1], 10), total = parseInt(m[2], 10);
+  if (!(total > 1)) return;
+  // 页码窗口：首末页常驻，当前页 ±2，间隔用省略号
+  const pages = [];
+  const push = v => { if (v >= 1 && v <= total && !pages.includes(v)) pages.push(v); };
+  push(1);
+  for (let p = cur - 2; p <= cur + 2; p++) push(p);
+  push(total);
+  pages.sort((a, b) => a - b);
+  let html = '';
+  let prev = 0;
+  for (const p of pages) {
+    if (prev && p - prev > 1) html += '<span class="dots">…</span>';
+    html += p === cur
+      ? '<span class="cur">' + p + '</span>'
+      : '<a href="' + pageHref(p) + '">' + p + '</a>';
+    prev = p;
+  }
+  info.insertAdjacentHTML('afterend', html);
+}
+document.addEventListener('DOMContentLoaded', enhancePagination);
 
 // ---------- Lightbox 灯箱 ----------
 let lbIdx = 0;

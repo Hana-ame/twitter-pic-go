@@ -48,12 +48,6 @@ func (s *Server) current() *Gallery {
 	return s.gallery
 }
 
-func (s *Server) swap(next *Gallery) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.gallery = next
-}
-
 // Run starts the gallery HTTP server on the given address. If addr is empty,
 // it falls back to the GALLERY_ADDR env var, then ":8090".
 // Intended to be launched as a goroutine from the main binary so the whole
@@ -383,12 +377,12 @@ func (s *Server) handleAPIAccounts(w http.ResponseWriter, r *http.Request) {
 	pageSize := intParam(r, "page_size", defaultPageSize, 1, 100)
 
 	type apiAccount struct {
-		Name     string `json:"name"`
-		Nick     string `json:"nick,omitempty"`
-		Media    int    `json:"media"`
-		Avatar   string `json:"avatar,omitempty"`
-		Updated  string `json:"updated,omitempty"`
-		Links    []AccountLink `json:"links,omitempty"`
+		Name    string        `json:"name"`
+		Nick    string        `json:"nick,omitempty"`
+		Media   int           `json:"media"`
+		Avatar  string        `json:"avatar,omitempty"`
+		Updated string        `json:"updated,omitempty"`
+		Links   []AccountLink `json:"links,omitempty"`
 	}
 	all := accountList(g)
 	if query != "" {
@@ -1064,7 +1058,6 @@ func (s *Server) handleReact(w http.ResponseWriter, r *http.Request) {
 func accountList(g *Gallery) []templateDir {
 	names := g.dirs[""]
 	out := make([]templateDir, 0, len(names))
-	bgm := latestPhotoBG(g)
 	for _, name := range names {
 		meta := g.dbAccounts[name]
 		out = append(out, templateDir{
@@ -1075,7 +1068,7 @@ func accountList(g *Gallery) []templateDir {
 			Link:           buildFolderURL(name, nil, nil, "", ""),
 			Cover:          dirCover(g, name),
 			Avatar:         g.Avatar(name),
-			BG:             bgm[name],
+			BG:             g.BG(name),
 			Nick:           meta.Nick,
 			Date:           formatDate(meta.LastModify),
 		})
@@ -1148,22 +1141,6 @@ func dirCover(g *Gallery, dir string) string {
 	return list[0].URL
 }
 
-// latestPhotoBG 返回每个账号最新一张 photo 的 URL，用作行/卡片背景。
-func latestPhotoBG(g *Gallery) map[string]string {
-	out := map[string]string{}
-	latestT := map[string]time.Time{}
-	for _, m := range g.media {
-		if m.Type != "photo" {
-			continue
-		}
-		if m.ModTime.After(latestT[m.Dir]) {
-			latestT[m.Dir] = m.ModTime
-			out[m.Dir] = m.URL
-		}
-	}
-	return out
-}
-
 // HomeRow 首页摘要的一行（一个账号）。
 type HomeRow struct {
 	Name   string `json:"name"`
@@ -1232,7 +1209,6 @@ func (s *Server) buildHome(g *Gallery) pageData {
 		lat = lat[:homeRows]
 	}
 
-	bgm := latestPhotoBG(g)
 	mkRows := func(list []string, withVotes bool) []HomeRow {
 		rows := make([]HomeRow, 0, len(list))
 		for _, n := range list {
@@ -1252,7 +1228,7 @@ func (s *Server) buildHome(g *Gallery) pageData {
 			} else {
 				sub = "@" + n
 			}
-			rows = append(rows, HomeRow{Name: name, Link: "/" + n, Cover: dirCover(g, n), Avatar: g.Avatar(n), BG: bgm[n], Sub: sub})
+			rows = append(rows, HomeRow{Name: name, Link: "/" + n, Cover: dirCover(g, n), Avatar: g.Avatar(n), BG: g.BG(n), Sub: sub})
 		}
 		return rows
 	}
@@ -1390,7 +1366,6 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 
 	if mode == "accounts" {
 		out := make([]templateDir, 0, len(matched))
-		bgm := latestPhotoBG(g)
 		for _, name := range matched {
 			meta := g.dbAccounts[name]
 			out = append(out, templateDir{
@@ -1401,7 +1376,7 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 				Link:           buildFolderURL(name, nil, nil, "", ""),
 				Cover:          dirCover(g, name),
 				Avatar:         g.Avatar(name),
-				BG:             bgm[name],
+				BG:             g.BG(name),
 				Nick:           meta.Nick,
 				Date:           formatDate(meta.LastModify),
 			})
@@ -1520,7 +1495,6 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []string, typeFilter, sortKey string) []templateDir {
 	names := g.dirs[dir]
 	out := make([]templateDir, 0, len(names))
-	bgm := latestPhotoBG(g)
 	for _, name := range names {
 		p := joinDir(dir, name)
 		meta := g.dbAccounts[name]
@@ -1532,7 +1506,7 @@ func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []st
 			Link:           buildFolderURL(p, include, exclude, typeFilter, sortKey),
 			Cover:          dirCover(g, p),
 			Avatar:         g.Avatar(p),
-			BG:             bgm[p],
+			BG:             g.BG(p),
 			Nick:           meta.Nick,
 			Date:           formatDate(meta.LastModify),
 			Links:          s.links[name],

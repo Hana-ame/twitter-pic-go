@@ -32,10 +32,10 @@ type Media struct {
 	PerImageTags []string  `json:"per_image_tags,omitempty"` // 扁平 per-image 标签（与账号 tag 完全分离）
 	LikeCount    int       `json:"like_count"`
 	DislikeCount int       `json:"dislike_count"`
-	URL          string    `json:"url"`          // proxy URL on this server
-	Thumb        string    `json:"thumb,omitempty"`  // 网格缩略图（twimg name=small 变体；视频为空）
-	OriginalURL  string    `json:"original_url"`     // pbs.twimg.com / video.twimg.com
-	TweetID      int64     `json:"tweet_id"`         // 原推 ID，溯源用
+	URL          string    `json:"url"`             // proxy URL on this server
+	Thumb        string    `json:"thumb,omitempty"` // 网格缩略图（twimg name=small 变体；视频为空）
+	OriginalURL  string    `json:"original_url"`    // pbs.twimg.com / video.twimg.com
+	TweetID      int64     `json:"tweet_id"`        // 原推 ID，溯源用
 }
 
 // IsVideo reports whether the media is a video or animated gif.
@@ -100,6 +100,10 @@ type Gallery struct {
 	accountTagCounts map[string]int
 	// avatars: 账号头像（account_info.profile_image，已按需走 twimg 反代）
 	avatars map[string]string
+	// bg: 每个账号最新一张 photo 的 URL（Scan 时预计算，用作行/卡片背景）
+	bg map[string]string
+	// latestPhoto: Scan 过程中记录每个账号最新 photo 时间的临时表
+	latestPhoto map[string]time.Time
 	// 远程 JSON 源地址（临时调试用，见 remote.go）；空串表示未启用
 	remoteBase string
 	// 远程拉取的文档仅存内存，绝不落盘（临时调试，见 remote.go）
@@ -197,6 +201,8 @@ func NewGallery(root string, accountTags map[string][]string) *Gallery {
 		recurs:           map[string]int{},
 		tags:             map[string]int{},
 		avatars:          map[string]string{},
+		bg:               map[string]string{},
+		latestPhoto:      map[string]time.Time{},
 		remoteDocs:       map[string][]byte{},
 		accountTagCounts: accountTagCounts,
 		mediaBase:        deriveMediaBase(),
@@ -216,6 +222,9 @@ func (g *Gallery) SetDBAccounts(m map[string]AccountMeta) { g.dbAccounts = m }
 
 // Avatar 返回某账号的头像 URL（无则空串）。
 func (g *Gallery) Avatar(dir string) string { return g.avatars[dir] }
+
+// BG 返回某账号最新一张 photo 的 URL（Scan 时预计算；无则空串）。
+func (g *Gallery) BG(dir string) string { return g.bg[dir] }
 
 // serveURL 根据 mediaBase 决定媒体 URL：pbs.twimg.com 走 endpoint B（path 形式），
 // 其他域名直链原始 URL（video.twimg.com 等直接加载，无需反代）。
@@ -516,6 +525,11 @@ func (g *Gallery) Scan() error {
 		for _, t := range m.Tags {
 			next.tags[t]++
 		}
+		if m.Type == "photo" && m.ModTime.After(next.latestPhoto[m.Dir]) {
+			// 预计算每个账号最新一张 photo（行/卡片背景），避免每次请求全量扫描。
+			next.latestPhoto[m.Dir] = m.ModTime
+			next.bg[m.Dir] = m.URL
+		}
 	}
 	next.recurs[""] = len(next.media)
 
@@ -560,6 +574,7 @@ func (g *Gallery) Replace(next *Gallery) {
 	g.byDir, g.dirs = next.byDir, next.dirs
 	g.direct, g.recurs, g.tags = next.direct, next.recurs, next.tags
 	g.accountTagCounts, g.avatars, g.mediaBase = next.accountTagCounts, next.avatars, next.mediaBase
+	g.bg = next.bg
 
 	g.root, g.accountTags = root, accountTags
 	g.remoteBase, g.remoteDocs = remoteBase, remoteDocs

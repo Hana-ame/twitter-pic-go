@@ -214,7 +214,6 @@ func ageGate(next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, ageGateHTML)
 	})
 }

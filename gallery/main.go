@@ -26,8 +26,8 @@ var templateFS embed.FS
 
 var pageTemplate = template.Must(
 	template.New("index.html").Funcs(template.FuncMap{
-		"platformIcon":   platformIcon,
-		"platformName":   platformName,
+		"platformIcon":    platformIcon,
+		"platformName":    platformName,
 		"resolvePlatform": resolvePlatform,
 	}).ParseFS(templateFS, "templates/index.html"),
 )
@@ -70,7 +70,15 @@ func Run(addr string) {
 	tagDB := openDB(tagDBPath)
 	accountTags := loadAccountTags(tagDB)
 
+	// —— 远程 JSON 源（临时调试，见 remote.go）：不设置环境变量则完全不走这段 ——
 	g := NewGallery(jsonDir, accountTags)
+	// db 账号索引（users 表的昵称/最近更新）：必须在首次 Scan() 之前注入，
+	// 这样还没有媒体数据的账号也能出现在最新/最热/收藏等列表里。
+	g.SetDBAccounts(loadAccountMeta(tagDB))
+	if remoteBase := os.Getenv("GALLERY_REMOTE_JSON_BASE"); remoteBase != "" {
+		log.Printf("gallery: REMOTE JSON SOURCE (lazy proxy) enabled: %s", remoteBase)
+		g.SetRemoteSource(remoteBase)
+	}
 	if err := g.Scan(); err != nil {
 		log.Fatalf("gallery: initial scan failed: %v", err)
 	}
@@ -95,6 +103,7 @@ func Run(addr string) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleBrowse)
+	mux.HandleFunc("GET /latest", s.handleLatest)
 	mux.HandleFunc("GET /hot", s.handleHot)
 	mux.HandleFunc("GET /favorites", s.handleFavorites)
 	mux.HandleFunc("GET /tags", s.handleTagsPage)
@@ -173,6 +182,34 @@ func loadAccountTags(db *sql.DB) map[string][]string {
 	return out
 }
 
+// loadAccountMeta reads the users table (username / nick / last_modify) from
+// the pipeline db, so accounts without local media can still be listed
+// (最新/最热/收藏) with nickname and last-update date.
+func loadAccountMeta(db *sql.DB) map[string]AccountMeta {
+	out := map[string]AccountMeta{}
+	if db == nil {
+		return out
+	}
+	rows, err := db.Query(`SELECT username, COALESCE(nick,''), COALESCE(last_modify,'') FROM users`)
+	if err != nil {
+		log.Printf("gallery: query users failed: %v", err)
+		return out
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var username, nick, lastMod string
+		if err := rows.Scan(&username, &nick, &lastMod); err != nil {
+			continue
+		}
+		if username == "" {
+			continue
+		}
+		out[username] = AccountMeta{Nick: nick, LastModify: parseFlexibleTime(lastMod)}
+	}
+	return out
+}
+
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -199,8 +236,9 @@ body{background:#111;color:#e6e9ef;font-family:system-ui,-apple-system,sans-seri
   padding:48px 40px;max-width:420px;text-align:center}
 h1{font-size:22px;margin-bottom:12px}
 p{color:#8b95a7;font-size:14px;line-height:1.6;margin-bottom:28px}
-.btn{display:inline-block;padding:12px 32px;border-radius:10px;font-size:15px;
-  font-weight:600;cursor:pointer;text-decoration:none;border:none;margin:0 8px}
+.actions{display:flex;gap:12px;justify-content:center;align-items:center;flex-wrap:wrap}
+.btn{display:inline-block;padding:12px 24px;border-radius:10px;font-size:15px;
+  font-weight:600;cursor:pointer;text-decoration:none;border:1px solid transparent;margin:0}
 .btn-yes{background:#4f8cff;color:#fff}
 .btn-yes:hover{background:#3a7aee}
 .btn-no{background:transparent;color:#8b95a7;border:1px solid #2d3542}
@@ -211,10 +249,12 @@ p{color:#8b95a7;font-size:14px;line-height:1.6;margin-bottom:28px}
 <div class="card">
   <h1>&#9888; 年龄验证</h1>
   <p>本站包含成人内容。请确认您已年满 <strong>18 岁</strong>。</p>
-  <form method="POST" action="/age-gate" style="display:inline">
-    <button type="submit" class="btn btn-yes">我已满 18 岁，进入</button>
-  </form>
-  <a href="https://www.google.com" class="btn btn-no">未满 18 岁，离开</a>
+  <div class="actions">
+    <form method="POST" action="/age-gate" style="margin:0">
+      <button type="submit" class="btn btn-yes">我已满 18 岁，进入</button>
+    </form>
+    <a href="https://www.google.com" class="btn btn-no">未满 18 岁，离开</a>
+  </div>
 </div>
 </body>
 </html>`
@@ -504,6 +544,11 @@ type templateDir struct {
 	RecursiveCount int
 	Votes          int // 最热视图：账号 emoji 总票数
 	Link           string
+	Cover          string        // 封面图（优先 photo）
+	Avatar         string        // 头像（account_info.profile_image）
+	BG             string        // 背景：该账号最新一张图
+	Nick           string        // 昵称（db users 表，可能为空）
+	Date           string        // 最近更新日期（db users.last_modify，可能为空）
 	Links          []AccountLink // 外部平台链接
 }
 
@@ -537,6 +582,7 @@ type pageData struct {
 	BreadParts []string
 	BreadLinks []string
 	Clusters   []Cluster
+	Home       []HomeSection
 
 	PrevURL       string
 	NextURL       string
@@ -553,11 +599,11 @@ type pageData struct {
 	TagFilter string
 
 	// 左导航 / 新后端逻辑
-	ActiveTab    string           `json:"-"` // latest/hot/favorites/tags
-	Votes        map[string]int   `json:"-"` // 账号 -> emoji 总票数（最热用）
-	AccountsJSON template.JS      `json:"-"` // 全部账号（收藏页 client 过滤用）
-	TagMode      string           `json:"-"` // tags 页：accounts | images
-	TagActive    string           `json:"-"` // 当前选中的 tag
+	ActiveTab    string         `json:"-"` // latest/hot/favorites/tags
+	Votes        map[string]int `json:"-"` // 账号 -> emoji 总票数（最热用）
+	AccountsJSON template.JS    `json:"-"` // 全部账号（收藏页 client 过滤用）
+	TagMode      string         `json:"-"` // tags 页：accounts | images
+	TagActive    string         `json:"-"` // 当前选中的 tag
 }
 
 func renderPage(w http.ResponseWriter, data pageData) {
@@ -617,6 +663,22 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		candidates = g.byDir[dir]
 	} else {
 		candidates = s.mediaUnder(g, dir)
+	}
+
+	// 远程源懒加载（临时调试，仅存内存）：本地没有该账号的数据时，
+	// 按需从远端 API 拉取这一个账号的 json 到内存，重建索引后继续。
+	if len(candidates) == 0 && dir != "" && g.RemoteBase() != "" {
+		if _, err := g.FetchRemoteDoc(dir); err == nil {
+			log.Printf("gallery: remote lazy-fetched %s (memory only)", dir)
+			g.Scan() // 重建内存索引（含头像/标签）
+			if !recursive && len(include) == 0 && len(exclude) == 0 {
+				candidates = g.byDir[dir]
+			} else {
+				candidates = s.mediaUnder(g, dir)
+			}
+		} else {
+			log.Printf("gallery: remote lazy-fetch %s skipped: %v", dir, err)
+		}
 	}
 
 	list := make([]*Media, 0, len(candidates))
@@ -708,18 +770,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if mode == "index" {
-		// 最新 = 账号索引（翻页式）：右侧只列账号，不含单独图片。
-		accounts := s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey)
-		d := pageData{
-			Mode:       "index",
-			Title:      "最新",
-			ActiveTab:  "latest",
-			Tags:       s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
-			Dirs:       accounts,
-			Recursive:  recursive,
-		}
-		s.paginateDirs(accounts, r, &d)
-		renderPage(w, d)
+		// 首页：最新 / 最热 / 收藏 三块摘要，各 4 行；完整列表走 /latest、/hot、/favorites。
+		renderPage(w, s.buildHome(g))
 		return
 	}
 
@@ -762,28 +814,20 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClustersPage(w http.ResponseWriter, r *http.Request) {
-	g := s.current()
-	k := intParam(r, "k", 8, 1, 30)
-	itemLimit := intParam(r, "item_limit", 12, 1, 100)
-	renderPage(w, pageData{
-		Mode:     "clusters",
-		Title:    "聚类",
-		Clusters: g.Clusters(k, itemLimit),
-		Dirs:     s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey),
-		Tags:     s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
-	})
+	// 聚类页暂未完成：入口已从侧边栏移除，直接访问也回首页。
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
-	root := s.current().Root()
-	next := NewGallery(root, s.accountTags)
-	if err := next.Scan(); err != nil {
+	// 在现有实例上重扫：Replace 会保留 remoteBase / remoteDocs / dbAccounts，
+	// 新建 Gallery 则会把远程源配置与 db 账号索引全部丢掉。
+	g := s.current()
+	if err := g.Scan(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	// 重新扫描后同样要把 per-image 标签回填
-	next.AttachReactions(s.db)
-	s.swap(next)
+	g.AttachReactions(s.db)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -826,13 +870,20 @@ func (s *Server) handleReact(w http.ResponseWriter, r *http.Request) {
 func accountList(g *Gallery) []templateDir {
 	names := g.dirs[""]
 	out := make([]templateDir, 0, len(names))
+	bgm := latestPhotoBG(g)
 	for _, name := range names {
+		meta := g.dbAccounts[name]
 		out = append(out, templateDir{
 			Name:           name,
 			Path:           name,
 			Count:          g.direct[name],
 			RecursiveCount: g.recurs[name],
 			Link:           buildFolderURL(name, nil, nil, "", ""),
+			Cover:          dirCover(g, name),
+			Avatar:         g.Avatar(name),
+			BG:             bgm[name],
+			Nick:           meta.Nick,
+			Date:           formatDate(meta.LastModify),
 		})
 	}
 	return out
@@ -887,6 +938,156 @@ func (s *Server) paginateDirs(dirs []templateDir, r *http.Request, data *pageDat
 	if page < totalPages {
 		data.NextURL = pageURL(r, page+1)
 	}
+}
+
+// dirCover 返回某账号目录的封面：优先选 photo，避免拿到视频破图；找不到则退回第一张。
+func dirCover(g *Gallery, dir string) string {
+	list := g.byDir[dir]
+	if len(list) == 0 {
+		return ""
+	}
+	for _, m := range list {
+		if m.Type == "photo" {
+			return m.URL
+		}
+	}
+	return list[0].URL
+}
+
+// latestPhotoBG 返回每个账号最新一张 photo 的 URL，用作行/卡片背景。
+func latestPhotoBG(g *Gallery) map[string]string {
+	out := map[string]string{}
+	latestT := map[string]time.Time{}
+	for _, m := range g.media {
+		if m.Type != "photo" {
+			continue
+		}
+		if m.ModTime.After(latestT[m.Dir]) {
+			latestT[m.Dir] = m.ModTime
+			out[m.Dir] = m.URL
+		}
+	}
+	return out
+}
+
+// HomeRow 首页摘要的一行（一个账号）。
+type HomeRow struct {
+	Name   string `json:"name"`
+	Link   string `json:"link"`
+	Cover  string `json:"cover"`
+	Avatar string `json:"avatar"`
+	BG     string `json:"bg"`
+	Sub    string `json:"sub"`
+}
+
+// formatDate 把 db 的 last_modify 格式化为简短日期串（无则空串）。
+func formatDate(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format("2006-01-02")
+}
+
+// HomeSection 首页的一个板块（最新 / 最热 / 收藏）。
+type HomeSection struct {
+	Title   string    `json:"title"`
+	MoreURL string    `json:"more_url,omitempty"`
+	Fav     bool      `json:"fav,omitempty"` // 收藏板块由前端按 localStorage 渲染
+	Rows    []HomeRow `json:"rows"`
+}
+
+// buildHome 组装首页数据：最新 / 最热 各取前 4 个账号，收藏交给前端按 localStorage 渲染。
+func (s *Server) buildHome(g *Gallery) pageData {
+	const homeRows = 4
+	votes := map[string]int{}
+	latest := map[string]time.Time{}
+	for _, m := range g.media {
+		votes[m.Dir] += m.LikeCount
+		if m.ModTime.After(latest[m.Dir]) {
+			latest[m.Dir] = m.ModTime
+		}
+	}
+	// db 提供的账号索引也参与「最新」排序：没有媒体的账号用 db 的 last_modify。
+	for name, meta := range g.dbAccounts {
+		if _, ok := latest[name]; !ok && !meta.LastModify.IsZero() {
+			latest[name] = meta.LastModify
+		}
+	}
+	names := append([]string(nil), g.dirs[""]...)
+
+	hot := append([]string(nil), names...)
+	sort.Slice(hot, func(i, j int) bool {
+		if votes[hot[i]] != votes[hot[j]] {
+			return votes[hot[i]] > votes[hot[j]]
+		}
+		return hot[i] < hot[j]
+	})
+
+	lat := append([]string(nil), names...)
+	sort.Slice(lat, func(i, j int) bool {
+		a, b := latest[lat[i]], latest[lat[j]]
+		if !a.Equal(b) {
+			return a.After(b)
+		}
+		return lat[i] < lat[j]
+	})
+	if len(hot) > homeRows {
+		hot = hot[:homeRows]
+	}
+	if len(lat) > homeRows {
+		lat = lat[:homeRows]
+	}
+
+	bgm := latestPhotoBG(g)
+	mkRows := func(list []string, withVotes bool) []HomeRow {
+		rows := make([]HomeRow, 0, len(list))
+		for _, n := range list {
+			meta := g.dbAccounts[n]
+			name := n
+			if meta.Nick != "" {
+				name = meta.Nick
+			}
+			var sub string
+			if rec := g.recurs[n]; rec > 0 {
+				sub = fmt.Sprintf("@%s · 🖼 %d", n, rec)
+				if withVotes {
+					sub = fmt.Sprintf("@%s · 🔥 %d · 🖼 %d", n, votes[n], rec)
+				}
+			} else if d := formatDate(meta.LastModify); d != "" {
+				sub = fmt.Sprintf("@%s · %s", n, d)
+			} else {
+				sub = "@" + n
+			}
+			rows = append(rows, HomeRow{Name: name, Link: "/" + n, Cover: dirCover(g, n), Avatar: g.Avatar(n), BG: bgm[n], Sub: sub})
+		}
+		return rows
+	}
+
+	js, _ := json.Marshal(accountList(g))
+	return pageData{
+		Mode:  "home",
+		Title: "首页",
+		Tags:  s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
+		Home: []HomeSection{
+			{Title: "最新", MoreURL: "/latest", Rows: mkRows(lat, false)},
+			{Title: "最热", MoreURL: "/hot", Rows: mkRows(hot, true)},
+			{Title: "收藏", Fav: true},
+		},
+		AccountsJSON: template.JS(js),
+	}
+}
+
+// handleLatest 完整的「最新」账号列表（原首页行为，翻页式）。
+func (s *Server) handleLatest(w http.ResponseWriter, r *http.Request) {
+	g := s.current()
+	accounts := s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey)
+	var d pageData
+	d.Mode = "index"
+	d.Title = "最新"
+	d.ActiveTab = "latest"
+	d.Tags = s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false)
+	s.paginateDirs(accounts, r, &d)
+	renderPage(w, d)
 }
 
 // handleHot 按 reaction（点赞）总票数给账号排序（最热）。
@@ -977,13 +1178,20 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 
 	if mode == "accounts" {
 		out := make([]templateDir, 0, len(matched))
+		bgm := latestPhotoBG(g)
 		for _, name := range matched {
+			meta := g.dbAccounts[name]
 			out = append(out, templateDir{
 				Name:           name,
 				Path:           name,
 				Count:          g.direct[name],
 				RecursiveCount: g.recurs[name],
 				Link:           buildFolderURL(name, nil, nil, "", ""),
+				Cover:          dirCover(g, name),
+				Avatar:         g.Avatar(name),
+				BG:             bgm[name],
+				Nick:           meta.Nick,
+				Date:           formatDate(meta.LastModify),
 			})
 		}
 		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
@@ -1047,14 +1255,21 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []string, typeFilter, sortKey string) []templateDir {
 	names := g.dirs[dir]
 	out := make([]templateDir, 0, len(names))
+	bgm := latestPhotoBG(g)
 	for _, name := range names {
 		p := joinDir(dir, name)
+		meta := g.dbAccounts[name]
 		out = append(out, templateDir{
 			Name:           name,
 			Path:           p,
 			Count:          g.direct[p],
 			RecursiveCount: g.recurs[p],
 			Link:           buildFolderURL(p, include, exclude, typeFilter, sortKey),
+			Cover:          dirCover(g, p),
+			Avatar:         g.Avatar(p),
+			BG:             bgm[p],
+			Nick:           meta.Nick,
+			Date:           formatDate(meta.LastModify),
 			Links:          s.links[name],
 		})
 	}
@@ -1100,5 +1315,3 @@ func (s *Server) buildTemplateTags(g *Gallery, dir string, include, exclude []st
 }
 
 // ---------- media proxy ----------
-
-

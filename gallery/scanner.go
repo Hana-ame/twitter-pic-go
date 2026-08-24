@@ -12,28 +12,29 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 // Media represents a single remote image/video entry parsed from a
 // <account>.json.gz timeline.
 type Media struct {
-	ID          string    `json:"id"`
-	Path        string    `json:"path"` // virtual path: account/urlbase_0001.jpg
-	Dir         string    `json:"dir"`  // virtual directory: account
-	Name        string    `json:"name"`
-	Type        string    `json:"type"` // photo / video / animated_gif
-	Ext         string    `json:"ext"`
-	Size        int64     `json:"size"` // unknown for remote media
-	ModTime     time.Time `json:"mod_time"`
-	Tags         []string `json:"tags"`
-	DirTags      []string `json:"dir_tags,omitempty"`
-	PerImageTags []string `json:"per_image_tags,omitempty"` // 扁平 per-image 标签（与账号 tag 完全分离）
-	LikeCount    int      `json:"like_count"`
-	DislikeCount int      `json:"dislike_count"`
-	URL          string   `json:"url"`          // proxy URL on this server
-	OriginalURL  string   `json:"original_url"` // pbs.twimg.com / video.twimg.com
-	TweetID      int64    `json:"tweet_id"`     // 原推 ID，溯源用
+	ID           string    `json:"id"`
+	Path         string    `json:"path"` // virtual path: account/urlbase_0001.jpg
+	Dir          string    `json:"dir"`  // virtual directory: account
+	Name         string    `json:"name"`
+	Type         string    `json:"type"` // photo / video / animated_gif
+	Ext          string    `json:"ext"`
+	Size         int64     `json:"size"` // unknown for remote media
+	ModTime      time.Time `json:"mod_time"`
+	Tags         []string  `json:"tags"`
+	DirTags      []string  `json:"dir_tags,omitempty"`
+	PerImageTags []string  `json:"per_image_tags,omitempty"` // 扁平 per-image 标签（与账号 tag 完全分离）
+	LikeCount    int       `json:"like_count"`
+	DislikeCount int       `json:"dislike_count"`
+	URL          string    `json:"url"`          // proxy URL on this server
+	OriginalURL  string    `json:"original_url"` // pbs.twimg.com / video.twimg.com
+	TweetID      int64     `json:"tweet_id"`     // 原推 ID，溯源用
 }
 
 // IsVideo reports whether the media is a video or animated gif.
@@ -96,6 +97,16 @@ type Gallery struct {
 	tags   map[string]int      // tag -> media count
 	// accountTagCounts: tag -> 账号数（左导航/标签云统计“哪些账号拥有该 tag”用，与 media 数分离）
 	accountTagCounts map[string]int
+	// avatars: 账号头像（account_info.profile_image，已按需走 twimg 反代）
+	avatars map[string]string
+	// 远程 JSON 源地址（临时调试用，见 remote.go）；空串表示未启用
+	remoteBase string
+	// 远程拉取的文档仅存内存，绝不落盘（临时调试，见 remote.go）
+	muRemote   sync.Mutex
+	remoteDocs map[string][]byte
+	// dbAccounts：来自本地 db（users 表）的账号索引，
+	// 用于在未拉取媒体前就能展示完整账号列表（最新/最热/收藏等）。
+	dbAccounts map[string]AccountMeta
 	// mediaBase: pbs.twimg.com 媒体的服务前缀（endpoint B / twimg），path 形式；
 	// 为空则图片直链原始 URL。
 	mediaBase string
@@ -184,12 +195,26 @@ func NewGallery(root string, accountTags map[string][]string) *Gallery {
 		direct:           map[string]int{},
 		recurs:           map[string]int{},
 		tags:             map[string]int{},
+		avatars:          map[string]string{},
+		remoteDocs:       map[string][]byte{},
 		accountTagCounts: accountTagCounts,
-		mediaBase:         deriveMediaBase(),
+		mediaBase:        deriveMediaBase(),
 	}
 }
 
 func (g *Gallery) Root() string { return g.root }
+
+// AccountMeta 来自 db users 表的账号元信息（无媒体时仍可展示）。
+type AccountMeta struct {
+	Nick       string
+	LastModify time.Time
+}
+
+// SetDBAccounts 注入 db 账号索引，必须在首次 Scan() 之前调用。
+func (g *Gallery) SetDBAccounts(m map[string]AccountMeta) { g.dbAccounts = m }
+
+// Avatar 返回某账号的头像 URL（无则空串）。
+func (g *Gallery) Avatar(dir string) string { return g.avatars[dir] }
 
 // serveURL 根据 mediaBase 决定媒体 URL：pbs.twimg.com 走 endpoint B（path 形式），
 // 其他域名直链原始 URL（video.twimg.com 等直接加载，无需反代）。
@@ -237,8 +262,11 @@ type gzTimelineEntry struct {
 }
 
 type gzAccountInfo struct {
-	Name string `json:"name"`
-	Nick string `json:"nick"`
+	Name           string `json:"name"`
+	Nick           string `json:"nick"`
+	ProfileImage   string `json:"profile_image"`
+	FollowersCount int    `json:"followers_count"`
+	StatusesCount  int    `json:"statuses_count"`
 }
 
 type gzDocument struct {
@@ -330,6 +358,75 @@ func parseFlexibleTime(s string) time.Time {
 	return time.Time{}
 }
 
+// ingestAccountDoc 把单个账号文档并入索引（next）及聚合 map，本地文件与远程内存文档共用。
+func ingestAccountDoc(next *Gallery, username string, doc *gzDocument, mediaByDir map[string][]*Media, subdirs map[string]map[string]bool) {
+	account := strings.TrimSpace(doc.AccountInfo.Name)
+	if account == "" {
+		account = username
+	}
+	dir := normalizeDir(account)
+	if dir == "" {
+		dir = account
+	}
+
+	tags := next.accountTags[account]
+	if len(tags) == 0 {
+		tags = next.accountTags[username]
+	}
+	if av := strings.TrimSpace(doc.AccountInfo.ProfileImage); av != "" {
+		next.avatars[dir] = serveURL(next.mediaBase, av)
+	}
+	tags = uniqueSorted(tags)
+	dirTags := uniqueSorted([]string{dir})
+
+	for i := range doc.Timeline {
+		te := doc.Timeline[i]
+		ext, typ := inferMediaExtType(te)
+		if ext == "" || typ == "" {
+			continue
+		}
+
+		// Derive a stable display name from the URL basename; tweet_id is not needed.
+		base := fmt.Sprintf("%s_%04d", dir, i)
+		if u, err := url.Parse(te.URL); err == nil {
+			if b := path.Base(u.Path); b != "" && b != "." && b != "/" {
+				b = strings.TrimSuffix(b, path.Ext(b))
+				if b != "" {
+					base = b
+				}
+			}
+		}
+		vname := fmt.Sprintf("%s_%04d%s", base, i, ext)
+		vpath := dir + "/" + vname
+		id := shortHash(dir + "\x00" + te.URL)
+
+		m := &Media{
+			ID:          id,
+			Path:        vpath,
+			Dir:         dir,
+			Name:        vname,
+			Type:        typ,
+			Ext:         ext,
+			ModTime:     parseFlexibleTime(te.Date),
+			Tags:        tags,
+			DirTags:     dirTags,
+			URL:         serveURL(next.mediaBase, te.URL),
+			OriginalURL: te.URL,
+			TweetID:     te.TweetID,
+		}
+
+		next.byID[m.ID] = m
+		next.byURL[te.URL] = m
+		next.media = append(next.media, m)
+		mediaByDir[dir] = append(mediaByDir[dir], m)
+
+		if subdirs[""] == nil {
+			subdirs[""] = map[string]bool{}
+		}
+		subdirs[""][dir] = true
+	}
+}
+
 // Scan walks the json.gz directory and rebuilds the in-memory index.
 func (g *Gallery) Scan() error {
 	info, err := os.Stat(g.root)
@@ -341,8 +438,11 @@ func (g *Gallery) Scan() error {
 	}
 
 	next := NewGallery(g.root, g.accountTags)
+	next.remoteBase = g.remoteBase // 保留远程源配置（Replace 会整体覆盖）
+	next.dbAccounts = g.dbAccounts // 保留 db 账号索引
 	mediaByDir := map[string][]*Media{}
 	subdirs := map[string]map[string]bool{}
+	seen := map[string]bool{}
 
 	entries, err := os.ReadDir(g.root)
 	if err != nil {
@@ -365,70 +465,20 @@ func (g *Gallery) Scan() error {
 		if err != nil || len(doc.Timeline) == 0 {
 			continue
 		}
+		seen[username] = true
+		ingestAccountDoc(next, username, &doc, mediaByDir, subdirs)
+	}
 
-		account := strings.TrimSpace(doc.AccountInfo.Name)
-		if account == "" {
-			account = username
-		}
-		dir := normalizeDir(account)
-		if dir == "" {
-			dir = account
-		}
-
-		tags := next.accountTags[account]
-		if len(tags) == 0 {
-			tags = next.accountTags[username]
-		}
-		tags = uniqueSorted(tags)
-		dirTags := uniqueSorted([]string{dir})
-
-		for i := range doc.Timeline {
-			te := doc.Timeline[i]
-			ext, typ := inferMediaExtType(te)
-			if ext == "" || typ == "" {
-				continue
+	// 远程文档（仅存内存，临时调试）：本地没有的同名账号才用远端数据补入索引
+	g.muRemote.Lock()
+	for username := range g.remoteDocs {
+		if !seen[username] {
+			if doc := g.peekRemoteDoc(username); doc != nil && len(doc.Timeline) > 0 {
+				ingestAccountDoc(next, username, doc, mediaByDir, subdirs)
 			}
-
-			// Derive a stable display name from the URL basename; tweet_id is not needed.
-			base := fmt.Sprintf("%s_%04d", dir, i)
-			if u, err := url.Parse(te.URL); err == nil {
-				if b := path.Base(u.Path); b != "" && b != "." && b != "/" {
-					b = strings.TrimSuffix(b, path.Ext(b))
-					if b != "" {
-						base = b
-					}
-				}
-			}
-			vname := fmt.Sprintf("%s_%04d%s", base, i, ext)
-			vpath := dir + "/" + vname
-			id := shortHash(dir + "\x00" + te.URL)
-
-			m := &Media{
-				ID:          id,
-				Path:        vpath,
-				Dir:         dir,
-				Name:        vname,
-				Type:        typ,
-				Ext:         ext,
-				ModTime:     parseFlexibleTime(te.Date),
-				Tags:        tags,
-				DirTags:     dirTags,
-				URL:         serveURL(next.mediaBase, te.URL),
-				OriginalURL: te.URL,
-				TweetID:     te.TweetID,
-			}
-
-			next.byID[m.ID] = m
-			next.byURL[te.URL] = m
-			next.media = append(next.media, m)
-			mediaByDir[dir] = append(mediaByDir[dir], m)
-
-			if subdirs[""] == nil {
-				subdirs[""] = map[string]bool{}
-			}
-			subdirs[""][dir] = true
 		}
 	}
+	g.muRemote.Unlock()
 
 	// Sort media in every directory by name (case-insensitive).
 	for dir := range mediaByDir {
@@ -461,11 +511,39 @@ func (g *Gallery) Scan() error {
 		next.dirs[parent] = names
 	}
 
+	// 合并 db 提供的账号索引：即使还没有媒体数据，也要出现在账号列表里。
+	if len(next.dbAccounts) > 0 && len(next.dirs[""]) >= 0 {
+		have := map[string]bool{}
+		for _, n := range next.dirs[""] {
+			have[n] = true
+		}
+		for name := range next.dbAccounts {
+			if !have[name] {
+				next.dirs[""] = append(next.dirs[""], name)
+				have[name] = true
+			}
+		}
+		sort.Strings(next.dirs[""])
+	}
+
 	g.Replace(next)
 	return nil
 }
 
 // Replace swaps the index contents under the caller's lock.
+// 锁与远程内存文档（remoteDocs）不属于索引，不随拷贝覆盖。
 func (g *Gallery) Replace(next *Gallery) {
-	*g = *next
+	root, accountTags := g.root, g.accountTags
+	remoteBase, remoteDocs := g.remoteBase, g.remoteDocs
+	dbAccounts := g.dbAccounts
+
+	// 逐字段替换索引内容，避免拷贝内嵌锁（vet）
+	g.media, g.byID, g.byURL = next.media, next.byID, next.byURL
+	g.byDir, g.dirs = next.byDir, next.dirs
+	g.direct, g.recurs, g.tags = next.direct, next.recurs, next.tags
+	g.accountTagCounts, g.avatars, g.mediaBase = next.accountTagCounts, next.avatars, next.mediaBase
+
+	g.root, g.accountTags = root, accountTags
+	g.remoteBase, g.remoteDocs = remoteBase, remoteDocs
+	g.dbAccounts = dbAccounts
 }

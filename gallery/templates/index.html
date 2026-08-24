@@ -22,16 +22,10 @@
 * { box-sizing: border-box; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
 a { color: var(--accent); text-decoration: none; }
-/* ===== 顶部 navbar：友情链接 + 广告，游览时自动隐藏 ===== */
+/* ===== 顶部 navbar；游览时自动隐藏 ===== */
 .navbar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20; }
 .navbar--hidden { display: none; }
 .navbar .brand { font-weight: 700; font-size: 16px; }
-.navbar .group { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.navbar .group .label { color: var(--muted); font-size: 12px; }
-.navbar .group a { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; font-size: 13px; color: var(--text); }
-.navbar .group a:hover { border-color: var(--accent); }
-.navbar .ads { margin-left: auto; }
-.navbar .ad-slot { background: linear-gradient(135deg, #2a2140, #3a2150); border: 1px dashed var(--accent2); border-radius: 8px; padding: 6px 14px; font-size: 13px; color: var(--gold); }
 button { background: var(--accent); color: white; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
 button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
 .layout { display: flex; min-height: calc(100vh - 45px); }
@@ -90,6 +84,10 @@ main { flex: 1; padding: 16px; }
 .cluster h4 { margin: 0 0 8px; font-size: 14px; }
 .mini-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .mini-grid img, .mini-grid video { width: 100px; height: 75px; object-fit: cover; border-radius: 8px; background: #000; }
+/* ===== video.twimg.com 的 iframe 播放器容器 ===== */
+.vthumb { width: 100%; height: 170px; background: #000; }
+.vthumb.sm { width: 100px; height: 75px; border-radius: 8px; overflow: hidden; }
+.vthumb iframe { width: 100%; height: 100%; border: 0; display: block; }
 .history-item { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .history-item .time { color: var(--muted); font-size: 12px; min-width: 150px; }
 .filterbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
@@ -98,56 +96,141 @@ main { flex: 1; padding: 16px; }
 .mode-switch { display: flex; gap: 6px; margin-bottom: 12px; font-size: 13px; }
 .mode-switch a { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; color: var(--muted); }
 .mode-switch a.active { color: white; background: var(--accent); }
+/* ===== 识别码徽标 + 弹窗 ===== */
+.idbadge{position:fixed;top:8px;right:12px;z-index:40;background:var(--panel2);
+  border:1px solid var(--border);border-radius:999px;padding:5px 12px;font-size:12px;
+  color:var(--muted);cursor:pointer;display:flex;align-items:center;gap:6px}
+.idbadge:hover{border-color:var(--accent);color:var(--text)}
+.idbadge b{color:var(--accent);letter-spacing:1px;font-family:ui-monospace,Menlo,Consolas,monospace}
+.modal{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center}
+.modal-mask{position:absolute;inset:0;background:rgba(0,0,0,.6)}
+.modal-box{position:relative;background:var(--panel);border:1px solid var(--border);
+  border-radius:16px;padding:24px;max-width:420px;width:90%}
+.modal-box h3{margin:0 0 8px;font-size:16px}
+.modal-box h4{margin:16px 0 6px;font-size:14px}
+.muted{color:var(--muted);font-size:13px;line-height:1.6;margin:0}
+.modal-box hr{border:none;border-top:1px solid var(--border);margin:16px 0}
+.id-row{display:flex;gap:8px;margin-top:8px}
+.id-row input{flex:1;min-width:0;background:var(--panel2);color:var(--text);
+  border:1px solid var(--border);border-radius:8px;padding:8px 10px;
+  font-family:ui-monospace,Menlo,Consolas,monospace}
+.modal-actions{margin-top:16px;text-align:right}
+.modal-actions button{width:100%;box-sizing:border-box}
+/* ===== 首页三栏摘要 ===== */
+.homesection{margin-bottom:26px}
+.section-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:10px}
+.section-head h2{margin:0;font-size:18px}
+.section-head .more{font-size:13px;color:var(--muted)}
+.homerows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.homerow{display:flex;align-items:center;gap:12px;min-height:120px;padding:12px 16px;background-size:cover;
+  background-position:center;position:relative;overflow:hidden;border:1px solid var(--border);
+  border-radius:12px;background-color:var(--panel);color:var(--text)}
+.homerow.hasbg{color:#fff;border-color:transparent}
+.homerow.hasbg::before{content:"";position:absolute;inset:0;
+  background:linear-gradient(90deg,rgba(8,10,14,.74),rgba(8,10,14,.38));}
+.homerow>*{position:relative;z-index:1}
+.homerow:hover{border-color:var(--accent)}
+.homerow .avatar{width:48px;height:48px;border-radius:50%;object-fit:cover;flex:none;
+  background:#000;border:1px solid rgba(255,255,255,.25)}
+.hinfo{flex:1;display:flex;flex-direction:column;min-width:0}
+.homerow .hinfo{text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.hinfo b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hinfo i{font-style:normal;color:var(--muted);font-size:12px;margin-top:2px}
+.homerow.hasbg .hinfo i{color:rgba(255,255,255,.78)}
+.homerow .go{opacity:.5;font-size:18px}
+.row-unfav{position:absolute;top:8px;right:8px;z-index:2;width:26px;height:26px;border-radius:50%;
+  background:rgba(0,0,0,.55);color:var(--gold);border:1px solid rgba(255,255,255,.25);
+  font-size:13px;line-height:1;cursor:pointer;padding:0}
+.row-unfav:hover{background:rgba(0,0,0,.8)}
+/* 手机自适应：窄屏回退单列 */
+@media (max-width:640px){
+  .homerows{grid-template-columns:1fr;gap:8px}
+  .homerow{min-height:88px;padding:10px 12px}
+  .homerow .avatar{width:40px;height:40px}
+}
+.ac-head{display:flex;align-items:center;gap:8px;min-width:0}
+.account-card .avatar,.fav-avatar{width:32px;height:32px;border-radius:50%;object-fit:cover;flex:none;background:#000}
 </style>
 </head>
 <body>
-<!-- 顶部 navbar：友情链接 + 广告；游览（看图）时自动隐藏 -->
+<!-- 右上角识别码徽标 -->
+<div class="idbadge" id="idBadge" onclick="openIdModal()" title="识别码 · 点击管理">🪪 识别码 <b id="idCodeText">····</b></div>
+
+<!-- 识别码弹窗 -->
+<div class="modal" id="idModal" style="display:none">
+  <div class="modal-mask" onclick="closeIdModal()"></div>
+  <div class="modal-box">
+    <h3>识别码</h3>
+    <p class="muted">这是本浏览器的身份识别码，用于标记你的赞 / 收藏等偏好。</p>
+    <div class="id-row">
+      <input id="idCurrent" readonly>
+      <button class="ghost" id="copyIdBtn" onclick="copyId()">复制</button>
+    </div>
+    <hr>
+    <h4>引继（继承其他识别码）</h4>
+    <p class="muted">输入另一个识别码，即可在本设备沿用它的身份（含赞 / 踩）。</p>
+    <div class="id-row">
+      <input id="idImport" placeholder="例如 A1B2-C3D4" maxlength="16">
+      <button onclick="importId()">引继</button>
+    </div>
+    <div class="modal-actions">
+      <button class="ghost" onclick="closeIdModal()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 顶部 navbar；游览（看图）时自动隐藏 -->
 <nav class="navbar {{if or (eq .Mode "gallery") (eq .Mode "media")}}navbar--hidden{{end}}">
-  <span class="brand">🖼️ Gallery</span>
-  <div class="group">
-    <span class="label">友情链接</span>
-    <a href="https://example.com" target="_blank" rel="noopener">示例站</a>
-    <a href="https://example2.com" target="_blank" rel="noopener">示例站 2</a>
-  </div>
-  <div class="group ads">
-    <span class="label">广告</span>
-    <a class="ad-slot" href="https://ads.example.com" target="_blank" rel="noopener">广告位招租</a>
-  </div>
+  <a class="brand" href="/" title="回到首页">🖼️ Gallery</a>
 </nav>
 
 <div class="layout">
   <aside>
-    <h3>导航</h3>
     <div class="nav-tabs">
-      <a href="/" class="{{if eq .ActiveTab "latest"}}active{{end}}">最新</a>
+      <a href="/latest" class="{{if eq .ActiveTab "latest"}}active{{end}}">最新</a>
       <a href="/hot" class="{{if eq .ActiveTab "hot"}}active{{end}}">最热</a>
       <a href="/favorites" class="{{if eq .ActiveTab "favorites"}}active{{end}}">我的收藏</a>
-      <a href="/tags" class="{{if eq .ActiveTab "tags"}}active{{end}}">标签</a>
-    </div>
-    <h3>发现</h3>
-    <div class="nav-tabs">
-      <a href="/clusters" class="{{if eq .Mode "clusters"}}active{{end}}">聚类</a>
     </div>
     <h3>设置</h3>
     <div class="btn-group">
       <button class="btn-sm active" onclick="setDisplay('grid',this)">网格</button>
       <button class="btn-sm" onclick="setDisplay('dropdown',this)">下拉</button>
     </div>
+    {{if ne .Mode "tags"}}
     <h3>标签速览</h3>
     <div class="tags">
       {{range .Tags}}<a class="tag" href="/tags?tag={{.Name}}&mode=accounts">{{.Name}}({{.Count}})</a>{{end}}
     </div>
+    {{end}}
   </aside>
 
   <main>
-    {{if eq .Mode "index"}}
-      <h2>账号</h2>
-      {{template "accountsGrid" .}}
+    {{if eq .Mode "home"}}
+    {{range .Home}}
+    <div class="homesection">
+      <div class="section-head">
+        <h2>{{.Title}}</h2>
+        {{if .MoreURL}}<a class="more" href="{{.MoreURL}}">更多 →</a>{{end}}
+      </div>
+      {{if .Fav}}
+      <div id="homeFav"><div class="empty">加载中…</div></div>
+      {{else}}
+      <div class="homerows">
+        {{range .Rows}}<a class="homerow{{if .BG}} hasbg{{end}}" href="{{.Link}}"{{if .BG}} style="background-image:url('{{.BG}}')"{{end}}>{{if .Avatar}}<img class="avatar" loading="lazy" src="{{.Avatar}}" alt="">{{end}}<span class="hinfo"><b>{{.Name}}</b><i>{{.Sub}}</i></span><span class="go">›</span></a>{{end}}
+      </div>
+      {{if not .Rows}}<div class="empty">暂无内容</div>{{end}}
+      {{end}}
+    </div>
+    {{end}}
+
+    {{else if eq .Mode "index"}}
+      <h2>最新</h2>
+      {{template "accountRows" .}}
       {{template "pagination" .}}
 
     {{else if eq .Mode "accounts"}}
       <h2>{{.Title}}</h2>
-      {{template "accountsGrid" .}}
+      {{template "accountRows" .}}
       {{template "pagination" .}}
       {{if not .Dirs}}<div class="empty">没有内容</div>{{end}}
 
@@ -204,26 +287,6 @@ main { flex: 1; padding: 16px; }
         {{range .Tags}}<a class="tag" href="/tags?tag={{.Name}}&mode={{$.TagMode}}">{{.Name}}({{.Count}}) <span style="color:var(--muted)">＋</span></a>{{end}}
       </div>
       {{if not .Tags}}<div class="empty">暂无标签</div>{{end}}
-
-    {{else if eq .Mode "clusters"}}
-      <h2>自动聚类</h2>
-      {{range .Clusters}}
-      <div class="cluster">
-        <h4>{{.ID}} · {{.Label}} ({{.Count}})</h4>
-        <div class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</div>
-        <div class="mini-grid">
-          {{range .Items}}
-          <a href="{{.URL}}" target="_blank">
-            {{if or (eq .Type "video") (eq .Type "animated_gif")}}
-            <video preload="metadata" src="{{.URL}}"></video>
-            {{else}}
-            <img loading="lazy" src="{{.URL}}">
-            {{end}}
-          </a>
-          {{end}}
-        </div>
-      </div>
-      {{end}}
     {{end}}
   </main>
 </div>
@@ -232,8 +295,8 @@ main { flex: 1; padding: 16px; }
 <div class="accounts-grid" id="accountsGrid">
   {{range .Dirs}}
   <div class="account-card">
-    <a class="name" href="{{.Link}}">{{.Name}}</a>
-    <div class="count">{{.RecursiveCount}} 张</div>
+    <div class="ac-head">{{if .Avatar}}<img class="avatar" loading="lazy" src="{{.Avatar}}" alt="">{{end}}<a class="name" href="{{.Link}}"{{if .Nick}} title="{{.Nick}}"{{end}}>{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}}</a></div>
+    <div class="count">@{{.Name}} · 🖼 {{.RecursiveCount}}{{if .Date}} · {{.Date}}{{end}}</div>
     {{if .Votes}}<div class="votes">🔥 {{.Votes}}</div>{{end}}
     {{if .Links}}<div class="social-links">
       {{range .Links}}<a href="{{.URL}}" target="_blank" rel="noopener" title="{{platformName .Platform}}"><svg viewBox="0 0 24 24"><path d="{{platformIcon .Platform}}"/></svg></a>{{end}}
@@ -257,12 +320,19 @@ main { flex: 1; padding: 16px; }
 {{end}}
 {{end}}
 
+{{define "accountRows"}}
+<div class="homerows">
+  {{range .Dirs}}<a class="homerow{{if .BG}} hasbg{{end}}" href="{{.Link}}"{{if .BG}} style="background-image:url('{{.BG}}')"{{end}}{{if .Nick}} title="{{.Nick}}"{{end}}>{{if .Avatar}}<img class="avatar" loading="lazy" src="{{.Avatar}}" alt="">{{end}}<span class="hinfo"><b>{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}}</b><i>@{{.Name}}{{if .Votes}} · 🔥 {{.Votes}}{{end}} · 🖼 {{.RecursiveCount}}{{if .Date}} · {{.Date}}{{end}}</i></span><span class="go">›</span></a>{{end}}
+</div>
+{{end}}
+
 {{define "mediaGrid"}}
 <div class="grid">
   {{range .Items}}
   <a class="card" href="{{.URL}}" target="_blank">
     {{if or (eq .Type "video") (eq .Type "animated_gif")}}
-    <video class="thumb" preload="metadata" src="{{.URL}}"></video>
+    <!-- video.twimg.com 直连会被防盗链拦截：套 srcdoc iframe + no-referrer（同 twitter-pic-react 的做法） -->
+    <div class="vthumb" data-vsrc="{{.URL}}"></div>
     {{else}}
     <img class="thumb" loading="lazy" src="{{.URL}}">
     {{end}}
@@ -284,6 +354,7 @@ main { flex: 1; padding: 16px; }
 {{end}}
 
 <script>
+const ACCOUNTS = {{if .AccountsJSON}}{{.AccountsJSON}}{{else}}[]{{end}};
 // ---------- 收藏（localStorage，每浏览器独立）----------
 function favList() {
   try { return JSON.parse(localStorage.getItem('gallery_favorites') || '[]'); } catch(e) { return []; }
@@ -295,23 +366,25 @@ function toggleFav(btn) {
   if (i >= 0) { list.splice(i, 1); btn.classList.remove('on'); btn.textContent = '☆ 收藏'; }
   else { list.push(name); btn.classList.add('on'); btn.textContent = '★ 已收藏'; }
   localStorage.setItem('gallery_favorites', JSON.stringify(list));
+  renderHomeFav();
   if (location.pathname === '/favorites') renderFav();
 }
 function renderFav() {
   const favs = favList();
-  const all = {{.AccountsJSON}};
+  const all = ACCOUNTS;
   const box = document.getElementById('favList');
   const empty = document.getElementById('favEmpty');
   if (!box) return;
   const matched = all.filter(a => favs.includes(a.Name));
   if (matched.length === 0) { box.innerHTML = ''; empty.style.display = 'block'; return; }
   empty.style.display = 'none';
-  box.innerHTML = matched.map(a => `
-    <div class="account-card">
-      <a class="name" href="${a.Link}">${a.Name}</a>
-      <div class="count">${a.Count} 直属 · ${a.RecursiveCount} 总计</div>
-      <button class="fav-toggle ghost on" data-name="${a.Name}" onclick="toggleFav(this)">★ 已收藏</button>
-    </div>`).join('');
+  box.innerHTML = '<div class="homerows">' + matched.map(a => `
+    <a class="homerow${a.BG ? ' hasbg' : ''}" href="${a.Link}"${a.BG ? ` style="background-image:url('${a.BG}')"` : ''}>
+      ${a.Avatar ? `<img class="avatar" loading="lazy" src="${a.Avatar}">` : ''}
+      <span class="hinfo"><b>${a.Name}</b><i>🖼 ${a.RecursiveCount}</i></span>
+      <span class="go">›</span>
+      <button type="button" class="row-unfav" title="取消收藏" onclick="event.preventDefault();toggleFav(this)" data-name="${a.Name}">★</button>
+    </a>`).join('') + '</div>';
 }
 
 // ---------- 显示方式：网格 / 下拉 ----------
@@ -332,9 +405,8 @@ function applyDisplay() {
 
 // ---------- 赞 / 倒赞（per-image 扁平 tag）----------
 function voterToken() {
-  let v = localStorage.getItem('gallery_voter');
-  if (!v) { v = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()); localStorage.setItem('gallery_voter', v); }
-  return v;
+  // 识别码即投票身份：引继识别码即可继承同一身份的赞 / 踩
+  return idCode();
 }
 async function react(btn) {
   const id = btn.getAttribute('data-id');
@@ -428,6 +500,81 @@ function editLinks(account) {
   setTimeout(() => location.reload(), 300);
 }
 
+// ---------- 识别码（右上角徽标 + 引继）----------
+function idCode(){
+  let v = localStorage.getItem('gallery_id');
+  if(!v){
+    const g = () => Math.random().toString(36).slice(2,6);
+    v = (g()+g()).toUpperCase().replace(/(.{4})(.{4})/,'$1-$2');
+    localStorage.setItem('gallery_id', v);
+  }
+  return v;
+}
+function renderIdBadge(){
+  const el = document.getElementById('idCodeText');
+  if(el) el.textContent = idCode();
+}
+function openIdModal(){
+  document.getElementById('idCurrent').value = idCode();
+  document.getElementById('idImport').value = '';
+  document.getElementById('idModal').style.display = 'flex';
+}
+function closeIdModal(){ document.getElementById('idModal').style.display = 'none'; }
+function copyId(){
+  const v = idCode();
+  const inp = document.getElementById('idCurrent');
+  if(inp) inp.select();
+  try { navigator.clipboard && navigator.clipboard.writeText(v); } catch(e){}
+  try { document.execCommand && document.execCommand('copy'); } catch(e){}
+  const b = document.getElementById('copyIdBtn');
+  if(b){ b.textContent='已复制'; setTimeout(function(){ b.textContent='复制'; },1200); }
+}
+function importId(){
+  const v = (document.getElementById('idImport').value||'').trim().toUpperCase();
+  if(!v) return;
+  localStorage.setItem('gallery_id', v);
+  renderIdBadge();
+  closeIdModal();
+  alert('已引继识别码：'+v);
+}
+
+// ---------- 首页收藏板块（前端渲染，取前 4 个）----------
+function renderHomeFav(){
+  const box = document.getElementById('homeFav'); if(!box) return;
+  const favs = favList();
+  const matched = ACCOUNTS.filter(a => favs.includes(a.Name)).slice(0,4);
+  if(!matched.length){ box.innerHTML = '<div class="empty">还没有收藏，去账号卡片点 ☆ 收藏吧</div>'; return; }
+  box.innerHTML = '<div class="homerows">' + matched.map(a => `
+    <a class="homerow${a.BG ? ' hasbg' : ''}" href="${a.Link}"${a.BG ? ` style="background-image:url('${a.BG}')"` : ''}>
+      ${a.Avatar ? `<img class="avatar" loading="lazy" src="${a.Avatar}">` : ''}
+      <span class="hinfo"><b>${a.Name}</b><i>🖼 ${a.RecursiveCount}</i></span>
+      <span class="go">›</span>
+      <button type="button" class="row-unfav" title="取消收藏" onclick="event.preventDefault();toggleFav(this)" data-name="${a.Name}">★</button>
+    </a>`).join('') + '</div>';
+}
+
+// ---------- video.twimg.com：srcdoc iframe 播放器（no-referrer 绕防盗链） ----------
+function videoFrame(url) {
+  const f = document.createElement('iframe');
+  f.setAttribute('referrerpolicy', 'no-referrer');
+  f.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-presentation');
+  f.setAttribute('allowfullscreen', '');
+  f.setAttribute('title', 'video-player');
+  const html = `<!DOCTYPE html><html><head><meta name="referrer" content="no-referrer">`
+    + `<style>body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#000}`
+    + `video{width:100%;height:100%;object-fit:contain}</style></head><body>`
+    + `<video controls playsinline preload="metadata"><source src="${url}" type="video/mp4"></video></body></html>`;
+  f.srcdoc = html;
+  return f;
+}
+function convertVthumbs() {
+  document.querySelectorAll('.vthumb').forEach(el => {
+    if (el.dataset.done) return;
+    el.dataset.done = '1';
+    el.appendChild(videoFrame(el.dataset.vsrc));
+  });
+}
+
 // ---------- 初始化 ----------
 (function () {
   // 账号卡片收藏状态高亮
@@ -437,6 +584,9 @@ function editLinks(account) {
   });
   applyDisplay();
   if (location.pathname === '/favorites') renderFav();
+  renderIdBadge();
+  renderHomeFav();
+  convertVthumbs();
 })();
 </script>
 </body>

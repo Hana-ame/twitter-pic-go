@@ -35,7 +35,6 @@ func initMediaTagSchema(db *sql.DB) {
 			PRIMARY KEY (media_id, tag_id, voter),
 			FOREIGN KEY (tag_id) REFERENCES tags(id)
 		)`,
-		// 同义别名（扁平，非分级）：alias 归一为规范 tag。
 		`CREATE TABLE IF NOT EXISTS tag_aliases (
 			alias   TEXT UNIQUE NOT NULL,
 			tag_id  INTEGER NOT NULL,

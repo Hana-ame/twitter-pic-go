@@ -59,6 +59,12 @@ main { flex: 1; padding: 16px; }
 .account-card .votes { color: var(--gold); font-size: 12px; }
 .account-card .fav-toggle { align-self: flex-start; margin-top: 4px; font-size: 12px; padding: 4px 10px; }
 .account-card .fav-toggle.on { background: var(--gold); color: #111; }
+.social-links { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.social-links a { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 6px; background: var(--panel2); color: var(--muted); text-decoration: none; transition: background .15s, color .15s; }
+.social-links a:hover { background: var(--accent); color: #fff; }
+.social-links a svg { width: 14px; height: 14px; fill: currentColor; }
+.social-links a.edit-link { font-size: 11px; width: auto; padding: 0 4px; opacity: 0.5; }
+.social-links a.edit-link:hover { opacity: 1; }
 .accounts-select { width: 100%; max-width: 420px; padding: 9px 10px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; transition: border-color .15s, transform .15s; }
@@ -225,6 +231,12 @@ main { flex: 1; padding: 16px; }
     <a class="name" href="{{.Link}}">{{.Name}}</a>
     <div class="count">{{.Count}} 直属 · {{.RecursiveCount}} 总计</div>
     {{if .Votes}}<div class="votes">🔥 {{.Votes}}</div>{{end}}
+    {{if .Links}}<div class="social-links">
+      {{range .Links}}<a href="{{.URL}}" target="_blank" rel="noopener" title="{{platformName .Platform}}"><svg viewBox="0 0 24 24"><path d="{{platformIcon .Platform}}"/></svg></a>{{end}}
+      <a href="javascript:void(0)" class="edit-link" onclick="editLinks('{{.Name}}')" title="管理链接">⚙</a>
+    </div>{{else}}<div class="social-links">
+      <a href="javascript:void(0)" class="edit-link" onclick="editLinks('{{.Name}}')" title="添加链接">+🔗</a>
+    </div>{{end}}
     <button class="fav-toggle ghost" data-name="{{.Name}}" onclick="toggleFav(this)">☆ 收藏</button>
   </div>
   {{end}}
@@ -336,6 +348,81 @@ async function react(btn) {
     box.querySelector('button[data-emoji="👍"] .rc').textContent = d.likes;
     box.querySelector('button[data-emoji="👎"] .rc').textContent = d.dislikes;
   } catch (e) {}
+}
+
+// ---------- 链接管理 ----------
+const knownPlatforms = [
+  { key: 'twitter', name: 'X / Twitter' },
+  { key: 'pixiv', name: 'pixiv' },
+  { key: 'ci-en', name: 'CI-en' },
+  { key: 'bilibili', name: 'bilibili' },
+  { key: 'douyin', name: '抖音' },
+  { key: 'fanbox', name: 'FANBOX' },
+  { key: 'fantia', name: 'Fantia' },
+  { key: 'booth', name: 'BOOTH' },
+  { key: 'youtube', name: 'YouTube' },
+  { key: 'github', name: 'GitHub' },
+  { key: 'skeb', name: 'Skeb' },
+];
+
+function editLinks(account) {
+  let existing = [];
+  document.querySelectorAll('.account-card').forEach(card => {
+    const nameEl = card.querySelector('.name');
+    if (nameEl && nameEl.textContent.trim() === account) {
+      card.querySelectorAll('.social-links a[title]').forEach(a => {
+        if (a.title && a.title !== '管理链接' && !a.title.startsWith('添加')) {
+          existing.push({ platform: a.title, url: a.href });
+        }
+      });
+    }
+  });
+
+  const lines = knownPlatforms.map(p => {
+    const found = existing.find(e => e.platform === p.name);
+    return `${p.name}: ${found ? found.url : ''}`;
+  }).join('\n');
+
+  const input = prompt(
+    `为 ${account} 编辑链接（每行格式: 平台名: URL）\n\n` +
+    `已知平台: ${knownPlatforms.map(p => p.name).join(', ')}\n` +
+    `留空=不添加，删除链接只需输入平台名不带URL\n\n` +
+    `当前链接:\n${lines}`,
+    existing.map(e => `${e.platform}: ${e.url}`).join('\n')
+  );
+  if (input === null) return;
+
+  const allLines = input.split('\n').map(l => l.trim()).filter(Boolean);
+  const seen = new Set();
+
+  for (const line of allLines) {
+    const sep = line.indexOf(':');
+    if (sep < 0) continue;
+    const platform = line.slice(0, sep).trim();
+    const url = line.slice(sep + 1).trim();
+    if (!platform || !url) continue;
+    seen.add(platform);
+    fetch('/api/link', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account, platform, url })
+    });
+  }
+
+  // 删除当前有但输入中没有的链接
+  for (const e of existing) {
+    const matched = knownPlatforms.find(p => p.name === e.platform);
+    const key = matched ? matched.key : e.platform;
+    if (!seen.has(e.platform)) {
+      fetch('/api/link', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ account, platform: key })
+      });
+    }
+  }
+
+  setTimeout(() => location.reload(), 300);
 }
 
 // ---------- 初始化 ----------

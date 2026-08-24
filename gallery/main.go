@@ -24,7 +24,13 @@ import (
 //go:embed templates/index.html
 var templateFS embed.FS
 
-var pageTemplate = template.Must(template.ParseFS(templateFS, "templates/index.html"))
+var pageTemplate = template.Must(
+	template.New("index.html").Funcs(template.FuncMap{
+		"platformIcon":   platformIcon,
+		"platformName":   platformName,
+		"resolvePlatform": resolvePlatform,
+	}).ParseFS(templateFS, "templates/index.html"),
+)
 
 // Server holds the gallery index.
 type Server struct {
@@ -33,6 +39,7 @@ type Server struct {
 	db          *sql.DB
 	tagDB       *sql.DB // 读取账号级 tag / emoji 投票（GALLERY_TAG_DB，默认 twitter.db）
 	accountTags map[string][]string
+	links       map[string][]AccountLink // account → 外部链接
 }
 
 func (s *Server) current() *Gallery {
@@ -73,6 +80,8 @@ func Run(addr string) {
 
 	// 扁平 per-image 标签体系（与账号 tag 完全分离）
 	initMediaTagSchema(db)
+	// 账号外部链接（pixiv / ci-en / fanbox 等）
+	initAccountLinksSchema(db)
 	// 把已持久化的 per-image 标签（含赞/倒赞）回填进内存索引
 	g.AttachReactions(db)
 
@@ -81,6 +90,7 @@ func Run(addr string) {
 		db:          db,
 		tagDB:       tagDB,
 		accountTags: accountTags,
+		links:       loadAccountLinks(db),
 	}
 
 	mux := http.NewServeMux()
@@ -95,6 +105,8 @@ func Run(addr string) {
 	mux.HandleFunc("GET /age-gate", s.handleAgeGatePage)
 	mux.HandleFunc("POST /age-gate", s.handleAgeGateConfirm)
 	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
+	mux.HandleFunc("POST /api/link", s.handleSetLink)
+	mux.HandleFunc("DELETE /api/link", s.handleDeleteLink)
 
 	log.Printf("gallery: server listening on %s (json dir: %s)", addr, jsonDir)
 	if err := http.ListenAndServe(addr, logRequests(ageGate(mux))); err != nil {
@@ -208,7 +220,8 @@ p{color:#8b95a7;font-size:14px;line-height:1.6;margin-bottom:28px}
 
 func ageGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/age-gate" || r.URL.Path == "/sitemap.xml" || strings.HasPrefix(r.URL.Path, "/favicon") {
+		if r.URL.Path == "/age-gate" || r.URL.Path == "/sitemap.xml" ||
+			strings.HasPrefix(r.URL.Path, "/favicon") || strings.HasPrefix(r.URL.Path, "/api/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -261,6 +274,42 @@ func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.RUnlock()
 	fmt.Fprint(w, `</urlset>`)
+}
+
+func (s *Server) handleSetLink(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Account  string `json:"account"`
+		Platform string `json:"platform"`
+		URL      string `json:"url"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Account == "" || req.URL == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	platform := resolvePlatform(req.Platform)
+	if err := upsertAccountLink(s.db, req.Account, platform, req.URL); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.links = loadAccountLinks(s.db)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (s *Server) handleDeleteLink(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Account  string `json:"account"`
+		Platform string `json:"platform"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Account == "" || req.Platform == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if err := deleteAccountLink(s.db, req.Account, req.Platform); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.links = loadAccountLinks(s.db)
+	w.WriteHeader(http.StatusOK)
 }
 
 // ---------- small helpers ----------
@@ -454,6 +503,7 @@ type templateDir struct {
 	RecursiveCount int
 	Votes          int // 最热视图：账号 emoji 总票数
 	Link           string
+	Links          []AccountLink // 外部平台链接
 }
 
 type templateTag struct {
@@ -999,6 +1049,7 @@ func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []st
 			Count:          g.direct[p],
 			RecursiveCount: g.recurs[p],
 			Link:           buildFolderURL(p, include, exclude, typeFilter, sortKey),
+			Links:          s.links[name],
 		})
 	}
 	return out

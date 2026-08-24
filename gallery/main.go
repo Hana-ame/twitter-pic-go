@@ -94,6 +94,7 @@ func Run(addr string) {
 	mux.HandleFunc("POST /react", s.handleReact)
 	mux.HandleFunc("GET /age-gate", s.handleAgeGatePage)
 	mux.HandleFunc("POST /age-gate", s.handleAgeGateConfirm)
+	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
 
 	log.Printf("gallery: server listening on %s (json dir: %s)", addr, jsonDir)
 	if err := http.ListenAndServe(addr, logRequests(ageGate(mux))); err != nil {
@@ -174,6 +175,8 @@ var ageGateHTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="rating" content="mature">
+<meta name="robots" content="noindex">
 <title>年龄验证 · Gallery</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -205,7 +208,7 @@ p{color:#8b95a7;font-size:14px;line-height:1.6;margin-bottom:28px}
 
 func ageGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/age-gate" || strings.HasPrefix(r.URL.Path, "/favicon") {
+		if r.URL.Path == "/age-gate" || r.URL.Path == "/sitemap.xml" || strings.HasPrefix(r.URL.Path, "/favicon") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -233,6 +236,31 @@ func (s *Server) handleAgeGateConfirm(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, "/", http.StatusFound)
+}
+
+func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
+	host := "http://" + r.Host
+	if r.TLS != nil {
+		host = "https://" + r.Host
+	}
+	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+	fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>`+host+`/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
+  <url><loc>`+host+`/hot</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
+  <url><loc>`+host+`/tags</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+`)
+	s.mu.RLock()
+	seen := map[string]bool{}
+	for _, m := range s.gallery.media {
+		if m.Dir == "" || seen[m.Dir] {
+			continue
+		}
+		seen[m.Dir] = true
+		fmt.Fprint(w, `  <url><loc>`+host+`/`+m.Dir+`</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>`+"\n")
+	}
+	s.mu.RUnlock()
+	fmt.Fprint(w, `</urlset>`)
 }
 
 // ---------- small helpers ----------

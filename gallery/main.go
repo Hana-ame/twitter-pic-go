@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"fmt"
 	"html/template"
 	"log"
 	"math/rand"
@@ -91,9 +92,11 @@ func Run(addr string) {
 	mux.HandleFunc("GET /tags", s.handleTagsPage)
 	mux.HandleFunc("POST /rescan", s.handleRescan)
 	mux.HandleFunc("POST /react", s.handleReact)
+	mux.HandleFunc("GET /age-gate", s.handleAgeGatePage)
+	mux.HandleFunc("POST /age-gate", s.handleAgeGateConfirm)
 
 	log.Printf("gallery: server listening on %s (json dir: %s)", addr, jsonDir)
-	if err := http.ListenAndServe(addr, logRequests(mux)); err != nil {
+	if err := http.ListenAndServe(addr, logRequests(ageGate(mux))); err != nil {
 		log.Fatalf("gallery: server error: %v", err)
 	}
 }
@@ -164,6 +167,73 @@ func logRequests(next http.Handler) http.Handler {
 			log.Printf("gallery: %s %s %s", r.Method, r.URL.Path, time.Since(start))
 		}
 	})
+}
+
+var ageGateHTML = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>年龄验证 · Gallery</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#111;color:#e6e9ef;font-family:system-ui,-apple-system,sans-serif;
+  display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#191d24;border:1px solid #2d3542;border-radius:16px;
+  padding:48px 40px;max-width:420px;text-align:center}
+h1{font-size:22px;margin-bottom:12px}
+p{color:#8b95a7;font-size:14px;line-height:1.6;margin-bottom:28px}
+.btn{display:inline-block;padding:12px 32px;border-radius:10px;font-size:15px;
+  font-weight:600;cursor:pointer;text-decoration:none;border:none;margin:0 8px}
+.btn-yes{background:#4f8cff;color:#fff}
+.btn-yes:hover{background:#3a7aee}
+.btn-no{background:transparent;color:#8b95a7;border:1px solid #2d3542}
+.btn-no:hover{color:#e6e9ef;border-color:#4f8cff}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>&#9888; 年龄验证</h1>
+  <p>本站包含成人内容。请确认您已年满 <strong>18 岁</strong>。</p>
+  <form method="POST" action="/age-gate" style="display:inline">
+    <button type="submit" class="btn btn-yes">我已满 18 岁，进入</button>
+  </form>
+  <a href="https://www.google.com" class="btn btn-no">未满 18 岁，离开</a>
+</div>
+</body>
+</html>`
+
+func ageGate(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/age-gate" || strings.HasPrefix(r.URL.Path, "/favicon") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if c, err := r.Cookie("age_verified"); err == nil && c.Value == "1" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, ageGateHTML)
+	})
+}
+
+func (s *Server) handleAgeGatePage(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, ageGateHTML)
+}
+
+func (s *Server) handleAgeGateConfirm(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "age_verified",
+		Value:    "1",
+		Path:     "/",
+		MaxAge:   86400 * 365,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // ---------- small helpers ----------

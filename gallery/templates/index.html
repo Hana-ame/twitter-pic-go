@@ -77,9 +77,11 @@ main { flex: 1; padding: 16px; }
 .card .meta { padding: 8px 10px; }
 .card .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .badge { font-size: 11px; color: var(--accent2); }
-.reactions { display: flex; gap: 6px; margin-top: 6px; }
+.reactions { display: flex; gap: 6px; margin-top: 6px; align-items: center; }
 .react { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 4px 9px; font-size: 12px; cursor: pointer; }
 .react:hover { border-color: var(--accent); }
+.tweet-link { font-size: 11px; text-decoration: none; opacity: 0.4; margin-left: 4px; }
+.tweet-link:hover { opacity: 1; }
 .pagination { display: flex; gap: 8px; align-items: center; margin: 18px 0; flex-wrap: wrap; }
 .pagination a, .pagination span { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; }
 .pagination span.info { background: transparent; border: none; color: var(--muted); }
@@ -272,6 +274,7 @@ main { flex: 1; padding: 16px; }
       <div class="reactions">
         <button type="button" class="react" data-id="{{.ID}}" data-emoji="👍" onclick="event.preventDefault();react(this)">👍 <span class="rc">{{.LikeCount}}</span></button>
         <button type="button" class="react" data-id="{{.ID}}" data-emoji="👎" onclick="event.preventDefault();react(this)">👎 <span class="rc">{{.DislikeCount}}</span></button>
+        {{if .TweetID}}<a class="tweet-link" href="https://x.com/i/status/{{.TweetID}}" target="_blank" rel="noopener" title="查看原推">🔗</a>{{end}}
       </div>
     </div>
   </a>

@@ -33,6 +33,7 @@ type Media struct {
 	DislikeCount int      `json:"dislike_count"`
 	URL          string   `json:"url"`          // proxy URL on this server
 	OriginalURL  string   `json:"original_url"` // pbs.twimg.com / video.twimg.com
+	TweetID      int64    `json:"tweet_id"`     // 原推 ID，溯源用
 }
 
 // IsVideo reports whether the media is a video or animated gif.
@@ -110,7 +111,7 @@ var videoExts = map[string]bool{
 	".mkv": true, ".avi": true, ".ts": true, ".mts": true,
 }
 
-// shortHash 返回 URL 的短哈希（8 字符 hex），用于与 tweet_id 拼接生成唯一 ID。
+// shortHash 返回 URL 的短哈希（8 字符 hex）。
 func shortHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
@@ -400,7 +401,7 @@ func (g *Gallery) Scan() error {
 			}
 			vname := fmt.Sprintf("%s_%04d%s", base, i, ext)
 			vpath := dir + "/" + vname
-			id := fmt.Sprintf("%d_%s", te.TweetID, shortHash(te.URL))
+			id := shortHash(dir + "\x00" + te.URL)
 
 			m := &Media{
 				ID:          id,
@@ -414,6 +415,7 @@ func (g *Gallery) Scan() error {
 				DirTags:     dirTags,
 				URL:         serveURL(next.mediaBase, te.URL),
 				OriginalURL: te.URL,
+				TweetID:     te.TweetID,
 			}
 
 			next.byID[m.ID] = m

@@ -803,7 +803,12 @@ func (s *Server) handleReact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing media_id or emoji", http.StatusBadRequest)
 		return
 	}
-	likes, dislikes, err := React(s.db, mediaID, emoji, voter)
+	// 从内存索引取出 tweet_id，写入点赞记录以便溯源。
+	var tweetID int64
+	if m, ok := g.byID[mediaID]; ok {
+		tweetID = m.TweetID
+	}
+	likes, dislikes, err := React(s.db, mediaID, emoji, voter, tweetID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -31,6 +31,7 @@ func initMediaTagSchema(db *sql.DB) {
 			media_id  TEXT NOT NULL,
 			tag_id    INTEGER NOT NULL,
 			voter     TEXT NOT NULL DEFAULT '',
+			tweet_id  INTEGER NOT NULL DEFAULT 0,
 			added_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			PRIMARY KEY (media_id, tag_id, voter),
 			FOREIGN KEY (tag_id) REFERENCES tags(id)
@@ -47,6 +48,8 @@ func initMediaTagSchema(db *sql.DB) {
 			return
 		}
 	}
+	// 兼容旧表：加 tweet_id 列（已存在则忽略）
+	db.Exec(`ALTER TABLE media_tags ADD COLUMN tweet_id INTEGER NOT NULL DEFAULT 0`)
 }
 
 // ensureTag 返回（或创建）某个扁平 tag 的 id。
@@ -69,7 +72,7 @@ func ensureTag(db *sql.DB, name string) (int64, error) {
 // React 设置/取消某个 media 的 emoji 反应（扁平 tag）。
 // 同一 voter 只能有一个反应：点同款=取消，点另一款=切换。
 // 返回该 media 最新的赞/倒赞聚合计数。
-func React(db *sql.DB, mediaID, emoji, voter string) (likes, dislikes int, err error) {
+func React(db *sql.DB, mediaID, emoji, voter string, tweetID int64) (likes, dislikes int, err error) {
 	tagID, err := ensureTag(db, emoji)
 	if err != nil {
 		return 0, 0, err
@@ -85,7 +88,7 @@ func React(db *sql.DB, mediaID, emoji, voter string) (likes, dislikes int, err e
 	}
 	// 若之前不是同款，则写入新反应（否则即取消）
 	if cur != tagID {
-		if _, e := db.Exec(`INSERT OR IGNORE INTO media_tags (media_id, tag_id, voter) VALUES (?,?,?)`, mediaID, tagID, voter); e != nil {
+		if _, e := db.Exec(`INSERT OR IGNORE INTO media_tags (media_id, tag_id, voter, tweet_id) VALUES (?,?,?,?)`, mediaID, tagID, voter, tweetID); e != nil {
 			return 0, 0, e
 		}
 	}

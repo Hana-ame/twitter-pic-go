@@ -117,6 +117,9 @@ func Run(addr string) {
 	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
 	mux.HandleFunc("POST /api/link", s.handleSetLink)
 	mux.HandleFunc("DELETE /api/link", s.handleDeleteLink)
+	mux.HandleFunc("GET /api/health", s.handleAPIHealth)
+	mux.HandleFunc("GET /api/accounts", s.handleAPIAccounts)
+	mux.HandleFunc("GET /api/media", s.handleAPIMedia)
 
 	log.Printf("gallery: server listening on %s (json dir: %s)", addr, jsonDir)
 	if err := http.ListenAndServe(addr, logRequests(ageGate(mux))); err != nil {
@@ -351,6 +354,134 @@ func (s *Server) handleDeleteLink(w http.ResponseWriter, r *http.Request) {
 	}
 	s.links = loadAccountLinks(s.db)
 	w.WriteHeader(http.StatusOK)
+}
+
+// ---------- 只读 JSON API（供脚本 / 未来 SPA 使用；age-gate 直接放行） ----------
+
+func writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(v)
+}
+
+// handleAPIHealth GET /api/health
+func (s *Server) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
+	g := s.current()
+	writeJSON(w, map[string]any{
+		"status":   "ok",
+		"accounts": len(g.dirs[""]),
+		"media":    len(g.media),
+	})
+}
+
+// handleAPIAccounts GET /api/accounts?q=&page=&page_size=
+// 账号列表（含 db 索引账号），支持按用户名/昵称子串搜索。
+func (s *Server) handleAPIAccounts(w http.ResponseWriter, r *http.Request) {
+	g := s.current()
+	q := r.URL.Query()
+	query := strings.TrimSpace(q.Get("q"))
+	page := intParam(r, "page", 1, 1, 0)
+	pageSize := intParam(r, "page_size", defaultPageSize, 1, 100)
+
+	type apiAccount struct {
+		Name     string `json:"name"`
+		Nick     string `json:"nick,omitempty"`
+		Media    int    `json:"media"`
+		Avatar   string `json:"avatar,omitempty"`
+		Updated  string `json:"updated,omitempty"`
+		Links    []AccountLink `json:"links,omitempty"`
+	}
+	all := accountList(g)
+	if query != "" {
+		all = filterAccounts(all, query)
+	}
+	total := len(all)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	if page > totalPages && totalPages > 0 {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+
+	out := make([]apiAccount, 0, end-start)
+	for _, d := range all[start:end] {
+		out = append(out, apiAccount{
+			Name: d.Name, Nick: d.Nick, Media: d.RecursiveCount,
+			Avatar: d.Avatar, Updated: d.Date, Links: d.Links,
+		})
+	}
+	writeJSON(w, map[string]any{
+		"total": total, "page": page, "page_size": pageSize,
+		"total_pages": totalPages, "accounts": out,
+	})
+}
+
+// handleAPIMedia GET /api/media?dir=&type=&page=&page_size=&sort=
+// 媒体列表（dir 为空表示全站），支持 photo/video 过滤与排序。
+func (s *Server) handleAPIMedia(w http.ResponseWriter, r *http.Request) {
+	g := s.current()
+	q := r.URL.Query()
+	dir := normalizeDir(q.Get("dir"))
+	typeFilter := strings.ToLower(strings.TrimSpace(q.Get("type")))
+	sortKey := strings.ToLower(strings.TrimSpace(q.Get("sort")))
+	page := intParam(r, "page", 1, 1, 0)
+	pageSize := intParam(r, "page_size", defaultPageSize, 1, 100)
+
+	var list []*Media
+	if dir == "" {
+		list = g.media
+	} else {
+		list = g.byDir[dir]
+		if len(list) == 0 {
+			list = s.mediaUnder(g, dir)
+		}
+	}
+	filtered := make([]*Media, 0, len(list))
+	for _, m := range list {
+		if typeFilter != "" && !matchesTypeFilter(m, typeFilter) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	switch sortKey {
+	case "random":
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		rng.Shuffle(len(filtered), func(i, j int) { filtered[i], filtered[j] = filtered[j], filtered[i] })
+	default:
+		sortMedia(filtered, sortKey)
+	}
+	total := len(filtered)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	if page > totalPages && totalPages > 0 {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	end := start + pageSize
+	if start > total {
+		start = total
+	}
+	if end > total {
+		end = total
+	}
+	items := make([]Media, 0, end-start)
+	for _, m := range filtered[start:end] {
+		items = append(items, *m)
+	}
+	writeJSON(w, map[string]any{
+		"total": total, "page": page, "page_size": pageSize,
+		"total_pages": totalPages, "items": items,
+	})
 }
 
 // ---------- small helpers ----------

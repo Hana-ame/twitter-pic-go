@@ -51,9 +51,19 @@ go run ./server
 
 ## 页面功能
 
+- 侧边栏「搜索账号」：按用户名 / 昵称子串过滤（`/latest?q=...`）
 - 右上角「识别码」徽标：浏览器本地身份（赞/踩 的 voter），支持「引继」导入其他识别码继承身份
 - 账号卡片：头像、昵称（db users.nick）、@用户名、媒体数、最近更新日期、外部平台图标链接、☆ 收藏
+- Lightbox 灯箱：点击卡片页内预览大图/视频，← → 切换、Esc 关闭，`#lbN` 锚点直达第 N 张
+- 网格缩略图走 twimg `name=small` 小图变体；视频 iframe 滚动到视口附近才创建
+- 分页带页码窗口（基于当前 URL 渐进增强，无 JS 时退回上一页/下一页）
 - 视频/动图：通过 srcdoc iframe + no-referrer 绕过 video.twimg.com 防盗链
+
+## JSON API（只读）
+
+- `GET /api/health` — `{"status","accounts","media"}`
+- `GET /api/accounts?q=&page=&page_size=` — 账号列表（含昵称/媒体数/外链）
+- `GET /api/media?dir=&type=&sort=&page=&page_size=` — 媒体列表（dir 为空表示全站）
 
 ## 数据来源
 

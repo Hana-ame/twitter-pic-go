@@ -26,10 +26,13 @@ type Media struct {
 	Ext         string    `json:"ext"`
 	Size        int64     `json:"size"` // unknown for remote media
 	ModTime     time.Time `json:"mod_time"`
-	Tags        []string  `json:"tags"`
-	DirTags     []string  `json:"dir_tags,omitempty"`
-	URL         string    `json:"url"`          // proxy URL on this server
-	OriginalURL string    `json:"original_url"` // pbs.twimg.com / video.twimg.com
+	Tags         []string `json:"tags"`
+	DirTags      []string `json:"dir_tags,omitempty"`
+	PerImageTags []string `json:"per_image_tags,omitempty"` // 扁平 per-image 标签（与账号 tag 完全分离）
+	LikeCount    int      `json:"like_count"`
+	DislikeCount int      `json:"dislike_count"`
+	URL          string   `json:"url"`          // proxy URL on this server
+	OriginalURL  string   `json:"original_url"` // pbs.twimg.com / video.twimg.com
 }
 
 // IsVideo reports whether the media is a video or animated gif.
@@ -90,6 +93,11 @@ type Gallery struct {
 	direct map[string]int      // dir -> count of media directly inside
 	recurs map[string]int      // dir -> count of media in subtree
 	tags   map[string]int      // tag -> media count
+	// accountTagCounts: tag -> 账号数（左导航/标签云统计“哪些账号拥有该 tag”用，与 media 数分离）
+	accountTagCounts map[string]int
+	// mediaBase: pbs.twimg.com 媒体的服务前缀（endpoint B / twimg），path 形式；
+	// 为空则图片直链原始 URL。
+	mediaBase string
 }
 
 var imageExts = map[string]bool{
@@ -153,20 +161,71 @@ func NewGallery(root string, accountTags map[string][]string) *Gallery {
 	if accountTags == nil {
 		accountTags = map[string][]string{}
 	}
+	// 统计每个 tag 被多少个账号拥有（左导航/标签云用）。
+	accountTagCounts := map[string]int{}
+	for _, tags := range accountTags {
+		seen := map[string]bool{}
+		for _, t := range tags {
+			if !seen[t] {
+				seen[t] = true
+				accountTagCounts[t]++
+			}
+		}
+	}
 	return &Gallery{
-		root:        root,
-		accountTags: accountTags,
-		byID:        map[string]*Media{},
-		byURL:       map[string]*Media{},
-		byDir:       map[string][]*Media{},
-		dirs:        map[string][]string{},
-		direct:      map[string]int{},
-		recurs:      map[string]int{},
-		tags:        map[string]int{},
+		root:             root,
+		accountTags:      accountTags,
+		byID:             map[string]*Media{},
+		byURL:            map[string]*Media{},
+		byDir:            map[string][]*Media{},
+		dirs:             map[string][]string{},
+		direct:           map[string]int{},
+		recurs:           map[string]int{},
+		tags:             map[string]int{},
+		accountTagCounts: accountTagCounts,
+		mediaBase:         deriveMediaBase(),
 	}
 }
 
 func (g *Gallery) Root() string { return g.root }
+
+// serveURL 根据 mediaBase 决定媒体 URL：pbs.twimg.com 走 endpoint B（path 形式），
+// 其他域名直链原始 URL（video.twimg.com 等直接加载，无需反代）。
+func serveURL(mediaBase, raw string) string {
+	if mediaBase == "" {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return raw
+	}
+	// 只有 pbs.twimg.com 走 twimg 反代；video.twimg.com 等直链。
+	if u.Host != "pbs.twimg.com" {
+		return raw
+	}
+	return mediaBase + u.Path + func() string {
+		if u.RawQuery != "" {
+			return "?" + u.RawQuery
+		}
+		return ""
+	}()
+}
+
+// deriveMediaBase 返回 pbs.twimg.com 媒体的服务前缀（endpoint B / twimg 反代）。
+// 优先 GALLERY_MEDIA_BASE，否则复用 TWIMG_ADDR；都为空则返回 ""（图片直链原始 URL）。
+func deriveMediaBase() string {
+	base := os.Getenv("GALLERY_MEDIA_BASE")
+	if base == "" {
+		base = os.Getenv("TWIMG_ADDR")
+	}
+	if base == "" {
+		return ""
+	}
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "http://" + base
+	}
+	return strings.TrimRight(base, "/")
+}
 
 type gzTimelineEntry struct {
 	URL  string `json:"url"`
@@ -351,7 +410,7 @@ func (g *Gallery) Scan() error {
 				ModTime:     parseFlexibleTime(te.Date),
 				Tags:        tags,
 				DirTags:     dirTags,
-				URL:         "/proxy?id=" + url.QueryEscape(id) + "&url=" + url.QueryEscape(te.URL),
+				URL:         serveURL(next.mediaBase, te.URL),
 				OriginalURL: te.URL,
 			}
 
@@ -378,9 +437,11 @@ func (g *Gallery) Scan() error {
 	}
 
 	// Compute recursive counts and tag counts.
+	// Tag cloud counts only real account-level tags (m.Tags), not directory-derived
+	// account names (m.DirTags) — those are reachable via the account list instead.
 	for _, m := range next.media {
 		next.recurs[m.Dir]++
-		for _, t := range m.AllTags() {
+		for _, t := range m.Tags {
 			next.tags[t]++
 		}
 	}

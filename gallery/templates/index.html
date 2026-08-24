@@ -15,34 +15,49 @@
   --accent: #4f8cff;
   --accent2: #9b6cff;
   --danger: #ff5c5c;
+  --gold: #ffb454;
 }
 * { box-sizing: border-box; }
 body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
 a { color: var(--accent); text-decoration: none; }
-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
-header h1 { font-size: 18px; margin: 0 12px 0 0; }
-nav { display: flex; gap: 6px; flex-wrap: wrap; }
-nav a { background: var(--panel2); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 7px 14px; font-size: 13px; }
-nav a.active { color: white; background: var(--accent); border-color: var(--accent); }
-.searchbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 0 auto; }
-.searchbar input { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 8px 10px; width: 160px; outline: none; }
-.searchbar input:focus { border-color: var(--accent); }
+/* ===== 顶部 navbar：友情链接 + 广告，游览时自动隐藏 ===== */
+.navbar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20; }
+.navbar--hidden { display: none; }
+.navbar .brand { font-weight: 700; font-size: 16px; }
+.navbar .group { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.navbar .group .label { color: var(--muted); font-size: 12px; }
+.navbar .group a { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; font-size: 13px; color: var(--text); }
+.navbar .group a:hover { border-color: var(--accent); }
+.navbar .ads { margin-left: auto; }
+.navbar .ad-slot { background: linear-gradient(135deg, #2a2140, #3a2150); border: 1px dashed var(--accent2); border-radius: 8px; padding: 6px 14px; font-size: 13px; color: var(--gold); }
 button { background: var(--accent); color: white; border: 0; border-radius: 8px; padding: 8px 14px; cursor: pointer; font-size: 13px; }
 button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
-.layout { display: flex; min-height: calc(100vh - 55px); }
-aside { width: 240px; min-width: 240px; background: var(--panel); border-right: 1px solid var(--border); padding: 14px; overflow-y: auto; max-height: calc(100vh - 55px); position: sticky; top: 55px; }
-aside h3 { font-size: 13px; color: var(--muted); margin: 8px 0; text-transform: uppercase; }
+.layout { display: flex; min-height: calc(100vh - 45px); }
+/* ===== 左侧导航 ===== */
+aside { width: 240px; min-width: 240px; background: var(--panel); border-right: 1px solid var(--border); padding: 14px; overflow-y: auto; max-height: calc(100vh - 45px); position: sticky; top: 45px; }
+aside h3 { font-size: 12px; color: var(--muted); margin: 14px 0 8px; text-transform: uppercase; }
+.nav-tabs { display: flex; flex-direction: column; gap: 4px; }
+.nav-tabs a { padding: 9px 12px; border-radius: 8px; color: var(--muted); font-size: 14px; border: 1px solid transparent; }
+.nav-tabs a:hover { background: var(--panel2); color: var(--text); }
+.nav-tabs a.active { background: var(--accent); color: white; border-color: var(--accent); }
+.setting select { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
-.tag { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; font-size: 12px; color: var(--text); display: inline-flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.tag { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; font-size: 12px; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 .tag a { color: var(--text); }
 .tag a.exclude { color: var(--danger); }
+/* ===== 主区 ===== */
 main { flex: 1; padding: 16px; }
 .breadcrumb { font-size: 14px; margin-bottom: 12px; color: var(--muted); }
-.folders { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
-.folder { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; min-width: 150px; }
-.folder:hover { border-color: var(--accent); }
-.folder .name { font-weight: 600; font-size: 14px; }
-.folder .count { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.folders, .accounts-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 16px; }
+.folder, .account-card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px; min-width: 160px; }
+.folder:hover, .account-card:hover { border-color: var(--accent); }
+.account-card { display: flex; flex-direction: column; gap: 4px; }
+.account-card .name { font-weight: 600; font-size: 14px; }
+.account-card .count { color: var(--muted); font-size: 12px; }
+.account-card .votes { color: var(--gold); font-size: 12px; }
+.account-card .fav-toggle { align-self: flex-start; margin-top: 4px; font-size: 12px; padding: 4px 10px; }
+.account-card .fav-toggle.on { background: var(--gold); color: #111; }
+.accounts-select { width: 100%; max-width: 420px; padding: 9px 10px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; transition: border-color .15s, transform .15s; }
 .card:hover { border-color: var(--accent); transform: translateY(-2px); }
@@ -50,6 +65,9 @@ main { flex: 1; padding: 16px; }
 .card .meta { padding: 8px 10px; }
 .card .name { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .badge { font-size: 11px; color: var(--accent2); }
+.reactions { display: flex; gap: 6px; margin-top: 6px; }
+.react { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 4px 9px; font-size: 12px; cursor: pointer; }
+.react:hover { border-color: var(--accent); }
 .pagination { display: flex; gap: 8px; align-items: center; margin: 18px 0; flex-wrap: wrap; }
 .pagination a, .pagination span { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 12px; }
 .pagination span.info { background: transparent; border: none; color: var(--muted); }
@@ -63,47 +81,71 @@ main { flex: 1; padding: 16px; }
 .filterbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
 .filterbar a { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; color: var(--muted); }
 .filterbar a.active { color: white; background: var(--accent); }
+.mode-switch { display: flex; gap: 6px; margin-bottom: 12px; font-size: 13px; }
+.mode-switch a { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; color: var(--muted); }
+.mode-switch a.active { color: white; background: var(--accent); }
 </style>
 </head>
 <body>
-<header>
-  <h1>🖼️ Gallery</h1>
-  <nav>
-    <a href="/" class="{{if or (eq .Mode "index") (eq .Mode "gallery")}}active{{end}}">浏览</a>
-    <a href="/tags" class="{{if eq .Mode "tags"}}active{{end}}">标签</a>
-    <a href="/recommendations" class="{{if eq .Mode "recommendations"}}active{{end}}">推荐</a>
-    <a href="/clusters" class="{{if eq .Mode "clusters"}}active{{end}}">聚类</a>
-    <a href="/history" class="{{if eq .Mode "history"}}active{{end}}">历史</a>
-  </nav>
-  <form class="searchbar" method="GET" action="/">
-    <input type="text" name="tags" placeholder="包含 tag1,tag2" value="{{.IncTagCSV}}">
-    <input type="text" name="exclude_tags" placeholder="排除 tag3" value="{{.ExcTagCSV}}">
-    {{if .Dir}}<input type="hidden" name="dir" value="{{.Dir}}">{{end}}
-    <button type="submit">搜索</button>
-    <a class="tag" href="/">重置</a>
-  </form>
-  <form method="POST" action="/rescan" style="margin:0;"><button type="submit" class="ghost">重新扫描</button></form>
-</header>
+<!-- 顶部 navbar：友情链接 + 广告；游览（看图）时自动隐藏 -->
+<nav class="navbar {{if or (eq .Mode "gallery") (eq .Mode "media")}}navbar--hidden{{end}}">
+  <span class="brand">🖼️ Gallery</span>
+  <div class="group">
+    <span class="label">友情链接</span>
+    <a href="https://example.com" target="_blank" rel="noopener">示例站</a>
+    <a href="https://example2.com" target="_blank" rel="noopener">示例站 2</a>
+  </div>
+  <div class="group ads">
+    <span class="label">广告</span>
+    <a class="ad-slot" href="https://ads.example.com" target="_blank" rel="noopener">广告位招租</a>
+  </div>
+</nav>
+
 <div class="layout">
   <aside>
-    <h3>目录</h3>
-    <div class="tags">
-      {{if .UpURL}}<a class="tag" href="{{.UpURL}}">⬆ 上一级</a>{{end}}
-      {{range .Dirs}}<a class="tag" href="{{.Link}}">📁 {{.Name}} ({{.Count}})</a>{{end}}
+    <h3>导航</h3>
+    <div class="nav-tabs">
+      <a href="/" class="{{if eq .ActiveTab "latest"}}active{{end}}">最新</a>
+      <a href="/hot" class="{{if eq .ActiveTab "hot"}}active{{end}}">最热</a>
+      <a href="/favorites" class="{{if eq .ActiveTab "favorites"}}active{{end}}">我的收藏</a>
+      <a href="/tags" class="{{if eq .ActiveTab "tags"}}active{{end}}">标签</a>
     </div>
-    <h3>Tags</h3>
+    <h3>发现</h3>
+    <div class="nav-tabs">
+      <a href="/clusters" class="{{if eq .Mode "clusters"}}active{{end}}">聚类</a>
+    </div>
+    <h3>设置</h3>
+    <div class="setting">
+      <select id="displayMode">
+        <option value="grid">翻页式（网格）</option>
+        <option value="dropdown">下拉式</option>
+      </select>
+    </div>
+    <h3>标签速览</h3>
     <div class="tags">
-      {{range .Tags}}
-      <span class="tag">{{.Name}}({{.Count}}) <a href="{{.IncludeLink}}">＋</a> <a class="exclude" href="{{.ExcludeLink}}">－</a></span>
-      {{end}}
+      {{range .Tags}}<a class="tag" href="/tags?tag={{.Name}}&mode=accounts">{{.Name}}({{.Count}})</a>{{end}}
     </div>
   </aside>
-  <main>
-    {{if or (eq .Mode "index") (eq .Mode "gallery")}}
-      {{if eq .Mode "gallery"}}
-      <div class="breadcrumb"><a href="/">根目录</a>{{range $i, $part := .BreadParts}}{{if $part}} / <a href="{{index $.BreadLinks $i}}">{{$part}}</a>{{end}}{{end}}</div>
-      {{end}}
 
+  <main>
+    {{if eq .Mode "index"}}
+      <h2>账号</h2>
+      {{template "accountsGrid" .}}
+      {{template "pagination" .}}
+
+    {{else if eq .Mode "accounts"}}
+      <h2>{{.Title}}</h2>
+      {{template "accountsGrid" .}}
+      {{template "pagination" .}}
+      {{if not .Dirs}}<div class="empty">没有内容</div>{{end}}
+
+    {{else if eq .Mode "favorites"}}
+      <h2>我的收藏</h2>
+      <div id="favList" class="accounts-grid"></div>
+      <div id="favEmpty" class="empty">还没有收藏，去账号卡片点 ☆ 收藏吧</div>
+
+    {{else if eq .Mode "gallery"}}
+      <div class="breadcrumb"><a href="/">根目录</a>{{range $i, $part := .BreadParts}}{{if $part}} / <a href="{{index $.BreadLinks $i}}">{{$part}}</a>{{end}}{{end}}</div>
       <div class="filterbar">
         <a href="{{.TypeAllURL}}" class="{{if eq .TypeFilter ""}}active{{end}}">全部类型</a>
         <a href="{{.TypeImageURL}}" class="{{if eq .TypeFilter "image"}}active{{end}}">图片</a>
@@ -113,85 +155,44 @@ main { flex: 1; padding: 16px; }
         <a href="{{.SortTimeURL}}" class="{{if eq .SortKey "time"}}active{{end}}">时间</a>
         <a href="{{.SortSizeURL}}" class="{{if eq .SortKey "size"}}active{{end}}">大小</a>
         <a href="{{.SortRandomURL}}" class="{{if eq .SortKey "random"}}active{{end}}">随机</a>
-        {{if eq .Mode "gallery"}}<a href="{{.RecursiveURL}}">{{if .Recursive}}停止递归{{else}}递归搜索{{end}}</a>{{end}}
+        <a href="{{.RecursiveURL}}">{{if .Recursive}}停止递归{{else}}递归搜索{{end}}</a>
       </div>
+      {{if .TagActive}}<div class="mode-switch">
+        <span>当前标签：{{.TagActive}}</span>
+        <a href="/tags?tag={{.TagActive}}&mode=accounts" class="{{if eq .TagMode "accounts"}}active{{end}}">按账号</a>
+        <a href="/tags?tag={{.TagActive}}&mode=images" class="{{if eq .TagMode "images"}}active{{end}}">按图片</a>
+      </div>{{end}}
+      {{template "mediaGrid" .}}
+      {{template "pagination" .}}
 
-      {{if eq .Mode "index"}}<h2>目录分类</h2>{{end}}
-      <div class="folders">
-        {{range .Dirs}}
-        <a class="folder" href="{{.Link}}">
-          <div class="name">📁 {{.Name}}</div>
-          <div class="count">{{.Count}} 个直属 · {{.RecursiveCount}} 个总计</div>
-        </a>
-        {{end}}
-      </div>
+    {{else if eq .Mode "media"}}
+      {{if .TagActive}}<div class="mode-switch">
+        <span>标签：{{.TagActive}}</span>
+        <a href="/tags?tag={{.TagActive}}&mode=accounts" class="{{if eq .TagMode "accounts"}}active{{end}}">按账号</a>
+        <a href="/tags?tag={{.TagActive}}&mode=images" class="{{if eq .TagMode "images"}}active{{end}}">按图片</a>
+      </div>{{end}}
+      {{template "mediaGrid" .}}
+      {{template "pagination" .}}
 
-      {{if eq .Mode "index"}}<h2>最新媒体</h2>{{end}}
-      <div class="grid">
-        {{range .Items}}
-        <a class="card" href="{{.URL}}" target="_blank">
-          {{if or (eq .Type "video") (eq .Type "animated_gif")}}
-          <video class="thumb" preload="metadata" src="{{.URL}}"></video>
-          {{else}}
-          <img class="thumb" loading="lazy" src="{{.URL}}">
-          {{end}}
-          <div class="meta">
-            <div class="name">{{.Name}}</div>
-            <div class="badge">{{.Type}}{{if .Dir}} · {{.Dir}}{{end}}</div>
-            <div class="tags">
-              {{range .Tags}}<span class="tag">{{.}}</span>{{end}}
-            </div>
-          </div>
-        </a>
-        {{end}}
-      </div>
-      {{if not .Items}}<div class="empty">没有内容</div>{{end}}
-
-      <div class="pagination">
-        {{if and .PrevURL (gt .Page 1)}}<a href="{{.PrevURL}}">上一页</a>{{end}}
-        <span class="info">第 {{.Page}} / {{.TotalPages}} 页 · 共 {{.Total}} 条</span>
-        {{if and .NextURL (lt .Page .TotalPages)}}<a href="{{.NextURL}}">下一页</a>{{end}}
-      </div>
     {{else if eq .Mode "tags"}}
       <h2>标签</h2>
-      <form method="GET" action="/tags" class="searchbar" style="margin-bottom:12px;">
-        {{if .Dir}}<input type="hidden" name="dir" value="{{.Dir}}">{{end}}
-        <input type="text" name="q" placeholder="过滤标签" value="{{.TagFilter}}">
-        <button type="submit">过滤</button>
-      </form>
+      {{if .TagActive}}<div class="mode-switch">
+        <span>标签：{{.TagActive}}</span>
+        <a href="/tags?tag={{.TagActive}}&mode=accounts" class="active">按账号</a>
+        <a href="/tags?tag={{.TagActive}}&mode=images">按图片</a>
+      </div>
+      {{else}}
+      <div class="mode-switch">
+        <span>查看方式：</span>
+        <a href="/tags?mode=accounts" class="{{if eq .TagMode "accounts"}}active{{end}}">按账号</a>
+        <a href="/tags?mode=images" class="{{if eq .TagMode "images"}}active{{end}}">按图片</a>
+      </div>
+      {{end}}
       <div class="tags">
-        {{range .Tags}}
-        <span class="tag">{{.Name}}({{.Count}}) <a href="{{.IncludeLink}}">＋</a> <a class="exclude" href="{{.ExcludeLink}}">－</a></span>
-        {{end}}
+        {{range .Tags}}<a class="tag" href="/tags?tag={{.Name}}&mode={{$.TagMode}}">{{.Name}}({{.Count}}) <span style="color:var(--muted)">＋</span></a>{{end}}
       </div>
-    {{else if eq .Mode "history"}}
-      <h2>访问历史</h2>
-      {{range .History}}
-      <div class="history-item">
-        <span class="time">{{.ViewedAt.Format "2006-01-02 15:04:05"}}</span>
-        <a href="{{.URL}}" target="_blank">{{.Path}}</a>
-        <span class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</span>
-      </div>
-      {{else}}<div class="empty">暂无访问记录</div>{{end}}
-    {{else if eq .Mode "recommendations"}}
-      <h2>为你推荐</h2>
-      <div class="grid">
-        {{range .Recommendations}}
-        <a class="card" href="{{.URL}}" target="_blank">
-          {{if or (eq .Type "video") (eq .Type "animated_gif")}}
-          <video class="thumb" preload="metadata" src="{{.URL}}"></video>
-          {{else}}
-          <img class="thumb" loading="lazy" src="{{.URL}}">
-          {{end}}
-          <div class="meta">
-            <div class="name">{{.Name}}</div>
-            <div class="badge">{{.Type}}{{if .Dir}} · {{.Dir}}{{end}}</div>
-            <div class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</div>
-          </div>
-        </a>
-        {{end}}
-      </div>
-      {{if not .Recommendations}}<div class="empty">暂无推荐</div>{{end}}
+      {{if not .Tags}}<div class="empty">暂无标签</div>{{end}}
+
     {{else if eq .Mode "clusters"}}
       <h2>自动聚类</h2>
       {{range .Clusters}}
@@ -214,5 +215,137 @@ main { flex: 1; padding: 16px; }
     {{end}}
   </main>
 </div>
+
+{{define "accountsGrid"}}
+<div class="accounts-grid" id="accountsGrid">
+  {{range .Dirs}}
+  <div class="account-card">
+    <a class="name" href="{{.Link}}">{{.Name}}</a>
+    <div class="count">{{.Count}} 直属 · {{.RecursiveCount}} 总计</div>
+    {{if .Votes}}<div class="votes">🔥 {{.Votes}}</div>{{end}}
+    <button class="fav-toggle ghost" data-name="{{.Name}}" onclick="toggleFav(this)">☆ 收藏</button>
+  </div>
+  {{end}}
+</div>
+<select class="accounts-select" id="accountsSelect" onchange="if(this.value) location.href=this.value">
+  <option value="">选择账号…</option>
+  {{range .Dirs}}<option value="{{.Link}}">{{.Name}} ({{.RecursiveCount}})</option>{{end}}
+</select>
+{{end}}
+
+{{define "pagination"}}
+{{if or .PrevURL .NextURL}}
+<div class="pagination">
+  {{if .PrevURL}}<a href="{{.PrevURL}}">上一页</a>{{end}}
+  <span class="info">第 {{.Page}} / {{.TotalPages}} 页 · 共 {{.Total}} 个</span>
+  {{if .NextURL}}<a href="{{.NextURL}}">下一页</a>{{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "mediaGrid"}}
+<div class="grid">
+  {{range .Items}}
+  <a class="card" href="{{.URL}}" target="_blank">
+    {{if or (eq .Type "video") (eq .Type "animated_gif")}}
+    <video class="thumb" preload="metadata" src="{{.URL}}"></video>
+    {{else}}
+    <img class="thumb" loading="lazy" src="{{.URL}}">
+    {{end}}
+    <div class="meta">
+      <div class="name">{{.Name}}</div>
+      <div class="badge">{{.Type}}{{if .Dir}} · {{.Dir}}{{end}}</div>
+      <div class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</div>
+      {{if .PerImageTags}}<div class="tags">{{range .PerImageTags}}<span class="tag">{{.}}</span>{{end}}</div>{{end}}
+      <div class="reactions">
+        <button type="button" class="react" data-id="{{.ID}}" data-emoji="👍" onclick="event.preventDefault();react(this)">👍 <span class="rc">{{.LikeCount}}</span></button>
+        <button type="button" class="react" data-id="{{.ID}}" data-emoji="👎" onclick="event.preventDefault();react(this)">👎 <span class="rc">{{.DislikeCount}}</span></button>
+      </div>
+    </div>
+  </a>
+  {{end}}
+</div>
+{{if not .Items}}<div class="empty">没有内容</div>{{end}}
+{{end}}
+
+<script>
+// ---------- 收藏（localStorage，每浏览器独立）----------
+function favList() {
+  try { return JSON.parse(localStorage.getItem('gallery_favorites') || '[]'); } catch(e) { return []; }
+}
+function toggleFav(btn) {
+  const name = btn.getAttribute('data-name');
+  let list = favList();
+  const i = list.indexOf(name);
+  if (i >= 0) { list.splice(i, 1); btn.classList.remove('on'); btn.textContent = '☆ 收藏'; }
+  else { list.push(name); btn.classList.add('on'); btn.textContent = '★ 已收藏'; }
+  localStorage.setItem('gallery_favorites', JSON.stringify(list));
+  if (location.pathname === '/favorites') renderFav();
+}
+function renderFav() {
+  const favs = favList();
+  const all = {{.AccountsJSON}};
+  const box = document.getElementById('favList');
+  const empty = document.getElementById('favEmpty');
+  if (!box) return;
+  const matched = all.filter(a => favs.includes(a.Name));
+  if (matched.length === 0) { box.innerHTML = ''; empty.style.display = 'block'; return; }
+  empty.style.display = 'none';
+  box.innerHTML = matched.map(a => `
+    <div class="account-card">
+      <a class="name" href="${a.Link}">${a.Name}</a>
+      <div class="count">${a.Count} 直属 · ${a.RecursiveCount} 总计</div>
+      <button class="fav-toggle ghost on" data-name="${a.Name}" onclick="toggleFav(this)">★ 已收藏</button>
+    </div>`).join('');
+}
+
+// ---------- 显示方式：网格 / 下拉 ----------
+function applyDisplay() {
+  const mode = localStorage.getItem('gallery_display') || 'grid';
+  const sel = document.getElementById('displayMode');
+  if (sel) sel.value = mode;
+  const grid = document.getElementById('accountsGrid');
+  const drop = document.getElementById('accountsSelect');
+  if (!grid || !drop) return;
+  if (mode === 'dropdown') { grid.style.display = 'none'; drop.style.display = 'block'; }
+  else { grid.style.display = 'flex'; drop.style.display = 'none'; }
+}
+const dm = document.getElementById('displayMode');
+if (dm) dm.addEventListener('change', () => { localStorage.setItem('gallery_display', dm.value); applyDisplay(); });
+
+// ---------- 赞 / 倒赞（per-image 扁平 tag）----------
+function voterToken() {
+  let v = localStorage.getItem('gallery_voter');
+  if (!v) { v = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random()); localStorage.setItem('gallery_voter', v); }
+  return v;
+}
+async function react(btn) {
+  const id = btn.getAttribute('data-id');
+  const emoji = btn.getAttribute('data-emoji');
+  try {
+    const res = await fetch('/react', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ media_id: id, emoji: emoji, voter: voterToken() })
+    });
+    if (!res.ok) return;
+    const d = await res.json();
+    const box = btn.parentElement;
+    box.querySelector('button[data-emoji="👍"] .rc').textContent = d.likes;
+    box.querySelector('button[data-emoji="👎"] .rc').textContent = d.dislikes;
+  } catch (e) {}
+}
+
+// ---------- 初始化 ----------
+(function () {
+  // 账号卡片收藏状态高亮
+  const favs = favList();
+  document.querySelectorAll('.fav-toggle').forEach(b => {
+    if (favs.includes(b.getAttribute('data-name'))) { b.classList.add('on'); b.textContent = '★ 已收藏'; }
+  });
+  applyDisplay();
+  if (location.pathname === '/favorites') renderFav();
+})();
+</script>
 </body>
 </html>

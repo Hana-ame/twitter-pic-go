@@ -5,7 +5,6 @@ import (
 	"embed"
 	"encoding/json"
 	"html/template"
-	"io"
 	"log"
 	"math/rand"
 	"net/http"
@@ -26,15 +25,13 @@ var templateFS embed.FS
 
 var pageTemplate = template.Must(template.ParseFS(templateFS, "templates/index.html"))
 
-// Server holds the gallery index and access history.
+// Server holds the gallery index.
 type Server struct {
 	mu          sync.RWMutex
 	gallery     *Gallery
-	history     *HistoryStore
 	db          *sql.DB
+	tagDB       *sql.DB // 读取账号级 tag / emoji 投票（GALLERY_TAG_DB，默认 twitter.db）
 	accountTags map[string][]string
-	imageProxy  string
-	videoProxy  string
 }
 
 func (s *Server) current() *Gallery {
@@ -73,23 +70,27 @@ func Run(addr string) {
 
 	db := openDB(dbPath)
 
+	// 扁平 per-image 标签体系（与账号 tag 完全分离）
+	initMediaTagSchema(db)
+	// 把已持久化的 per-image 标签（含赞/倒赞）回填进内存索引
+	g.AttachReactions(db)
+
 	s := &Server{
 		gallery:     g,
-		history:     NewHistoryStore(db, 2000),
 		db:          db,
+		tagDB:       tagDB,
 		accountTags: accountTags,
-		imageProxy:  envOr("GALLERY_IMAGE_PROXY", ""),
-		videoProxy:  envOr("GALLERY_VIDEO_PROXY", ""),
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /", s.handleBrowse)
+	mux.HandleFunc("GET /{username}", s.handleBrowse)
+	mux.HandleFunc("GET /{username}/{rest...}", s.handleBrowse)
+	mux.HandleFunc("GET /hot", s.handleHot)
+	mux.HandleFunc("GET /favorites", s.handleFavorites)
 	mux.HandleFunc("GET /tags", s.handleTagsPage)
-	mux.HandleFunc("GET /history", s.handleHistoryPage)
-	mux.HandleFunc("GET /recommendations", s.handleRecommendationsPage)
-	mux.HandleFunc("GET /clusters", s.handleClustersPage)
 	mux.HandleFunc("POST /rescan", s.handleRescan)
-	mux.HandleFunc("GET /proxy", s.handleProxy)
+	mux.HandleFunc("POST /react", s.handleReact)
 
 	log.Printf("gallery: server listening on %s (json dir: %s)", addr, jsonDir)
 	if err := http.ListenAndServe(addr, logRequests(mux)); err != nil {
@@ -265,10 +266,11 @@ func addTag(list []string, tag string) []string {
 }
 
 func buildBrowseURL(dir string, page int, include, exclude []string, typeFilter, sortKey string, recursive bool) string {
-	q := url.Values{}
+	basePath := "/"
 	if dir != "" {
-		q.Set("dir", dir)
+		basePath = "/" + dir
 	}
+	q := url.Values{}
 	if len(include) > 0 {
 		q.Set("tags", strings.Join(include, ","))
 	}
@@ -288,9 +290,9 @@ func buildBrowseURL(dir string, page int, include, exclude []string, typeFilter,
 		q.Set("page", strconv.Itoa(page))
 	}
 	if len(q) == 0 {
-		return "/"
+		return basePath
 	}
-	return "/?" + q.Encode()
+	return basePath + "?" + q.Encode()
 }
 
 func buildTagURL(dir string, include, exclude []string, typeFilter, sortKey string, recursive bool) string {
@@ -300,10 +302,11 @@ func buildTagURL(dir string, include, exclude []string, typeFilter, sortKey stri
 // buildFolderURL enters a directory in normal (non-recursive) browse mode
 // while preserving the current tag/type/sort filters.
 func buildFolderURL(dir string, include, exclude []string, typeFilter, sortKey string) string {
-	q := url.Values{}
+	basePath := "/"
 	if dir != "" {
-		q.Set("dir", dir)
+		basePath = "/" + dir
 	}
+	q := url.Values{}
 	if len(include) > 0 {
 		q.Set("tags", strings.Join(include, ","))
 	}
@@ -316,8 +319,10 @@ func buildFolderURL(dir string, include, exclude []string, typeFilter, sortKey s
 	if sortKey != "" && sortKey != defaultSortKey {
 		q.Set("sort", sortKey)
 	}
-	q.Set("recursive", "false")
-	return "/?" + q.Encode()
+	if len(q) == 0 {
+		return basePath
+	}
+	return basePath + "?" + q.Encode()
 }
 
 func buildBreadcrumbs(dir string, include, exclude []string, typeFilter, sortKey string, recursive bool) ([]string, []string) {
@@ -338,7 +343,7 @@ func buildBreadcrumbs(dir string, include, exclude []string, typeFilter, sortKey
 			acc = acc + "/" + p
 		}
 		outParts = append(outParts, p)
-		outLinks = append(outLinks, buildBrowseURL(acc, 1, include, exclude, typeFilter, sortKey, recursive))
+		outLinks = append(outLinks, "/"+acc)
 	}
 	return outParts, outLinks
 }
@@ -350,6 +355,7 @@ type templateDir struct {
 	Path           string
 	Count          int
 	RecursiveCount int
+	Votes          int // 最热视图：账号 emoji 总票数
 	Link           string
 }
 
@@ -380,11 +386,9 @@ type pageData struct {
 	SortKey     string
 	Recursive   bool
 
-	BreadParts      []string
-	BreadLinks      []string
-	History         []HistoryEntry
-	Recommendations []Media
-	Clusters        []Cluster
+	BreadParts []string
+	BreadLinks []string
+	Clusters   []Cluster
 
 	PrevURL       string
 	NextURL       string
@@ -399,6 +403,13 @@ type pageData struct {
 	RecursiveURL  string
 
 	TagFilter string
+
+	// 左导航 / 新后端逻辑
+	ActiveTab    string           `json:"-"` // latest/hot/favorites/tags
+	Votes        map[string]int   `json:"-"` // 账号 -> emoji 总票数（最热用）
+	AccountsJSON template.JS      `json:"-"` // 全部账号（收藏页 client 过滤用）
+	TagMode      string           `json:"-"` // tags 页：accounts | images
+	TagActive    string           `json:"-"` // 当前选中的 tag
 }
 
 func renderPage(w http.ResponseWriter, data pageData) {
@@ -414,7 +425,17 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	g := s.current()
 	q := r.URL.Query()
 
-	dir := normalizeDir(q.Get("dir"))
+	// 优先读 path（/:username/），fallback 到 ?dir= 兼容旧链接。
+	dir := ""
+	if u := r.PathValue("username"); u != "" {
+		dir = u
+		if rest := r.PathValue("rest"); rest != "" {
+			dir = dir + "/" + rest
+		}
+		dir = normalizeDir(dir)
+	} else {
+		dir = normalizeDir(q.Get("dir"))
+	}
 	page := intParam(r, "page", 1, 1, 0)
 	pageSize := intParam(r, "page_size", 10, 1, 100)
 	include := parseCSV(q.Get("tags"))
@@ -538,6 +559,22 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		mode = "index"
 	}
 
+	if mode == "index" {
+		// 最新 = 账号索引（翻页式）：右侧只列账号，不含单独图片。
+		accounts := s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey)
+		d := pageData{
+			Mode:       "index",
+			Title:      "最新",
+			ActiveTab:  "latest",
+			Tags:       s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
+			Dirs:       accounts,
+			Recursive:  recursive,
+		}
+		s.paginateDirs(accounts, r, &d)
+		renderPage(w, d)
+		return
+	}
+
 	data := pageData{
 		Mode:          mode,
 		Title:         "浏览",
@@ -576,52 +613,6 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	renderPage(w, data)
 }
 
-func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
-	g := s.current()
-	q := r.URL.Query()
-	dir := normalizeDir(q.Get("dir"))
-	filter := strings.ToLower(strings.TrimSpace(q.Get("q")))
-
-	data := pageData{
-		Mode:      "tags",
-		Title:     "标签",
-		Dir:       dir,
-		TagFilter: filter,
-	}
-	data.Dirs = s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey)
-	data.Tags = s.buildTemplateTags(g, dir, nil, nil, "", defaultSortKey, false)
-	renderPage(w, data)
-}
-
-func (s *Server) handleHistoryPage(w http.ResponseWriter, r *http.Request) {
-	g := s.current()
-	limit := intParam(r, "limit", 100, 1, 500)
-	entries := s.history.Recent(limit)
-	out := make([]HistoryEntry, 0, len(entries))
-	for i := len(entries) - 1; i >= 0; i-- {
-		out = append(out, entries[i])
-	}
-	renderPage(w, pageData{
-		Mode:    "history",
-		Title:   "访问历史",
-		History: out,
-		Dirs:    s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey),
-		Tags:    s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
-	})
-}
-
-func (s *Server) handleRecommendationsPage(w http.ResponseWriter, r *http.Request) {
-	g := s.current()
-	limit := intParam(r, "limit", 30, 1, 100)
-	renderPage(w, pageData{
-		Mode:            "recommendations",
-		Title:           "推荐",
-		Recommendations: g.Recommend(s.history, limit),
-		Dirs:            s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey),
-		Tags:            s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
-	})
-}
-
 func (s *Server) handleClustersPage(w http.ResponseWriter, r *http.Request) {
 	g := s.current()
 	k := intParam(r, "k", 8, 1, 30)
@@ -642,8 +633,260 @@ func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// 重新扫描后同样要把 per-image 标签回填
+	next.AttachReactions(s.db)
 	s.swap(next)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// handleReact 处理单张媒体的赞/倒赞 emoji 反应（扁平 per-image 标签）。
+// POST /react?media_id=<id>&emoji=👍|👎&voter=<token>
+// voter 由前端生成并持久化（localStorage），用于聚合计数与单人切换。
+func (s *Server) handleReact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	g := s.current()
+	mediaID := r.FormValue("media_id")
+	emoji := r.FormValue("emoji")
+	voter := r.FormValue("voter")
+	if mediaID == "" || emoji == "" {
+		http.Error(w, "missing media_id or emoji", http.StatusBadRequest)
+		return
+	}
+	likes, dislikes, err := React(s.db, mediaID, emoji, voter)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// 同步内存中的计数，使 /hot 与卡片上的赞/踩数即时生效（无需等 /rescan）。
+	if m, ok := g.byID[mediaID]; ok {
+		m.LikeCount = likes
+		m.DislikeCount = dislikes
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"likes": likes, "dislikes": dislikes})
+}
+
+// accountList 返回顶层账号卡片（最新/最热/收藏/tag-账号 共用的右侧账号网格）。
+func accountList(g *Gallery) []templateDir {
+	names := g.dirs[""]
+	out := make([]templateDir, 0, len(names))
+	for _, name := range names {
+		out = append(out, templateDir{
+			Name:           name,
+			Path:           name,
+			Count:          g.direct[name],
+			RecursiveCount: g.recurs[name],
+			Link:           buildFolderURL(name, nil, nil, "", ""),
+		})
+	}
+	return out
+}
+
+// pageURL 返回把当前请求的 page 参数改成 page 后的 URL（用于账号翻页）。
+func pageURL(r *http.Request, page int) string {
+	q := r.URL.Query()
+	if page <= 1 {
+		q.Del("page")
+	} else {
+		q.Set("page", strconv.Itoa(page))
+	}
+	u := *r.URL
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+// paginateDirs 对账号网格做翻页式分页，并把结果写回 pageData。
+func (s *Server) paginateDirs(dirs []templateDir, r *http.Request, data *pageData) {
+	const pageSize = 24
+	total := len(dirs)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	page := intParam(r, "page", 1, 1, 100000)
+	if page < 1 {
+		page = 1
+	}
+	if totalPages > 0 && page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	if start < 0 {
+		start = 0
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	if start > total {
+		start = total
+	}
+	data.Dirs = dirs[start:end]
+	data.Page = page
+	data.Total = total
+	data.TotalPages = totalPages
+	if page > 1 {
+		data.PrevURL = pageURL(r, page-1)
+	}
+	if page < totalPages {
+		data.NextURL = pageURL(r, page+1)
+	}
+}
+
+// handleHot 按 reaction（点赞）总票数给账号排序（最热）。
+// 票数来自 gallery.db 的 media_tags（见 mediatags.go），聚合到每个账号(Dir)。
+// 注意：账号 tag（user_tags）与 per-image reaction 完全分离，这里只统计 reaction。
+func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
+	g := s.current()
+	accounts := accountList(g)
+	votes := map[string]int{}
+	for _, m := range g.media {
+		votes[m.Dir] += m.LikeCount
+	}
+	for i := range accounts {
+		accounts[i].Votes = votes[accounts[i].Name]
+	}
+	sort.Slice(accounts, func(i, j int) bool {
+		vi, vj := accounts[i].Votes, accounts[j].Votes
+		if vi != vj {
+			return vi > vj
+		}
+		return accounts[i].Name < accounts[j].Name
+	})
+	var data pageData
+	s.paginateDirs(accounts, r, &data)
+	data.Mode = "accounts"
+	data.Title = "最热"
+	data.Votes = votes
+	data.ActiveTab = "hot"
+	renderPage(w, data)
+}
+
+// handleFavorites 我的收藏：收藏列表存浏览器 localStorage，本页只把全部账号下发，
+// 由前端按收藏名过滤渲染（与 twitter-pic-react 的本地偏好一致）。
+func (s *Server) handleFavorites(w http.ResponseWriter, r *http.Request) {
+	g := s.current()
+	accounts := accountList(g)
+	js, _ := json.Marshal(accounts)
+	renderPage(w, pageData{
+		Mode:         "favorites",
+		Title:        "我的收藏",
+		Dirs:         accounts,
+		AccountsJSON: template.JS(js),
+		ActiveTab:    "favorites",
+	})
+}
+
+// handleTagsPage tags 页：无 tag 时显示标签云；选 tag 后按 mode 切换
+// 「按账号」(列出带该 tag 的账号) 或 「按图片」(列出这些账号的媒体)。
+func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
+	g := s.current()
+	q := r.URL.Query()
+	mode := strings.ToLower(strings.TrimSpace(q.Get("mode")))
+	if mode != "images" {
+		mode = "accounts"
+	}
+	tag := strings.TrimSpace(q.Get("tag"))
+	filter := strings.ToLower(strings.TrimSpace(q.Get("q")))
+
+	data := pageData{
+		Mode:      "tags",
+		Title:     "标签",
+		TagMode:   mode,
+		TagFilter: filter,
+		ActiveTab: "tags",
+	}
+
+	if tag == "" {
+		data.Dirs = s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey)
+		data.Tags = s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false)
+		renderPage(w, data)
+		return
+	}
+
+	// 收集带该 tag 的账号（账号级 tag，大小写不敏感）
+	matched := []string{}
+	for _, name := range g.dirs[""] {
+		tags := g.accountTags[name]
+		if tags == nil {
+			tags = g.accountTags[strings.ToLower(name)]
+		}
+		for _, t := range tags {
+			if strings.EqualFold(t, tag) {
+				matched = append(matched, name)
+				break
+			}
+		}
+	}
+
+	if mode == "accounts" {
+		out := make([]templateDir, 0, len(matched))
+		for _, name := range matched {
+			out = append(out, templateDir{
+				Name:           name,
+				Path:           name,
+				Count:          g.direct[name],
+				RecursiveCount: g.recurs[name],
+				Link:           buildFolderURL(name, nil, nil, "", ""),
+			})
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+		s.paginateDirs(out, r, &data)
+		data.TagActive = tag
+		data.Title = "标签 · " + tag
+		data.Mode = "accounts"
+		data.ActiveTab = "tags"
+		renderPage(w, data)
+		return
+	}
+
+	// 按图片：列出这些账号的全部媒体（分页）
+	set := map[string]bool{}
+	for _, n := range matched {
+		set[n] = true
+	}
+	var list []*Media
+	for _, m := range g.media {
+		if set[m.Dir] {
+			list = append(list, m)
+		}
+	}
+	sortMedia(list, defaultSortKey)
+	pageSize := intParam(r, "page_size", 10, 1, 100)
+	page := intParam(r, "page", 1, 1, 0)
+	total := len(list)
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	if totalPages == 0 {
+		page = 1
+	} else if page > totalPages {
+		page = totalPages
+	}
+	start := (page - 1) * pageSize
+	if start < 0 {
+		start = 0
+	}
+	end := start + pageSize
+	if end > total {
+		end = total
+	}
+	items := make([]Media, 0, end-start)
+	for _, m := range list[start:end] {
+		items = append(items, *m)
+	}
+	data.Items = items
+	data.TagActive = tag
+	data.Title = "标签 · " + tag
+	data.Page = page
+	data.Total = total
+	data.TotalPages = totalPages
+	data.Mode = "media"
+	renderPage(w, data)
 }
 
 // ---------- template data builders ----------
@@ -667,8 +910,8 @@ func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []st
 func (s *Server) buildTemplateTags(g *Gallery, dir string, include, exclude []string, typeFilter, sortKey string, recursive bool) []templateTag {
 	counts := map[string]int{}
 	if dir == "" {
-		// Use the precomputed global tag counts for the sidebar.
-		for t, c := range g.tags {
+		// 左导航/标签云：统计“多少个账号拥有该 tag”，而非 media 数。
+		for t, c := range g.accountTagCounts {
 			counts[t] = c
 		}
 	} else {
@@ -704,140 +947,4 @@ func (s *Server) buildTemplateTags(g *Gallery, dir string, include, exclude []st
 
 // ---------- media proxy ----------
 
-func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request) {
-	g := s.current()
-	raw := r.URL.Query().Get("url")
-	if raw == "" {
-		http.Error(w, "missing url", http.StatusBadRequest)
-		return
-	}
 
-	var m *Media
-	if id := r.URL.Query().Get("id"); id != "" {
-		m = g.byID[id]
-		if m == nil || m.OriginalURL != raw {
-			http.NotFound(w, r)
-			return
-		}
-	} else {
-		m = g.byURL[raw]
-	}
-	if m == nil {
-		http.NotFound(w, r)
-		return
-	}
-
-	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		http.Error(w, "bad url", http.StatusBadRequest)
-		return
-	}
-	host := strings.ToLower(u.Hostname())
-	if host != "pbs.twimg.com" && host != "video.twimg.com" {
-		http.Error(w, "forbidden host", http.StatusForbidden)
-		return
-	}
-
-	upstream := raw
-	switch host {
-	case "pbs.twimg.com":
-		if s.imageProxy != "" {
-			upstream = replaceProxyHost(raw, s.imageProxy)
-		}
-	case "video.twimg.com":
-		if s.videoProxy != "" {
-			upstream = replaceProxyHost(raw, s.videoProxy)
-		}
-	}
-
-	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstream, nil)
-	if err != nil {
-		http.Error(w, "bad url", http.StatusBadRequest)
-		return
-	}
-	if rng := r.Header.Get("Range"); rng != "" {
-		req.Header.Set("Range", rng)
-	}
-	if inm := r.Header.Get("If-None-Match"); inm != "" {
-		req.Header.Set("If-None-Match", inm)
-	}
-	if ims := r.Header.Get("If-Modified-Since"); ims != "" {
-		req.Header.Set("If-Modified-Since", ims)
-	}
-	ua := r.Header.Get("User-Agent")
-	if ua == "" {
-		ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-	}
-	req.Header.Set("User-Agent", ua)
-	req.Header.Set("Referer", "https://x.com/")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		http.Error(w, "upstream fetch failed", http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-
-	// Record access history. Only real GET views with a successful upstream
-	// response count.
-	if r.Method == http.MethodGet && resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		s.history.Record(HistoryEntry{
-			MediaID:   m.ID,
-			Path:      m.Path,
-			URL:       m.URL,
-			Tags:      m.AllTags(),
-			ViewedAt:  time.Now(),
-			IP:        clientIP(r),
-			UserAgent: r.UserAgent(),
-		})
-	}
-
-	copyHeader(w, resp, "Content-Type")
-	copyHeader(w, resp, "Content-Length")
-	copyHeader(w, resp, "Content-Range")
-	copyHeader(w, resp, "Accept-Ranges")
-	copyHeader(w, resp, "Last-Modified")
-	copyHeader(w, resp, "ETag")
-	copyHeader(w, resp, "Cache-Control")
-	copyHeader(w, resp, "Content-Encoding")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.WriteHeader(resp.StatusCode)
-
-	if r.Method == http.MethodGet {
-		_, _ = io.Copy(w, resp.Body)
-	}
-}
-
-func copyHeader(w http.ResponseWriter, resp *http.Response, name string) {
-	if v := resp.Header.Get(name); v != "" {
-		w.Header().Set(name, v)
-	}
-}
-
-func replaceProxyHost(raw, proxyBase string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return raw
-	}
-	p, err := url.Parse(proxyBase)
-	if err != nil || p.Scheme == "" || p.Host == "" {
-		return raw
-	}
-	u.Scheme = p.Scheme
-	u.Host = p.Host
-	return u.String()
-}
-
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
-		}
-	}
-	host := r.RemoteAddr
-	if i := strings.LastIndex(host, ":"); i >= 0 {
-		host = host[:i]
-	}
-	return host
-}

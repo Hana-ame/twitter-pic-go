@@ -440,6 +440,8 @@ func sortMedia(list []*Media, sortKey string) {
 
 const defaultSortKey = "time"
 
+const defaultPageSize = 10
+
 func addTag(list []string, tag string) []string {
 	for _, t := range list {
 		if t == tag {
@@ -452,34 +454,57 @@ func addTag(list []string, tag string) []string {
 	return out
 }
 
-func buildBrowseURL(dir string, page int, include, exclude []string, typeFilter, sortKey string, recursive bool) string {
+// browseURLParams 一条浏览 URL 的全部可变参数。
+type browseURLParams struct {
+	dir        string
+	page       int
+	pageSize   int // <=0 表示不写入（用服务端默认值）
+	include    []string
+	exclude    []string
+	typeFilter string
+	sortKey    string
+	recursive  bool
+}
+
+func buildBrowseURLParams(p browseURLParams) string {
 	basePath := "/"
-	if dir != "" {
-		basePath = "/" + dir
+	if p.dir != "" {
+		basePath = "/" + p.dir
 	}
 	q := url.Values{}
-	if len(include) > 0 {
-		q.Set("tags", strings.Join(include, ","))
+	if len(p.include) > 0 {
+		q.Set("tags", strings.Join(p.include, ","))
 	}
-	if len(exclude) > 0 {
-		q.Set("exclude_tags", strings.Join(exclude, ","))
+	if len(p.exclude) > 0 {
+		q.Set("exclude_tags", strings.Join(p.exclude, ","))
 	}
-	if typeFilter != "" {
-		q.Set("type", typeFilter)
+	if p.typeFilter != "" {
+		q.Set("type", p.typeFilter)
 	}
-	if sortKey != "" && sortKey != defaultSortKey {
-		q.Set("sort", sortKey)
+	if p.sortKey != "" && p.sortKey != defaultSortKey {
+		q.Set("sort", p.sortKey)
 	}
-	if recursive {
+	if p.recursive {
 		q.Set("recursive", "true")
 	}
-	if page > 1 {
-		q.Set("page", strconv.Itoa(page))
+	if p.pageSize > 0 && p.pageSize != defaultPageSize {
+		q.Set("page_size", strconv.Itoa(p.pageSize))
+	}
+	if p.page > 1 {
+		q.Set("page", strconv.Itoa(p.page))
 	}
 	if len(q) == 0 {
 		return basePath
 	}
 	return basePath + "?" + q.Encode()
+}
+
+func buildBrowseURL(dir string, page int, include, exclude []string, typeFilter, sortKey string, recursive bool) string {
+	return buildBrowseURLParams(browseURLParams{
+		dir: dir, page: page,
+		include: include, exclude: exclude,
+		typeFilter: typeFilter, sortKey: sortKey, recursive: recursive,
+	})
 }
 
 func buildTagURL(dir string, include, exclude []string, typeFilter, sortKey string, recursive bool) string {
@@ -631,7 +656,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		dir = normalizeDir(q.Get("dir"))
 	}
 	page := intParam(r, "page", 1, 1, 0)
-	pageSize := intParam(r, "page_size", 10, 1, 100)
+	pageSize := intParam(r, "page_size", defaultPageSize, 1, 100)
 	include := parseCSV(q.Get("tags"))
 	exclude := parseCSV(q.Get("exclude_tags"))
 	typeFilter := strings.ToLower(strings.TrimSpace(q.Get("type")))
@@ -794,8 +819,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		TypeFilter:    typeFilter,
 		SortKey:       sortKey,
 		Recursive:     recursive,
-		PrevURL:       buildBrowseURL(dir, page-1, include, exclude, typeFilter, sortKey, recursive),
-		NextURL:       buildBrowseURL(dir, page+1, include, exclude, typeFilter, sortKey, recursive),
+		PrevURL:       buildBrowseURLParams(browseURLParams{dir: dir, page: page - 1, pageSize: pageSize, include: include, exclude: exclude, typeFilter: typeFilter, sortKey: sortKey, recursive: recursive}),
+		NextURL:       buildBrowseURLParams(browseURLParams{dir: dir, page: page + 1, pageSize: pageSize, include: include, exclude: exclude, typeFilter: typeFilter, sortKey: sortKey, recursive: recursive}),
 		UpURL:         upURL,
 		SortNameURL:   buildBrowseURL(dir, 1, include, exclude, typeFilter, "name", recursive),
 		SortTimeURL:   buildBrowseURL(dir, 1, include, exclude, typeFilter, "time", recursive),
@@ -1234,7 +1259,7 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sortMedia(list, defaultSortKey)
-	pageSize := intParam(r, "page_size", 10, 1, 100)
+	pageSize := intParam(r, "page_size", defaultPageSize, 1, 100)
 	page := intParam(r, "page", 1, 1, 0)
 	total := len(list)
 	totalPages := 0
@@ -1265,6 +1290,28 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 	data.Total = total
 	data.TotalPages = totalPages
 	data.Mode = "media"
+	// 翻页链接：保留 tag / mode / q / page_size（此前缺失，第二页之后无法翻页）
+	tagPageURL := func(p int) string {
+		q := url.Values{}
+		q.Set("tag", tag)
+		q.Set("mode", "images")
+		if filter != "" {
+			q.Set("q", filter)
+		}
+		if pageSize != defaultPageSize {
+			q.Set("page_size", strconv.Itoa(pageSize))
+		}
+		if p > 1 {
+			q.Set("page", strconv.Itoa(p))
+		}
+		return "/tags?" + q.Encode()
+	}
+	if page > 1 {
+		data.PrevURL = tagPageURL(page - 1)
+	}
+	if page < totalPages {
+		data.NextURL = tagPageURL(page + 1)
+	}
 	renderPage(w, data)
 }
 

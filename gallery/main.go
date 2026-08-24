@@ -627,11 +627,31 @@ type pageData struct {
 	ActiveTab    string         `json:"-"` // latest/hot/favorites/tags
 	Votes        map[string]int `json:"-"` // 账号 -> emoji 总票数（最热用）
 	AccountsJSON template.JS    `json:"-"` // 全部账号（收藏页 client 过滤用）
+	MediaJSON    template.JS    `json:"-"` // 当前页媒体清单（灯箱导航用）
 	TagMode      string         `json:"-"` // tags 页：accounts | images
 	TagActive    string         `json:"-"` // 当前选中的 tag
 }
 
+// lightboxItem 灯箱导航所需的最小媒体信息（序列化进页面）。
+type lightboxItem struct {
+	URL     string `json:"url"`
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Dir     string `json:"dir"`
+	TweetID int64  `json:"tweet_id"`
+}
+
 func renderPage(w http.ResponseWriter, data pageData) {
+	// 有媒体网格的页面内嵌当前页媒体清单，供前端灯箱翻页。
+	if len(data.Items) > 0 {
+		lb := make([]lightboxItem, 0, len(data.Items))
+		for _, m := range data.Items {
+			lb = append(lb, lightboxItem{URL: m.URL, Type: m.Type, Name: m.Name, Dir: m.Dir, TweetID: m.TweetID})
+		}
+		if js, err := json.Marshal(lb); err == nil {
+			data.MediaJSON = template.JS(js)
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := pageTemplate.Execute(w, data); err != nil {
 		log.Printf("gallery: render template failed: %v", err)

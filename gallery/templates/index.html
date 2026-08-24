@@ -43,6 +43,10 @@ aside h3 { font-size: 12px; color: var(--muted); margin: 14px 0 8px; text-transf
 .nav-tabs a:hover { background: var(--panel2); color: var(--text); }
 .nav-tabs a.active { background: var(--accent); color: white; border-color: var(--accent); }
 .setting select { width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; }
+.btn-group { display: flex; gap: 4px; }
+.btn-sm { background: var(--panel2); color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer; transition: all .15s; }
+.btn-sm:hover { border-color: var(--accent); color: var(--text); }
+.btn-sm.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; font-size: 12px; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 .tag a { color: var(--text); }
@@ -123,11 +127,9 @@ main { flex: 1; padding: 16px; }
       <a href="/clusters" class="{{if eq .Mode "clusters"}}active{{end}}">聚类</a>
     </div>
     <h3>设置</h3>
-    <div class="setting">
-      <select id="displayMode">
-        <option value="grid">翻页式（网格）</option>
-        <option value="dropdown">下拉式</option>
-      </select>
+    <div class="btn-group">
+      <button class="btn-sm active" onclick="setDisplay('grid',this)">网格</button>
+      <button class="btn-sm" onclick="setDisplay('dropdown',this)">下拉</button>
     </div>
     <h3>标签速览</h3>
     <div class="tags">
@@ -229,7 +231,7 @@ main { flex: 1; padding: 16px; }
   {{range .Dirs}}
   <div class="account-card">
     <a class="name" href="{{.Link}}">{{.Name}}</a>
-    <div class="count">{{.Count}} 直属 · {{.RecursiveCount}} 总计</div>
+    <div class="count">{{.RecursiveCount}} 张</div>
     {{if .Votes}}<div class="votes">🔥 {{.Votes}}</div>{{end}}
     {{if .Links}}<div class="social-links">
       {{range .Links}}<a href="{{.URL}}" target="_blank" rel="noopener" title="{{platformName .Platform}}"><svg viewBox="0 0 24 24"><path d="{{platformIcon .Platform}}"/></svg></a>{{end}}
@@ -241,10 +243,6 @@ main { flex: 1; padding: 16px; }
   </div>
   {{end}}
 </div>
-<select class="accounts-select" id="accountsSelect" onchange="if(this.value) location.href=this.value">
-  <option value="">选择账号…</option>
-  {{range .Dirs}}<option value="{{.Link}}">{{.Name}} ({{.RecursiveCount}})</option>{{end}}
-</select>
 {{end}}
 
 {{define "pagination"}}
@@ -314,18 +312,20 @@ function renderFav() {
 }
 
 // ---------- 显示方式：网格 / 下拉 ----------
+function setDisplay(mode, btn) {
+  localStorage.setItem('gallery_display', mode);
+  document.querySelectorAll('.btn-group .btn-sm').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  applyDisplay();
+}
 function applyDisplay() {
   const mode = localStorage.getItem('gallery_display') || 'grid';
-  const sel = document.getElementById('displayMode');
-  if (sel) sel.value = mode;
   const grid = document.getElementById('accountsGrid');
-  const drop = document.getElementById('accountsSelect');
-  if (!grid || !drop) return;
-  if (mode === 'dropdown') { grid.style.display = 'none'; drop.style.display = 'block'; }
-  else { grid.style.display = 'flex'; drop.style.display = 'none'; }
+  if (grid) grid.style.display = mode === 'dropdown' ? 'none' : 'flex';
+  document.querySelectorAll('.btn-group .btn-sm').forEach(b => {
+    b.classList.toggle('active', b.textContent.trim() === (mode === 'grid' ? '网格' : '下拉'));
+  });
 }
-const dm = document.getElementById('displayMode');
-if (dm) dm.addEventListener('change', () => { localStorage.setItem('gallery_display', dm.value); applyDisplay(); });
 
 // ---------- 赞 / 倒赞（per-image 扁平 tag）----------
 function voterToken() {

@@ -110,7 +110,8 @@ var videoExts = map[string]bool{
 	".mkv": true, ".avi": true, ".ts": true, ".mts": true,
 }
 
-func mediaID(s string) string {
+// shortHash 返回 URL 的短哈希（8 字符 hex），用于与 tweet_id 拼接生成唯一 ID。
+func shortHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:8])
 }
@@ -228,9 +229,10 @@ func deriveMediaBase() string {
 }
 
 type gzTimelineEntry struct {
-	URL  string `json:"url"`
-	Date string `json:"date"`
-	Type string `json:"type"`
+	URL     string `json:"url"`
+	Date    string `json:"date"`
+	TweetID int64  `json:"tweet_id"`
+	Type    string `json:"type"`
 }
 
 type gzAccountInfo struct {
@@ -398,7 +400,7 @@ func (g *Gallery) Scan() error {
 			}
 			vname := fmt.Sprintf("%s_%04d%s", base, i, ext)
 			vpath := dir + "/" + vname
-			id := mediaID(dir + "\x00" + te.URL)
+			id := fmt.Sprintf("%d_%s", te.TweetID, shortHash(te.URL))
 
 			m := &Media{
 				ID:          id,

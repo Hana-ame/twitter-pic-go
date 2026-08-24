@@ -221,7 +221,7 @@ p{color:#8b95a7;font-size:14px;line-height:1.6;margin-bottom:28px}
 
 func ageGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/age-gate" || r.URL.Path == "/sitemap.xml" ||
+		if r.URL.Path == "/age-gate" || r.URL.Path == "/sitemap.xml" || r.Method == http.MethodPost ||
 			strings.HasPrefix(r.URL.Path, "/favicon") || strings.HasPrefix(r.URL.Path, "/api/") {
 			next.ServeHTTP(w, r)
 			return

@@ -630,6 +630,11 @@ type pageData struct {
 	MediaJSON    template.JS    `json:"-"` // 当前页媒体清单（灯箱导航用）
 	TagMode      string         `json:"-"` // tags 页：accounts | images
 	TagActive    string         `json:"-"` // 当前选中的 tag
+
+	// OG / SEO（空则用默认值）
+	OGTitle       string `json:"-"`
+	OGDescription string `json:"-"`
+	OGImage       string `json:"-"`
 }
 
 // lightboxItem 灯箱导航所需的最小媒体信息（序列化进页面）。
@@ -854,6 +859,19 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 
 	data.Dirs = s.buildTemplateDirs(g, dir, include, exclude, typeFilter, sortKey)
 	data.Tags = s.buildTemplateTags(g, dir, include, exclude, typeFilter, sortKey, recursive)
+
+	// OG / SEO：账号页用昵称 + 封面图
+	if meta, ok := g.dbAccounts[dir]; ok && meta.Nick != "" {
+		data.OGTitle = meta.Nick + " (@" + dir + ") · Gallery"
+	} else if dir != "" {
+		data.OGTitle = "@" + dir + " · Gallery"
+	}
+	if rec := g.recurs[dir]; rec > 0 {
+		data.OGDescription = fmt.Sprintf("@%s 的 %d 张媒体（图片/视频）在线浏览。", dir, rec)
+	}
+	if cover := dirCover(g, dir); cover != "" {
+		data.OGImage = cover
+	}
 
 	renderPage(w, data)
 }

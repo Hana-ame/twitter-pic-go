@@ -5,7 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="rating" content="mature">
 <meta name="robots" content="index, follow">
-<title>{{.Title}} · Gallery</title>
+<title>{{if .OGTitle}}{{.OGTitle}}{{else}}{{.Title}} · Gallery{{end}}</title>
+<meta property="og:site_name" content="Gallery">
+<meta property="og:type" content="website">
+<meta property="og:title" content="{{if .OGTitle}}{{.OGTitle}}{{else}}{{.Title}} · Gallery{{end}}">
+<meta property="og:description" content="{{if .OGDescription}}{{.OGDescription}}{{else}}推特媒体图库：按账号浏览图片与视频。{{end}}">
+{{if .OGImage}}<meta property="og:image" content="{{.OGImage}}">{{end}}
+<meta name="twitter:card" content="{{if .OGImage}}summary_large_image{{else}}summary{{end}}">
 <style>
 :root {
   --bg: #111318;

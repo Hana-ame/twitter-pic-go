@@ -1078,16 +1078,34 @@ func (s *Server) buildHome(g *Gallery) pageData {
 }
 
 // handleLatest 完整的「最新」账号列表（原首页行为，翻页式）。
+// 支持 q= 按用户名 / 昵称子串搜索（大小写不敏感）。
 func (s *Server) handleLatest(w http.ResponseWriter, r *http.Request) {
 	g := s.current()
 	accounts := s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey)
+	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
+		accounts = filterAccounts(accounts, query)
+	}
 	var d pageData
 	d.Mode = "index"
 	d.Title = "最新"
 	d.ActiveTab = "latest"
+	d.TagFilter = strings.TrimSpace(r.URL.Query().Get("q"))
 	d.Tags = s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false)
 	s.paginateDirs(accounts, r, &d)
 	renderPage(w, d)
+}
+
+// filterAccounts 按用户名或昵称的子串（大小写不敏感）过滤账号卡片。
+func filterAccounts(dirs []templateDir, query string) []templateDir {
+	q := strings.ToLower(query)
+	out := make([]templateDir, 0, len(dirs))
+	for _, d := range dirs {
+		if strings.Contains(strings.ToLower(d.Name), q) ||
+			strings.Contains(strings.ToLower(d.Nick), q) {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 // handleHot 按 reaction（点赞）总票数给账号排序（最热）。

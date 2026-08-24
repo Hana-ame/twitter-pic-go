@@ -339,12 +339,12 @@ main { flex: 1; padding: 16px; }
 {{define "mediaGrid"}}
 <div class="grid">
   {{range .Items}}
-  <a class="card" href="{{.URL}}" target="_blank">
+  <a class="card" href="{{.URL}}" target="_blank" rel="noopener">
     {{if or (eq .Type "video") (eq .Type "animated_gif")}}
     <!-- video.twimg.com 直连会被防盗链拦截：套 srcdoc iframe + no-referrer（同 twitter-pic-react 的做法） -->
     <div class="vthumb" data-vsrc="{{.URL}}"></div>
     {{else}}
-    <img class="thumb" loading="lazy" src="{{.URL}}">
+    <img class="thumb" loading="lazy" src="{{if .Thumb}}{{.Thumb}}{{else}}{{.URL}}{{end}}">
     {{end}}
     <div class="meta">
       <div class="name">{{.Name}}</div>

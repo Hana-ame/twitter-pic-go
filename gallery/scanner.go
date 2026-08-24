@@ -33,8 +33,9 @@ type Media struct {
 	LikeCount    int       `json:"like_count"`
 	DislikeCount int       `json:"dislike_count"`
 	URL          string    `json:"url"`          // proxy URL on this server
-	OriginalURL  string    `json:"original_url"` // pbs.twimg.com / video.twimg.com
-	TweetID      int64     `json:"tweet_id"`     // 原推 ID，溯源用
+	Thumb        string    `json:"thumb,omitempty"`  // 网格缩略图（twimg name=small 变体；视频为空）
+	OriginalURL  string    `json:"original_url"`     // pbs.twimg.com / video.twimg.com
+	TweetID      int64     `json:"tweet_id"`         // 原推 ID，溯源用
 }
 
 // IsVideo reports whether the media is a video or animated gif.
@@ -254,6 +255,20 @@ func deriveMediaBase() string {
 	return strings.TrimRight(base, "/")
 }
 
+// thumbVariant 返回适合网格缩略图的 URL：加/改 name=small 查询参数
+// （twimg 对 pbs 图片会返回小尺寸变体），解析失败则原样返回。
+// raw 可以是原始 URL 或已走反代的 path 形式（查询参数照常透传）。
+func thumbVariant(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	q := u.Query()
+	q.Set("name", "small")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 type gzTimelineEntry struct {
 	URL     string `json:"url"`
 	Date    string `json:"date"`
@@ -413,6 +428,9 @@ func ingestAccountDoc(next *Gallery, username string, doc *gzDocument, mediaByDi
 			URL:         serveURL(next.mediaBase, te.URL),
 			OriginalURL: te.URL,
 			TweetID:     te.TweetID,
+		}
+		if typ == "photo" {
+			m.Thumb = thumbVariant(m.URL)
 		}
 
 		next.byID[m.ID] = m

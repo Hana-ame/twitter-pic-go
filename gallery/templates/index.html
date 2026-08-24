@@ -662,11 +662,25 @@ function videoFrame(url) {
   return f;
 }
 function convertVthumbs() {
-  document.querySelectorAll('.vthumb').forEach(el => {
-    if (el.dataset.done) return;
-    el.dataset.done = '1';
-    el.appendChild(videoFrame(el.dataset.vsrc));
-  });
+  // 懒加载：只有滚动到视口附近才创建 srcdoc iframe（每页最多 10 个视频，
+  // 全部立即建 iframe 会拖慢首屏并占用大量内存）
+  const els = document.querySelectorAll('.vthumb:not([data-done])');
+  if (!els.length) return;
+  if (!('IntersectionObserver' in window)) {
+    els.forEach(el => { el.dataset.done = '1'; el.appendChild(videoFrame(el.dataset.vsrc)); });
+    return;
+  }
+  const io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      const el = en.target;
+      io.unobserve(el); // 建好后停止观察（保持播放状态，避免来回销毁）
+      if (el.dataset.done) return;
+      el.dataset.done = '1';
+      el.appendChild(videoFrame(el.dataset.vsrc));
+    });
+  }, { rootMargin: '300px' });
+  els.forEach(el => io.observe(el));
 }
 
 // ---------- 初始化 ----------

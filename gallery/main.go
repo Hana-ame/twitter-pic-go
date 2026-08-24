@@ -1267,18 +1267,33 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 按图片：列出这些账号的全部媒体（分页）
+	// 按图片：列出这些账号的全部媒体（分页），支持 type / sort 筛选
 	set := map[string]bool{}
 	for _, n := range matched {
 		set[n] = true
 	}
+	typeFilter := strings.ToLower(strings.TrimSpace(q.Get("type")))
+	sortKey := strings.ToLower(strings.TrimSpace(q.Get("sort")))
+	if sortKey == "" {
+		sortKey = defaultSortKey
+	}
 	var list []*Media
 	for _, m := range g.media {
-		if set[m.Dir] {
-			list = append(list, m)
+		if !set[m.Dir] {
+			continue
 		}
+		if typeFilter != "" && !matchesTypeFilter(m, typeFilter) {
+			continue
+		}
+		list = append(list, m)
 	}
-	sortMedia(list, defaultSortKey)
+	switch sortKey {
+	case "random":
+		rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		rng.Shuffle(len(list), func(i, j int) { list[i], list[j] = list[j], list[i] })
+	default:
+		sortMedia(list, sortKey)
+	}
 	pageSize := intParam(r, "page_size", defaultPageSize, 1, 100)
 	page := intParam(r, "page", 1, 1, 0)
 	total := len(list)
@@ -1310,28 +1325,44 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 	data.Total = total
 	data.TotalPages = totalPages
 	data.Mode = "media"
-	// 翻页链接：保留 tag / mode / q / page_size（此前缺失，第二页之后无法翻页）
-	tagPageURL := func(p int) string {
-		q := url.Values{}
-		q.Set("tag", tag)
-		q.Set("mode", "images")
+	// 翻页/筛选链接：保留 tag / mode / q / type / sort / page_size
+	//（此前翻页链接缺失，「按图片」第二页之后无法继续翻页）
+	tagsImagesURL := func(p int, tf, sk string) string {
+		qv := url.Values{}
+		qv.Set("tag", tag)
+		qv.Set("mode", "images")
 		if filter != "" {
-			q.Set("q", filter)
+			qv.Set("q", filter)
+		}
+		if tf != "" {
+			qv.Set("type", tf)
+		}
+		if sk != "" && sk != defaultSortKey {
+			qv.Set("sort", sk)
 		}
 		if pageSize != defaultPageSize {
-			q.Set("page_size", strconv.Itoa(pageSize))
+			qv.Set("page_size", strconv.Itoa(pageSize))
 		}
 		if p > 1 {
-			q.Set("page", strconv.Itoa(p))
+			qv.Set("page", strconv.Itoa(p))
 		}
-		return "/tags?" + q.Encode()
+		return "/tags?" + qv.Encode()
 	}
 	if page > 1 {
-		data.PrevURL = tagPageURL(page - 1)
+		data.PrevURL = tagsImagesURL(page-1, typeFilter, sortKey)
 	}
 	if page < totalPages {
-		data.NextURL = tagPageURL(page + 1)
+		data.NextURL = tagsImagesURL(page+1, typeFilter, sortKey)
 	}
+	data.TypeAllURL = tagsImagesURL(1, "", sortKey)
+	data.TypeImageURL = tagsImagesURL(1, "image", sortKey)
+	data.TypeVideoURL = tagsImagesURL(1, "video", sortKey)
+	data.SortNameURL = tagsImagesURL(1, typeFilter, "name")
+	data.SortTimeURL = tagsImagesURL(1, typeFilter, "time")
+	data.SortSizeURL = tagsImagesURL(1, typeFilter, "size")
+	data.SortRandomURL = tagsImagesURL(1, typeFilter, "random")
+	data.TypeFilter = typeFilter
+	data.SortKey = sortKey
 	renderPage(w, data)
 }
 

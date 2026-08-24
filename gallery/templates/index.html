@@ -306,6 +306,16 @@ main { flex: 1; padding: 16px; }
         <a href="/tags?tag={{.TagActive}}&mode=accounts" class="{{if eq .TagMode "accounts"}}active{{end}}">按账号</a>
         <a href="/tags?tag={{.TagActive}}&mode=images" class="{{if eq .TagMode "images"}}active{{end}}">按图片</a>
       </div>{{end}}
+      <div class="filterbar">
+        <a href="{{.TypeAllURL}}" class="{{if eq .TypeFilter ""}}active{{end}}">全部类型</a>
+        <a href="{{.TypeImageURL}}" class="{{if eq .TypeFilter "image"}}active{{end}}">图片</a>
+        <a href="{{.TypeVideoURL}}" class="{{if eq .TypeFilter "video"}}active{{end}}">视频</a>
+        <span style="width:8px;"></span>
+        <a href="{{.SortNameURL}}" class="{{if eq .SortKey "name"}}active{{end}}">名称</a>
+        <a href="{{.SortTimeURL}}" class="{{if eq .SortKey "time"}}active{{end}}">时间</a>
+        <a href="{{.SortSizeURL}}" class="{{if eq .SortKey "size"}}active{{end}}">大小</a>
+        <a href="{{.SortRandomURL}}" class="{{if eq .SortKey "random"}}active{{end}}">随机</a>
+      </div>
       {{template "mediaGrid" .}}
       {{template "pagination" .}}
 

@@ -738,6 +738,122 @@ function convertVthumbs() {
   els.forEach(el => io.observe(el));
 }
 
+// ---------- peerfs WebRTC 图片兜底 ----------
+// 当图片经反代/直链加载失败时，浏览器直接通过 PeerJS 信令 + WebRTC DataChannel
+// 向 twimg-proxy 节点取文件（ECH 域前置抓取 video-cf.twimg.com）。
+// 可用 window.PEERFS_CONFIG = {...} 覆盖默认配置。
+const PEERFS = Object.assign({
+  host: 'peerfs.moonchan.xyz', port: 443, secure: true,
+  key: 'peerjs', id: 'twimg-proxy', token: ''
+}, window.PEERFS_CONFIG || {});
+
+let peerjsLibLoading = null;
+function loadPeerjsLib() {
+  if (typeof Peer !== 'undefined') return Promise.resolve();
+  if (peerjsLibLoading) return peerjsLibLoading;
+  peerjsLibLoading = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = '/peerjs.min.js';
+    s.onload = () => resolve();
+    s.onerror = () => { peerjsLibLoading = null; reject(new Error('peerjs.min.js load failed')); };
+    document.head.appendChild(s);
+  });
+  return peerjsLibLoading;
+}
+
+const PeerFSLoader = {
+  peer: null, conn: null, ready: null, seq: 1,
+  pending: new Map(),  // reqId -> {chunks, total, resolve, reject}
+  streams: new Map(),  // streamId -> reqId
+
+  ensure() {
+    if (this.ready) return this.ready;
+    this.ready = (async () => {
+      await loadPeerjsLib();
+      const peer = new Peer(undefined, {
+        host: PEERFS.host, port: PEERFS.port, secure: PEERFS.secure, key: PEERFS.key,
+      });
+      this.peer = peer;
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('peerfs signal timeout')), 15000);
+        peer.on('open', () => {
+          const conn = peer.connect(PEERFS.id, { serialization: 'raw', reliable: true });
+          this.conn = conn;
+          conn.on('open', () => {
+            if (PEERFS.token) conn.send(JSON.stringify({ type: 'hello', token: PEERFS.token }));
+            clearTimeout(timer);
+            resolve();
+          });
+          conn.on('data', d => this.onData(d));
+          conn.on('close', () => { this.conn = null; this.ready = null; });
+          conn.on('error', err => { clearTimeout(timer); reject(err); });
+        });
+        peer.on('error', err => { clearTimeout(timer); reject(err); });
+      });
+    })();
+    // 连接失败时清掉 ready，下次图片失败可以重新尝试
+    this.ready.catch(() => { this.ready = null; });
+    return this.ready;
+  },
+
+  onData(d) {
+    if (typeof d === 'string') {
+      let msg; try { msg = JSON.parse(d); } catch (e) { return; }
+      if (msg.type === 'meta') {
+        const p = this.pending.get(msg.reqId);
+        if (p) { p.total = msg.total; this.streams.set(msg.streamId, msg.reqId); }
+      } else if (msg.type === 'done') {
+        const p = this.pending.get(msg.reqId);
+        if (p) { this.pending.delete(msg.reqId); p.resolve(new Blob(p.chunks)); }
+      } else if (msg.type === 'err') {
+        const p = this.pending.get(msg.reqId);
+        if (p) { this.pending.delete(msg.reqId); p.reject(new Error(msg.msg)); }
+      }
+    } else if (d && (d instanceof ArrayBuffer || ArrayBuffer.isView(d))) {
+      const buf = d instanceof ArrayBuffer ? d : d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength);
+      if (buf.byteLength < 5) return; // 4B streamID + 至少 1B 数据
+      const sid = new DataView(buf).getUint32(0, false);
+      const reqId = this.streams.get(sid);
+      const pend = reqId && this.pending.get(reqId);
+      if (pend) pend.chunks.push(buf.slice(4));
+    }
+  },
+
+  async read(path) {
+    await this.ensure();
+    if (!this.conn) throw new Error('peerfs not connected');
+    const reqId = 'r' + (this.seq++);
+    return new Promise((resolve, reject) => {
+      this.pending.set(reqId, { chunks: [], total: 0, resolve, reject });
+      this.conn.send(JSON.stringify({ type: 'read', path, offset: 0, size: -1, reqId }));
+      setTimeout(() => {
+        if (this.pending.has(reqId)) {
+          this.pending.delete(reqId);
+          reject(new Error('peerfs read timeout'));
+        }
+      }, 30000);
+    });
+  },
+};
+window.PeerFSLoader = PeerFSLoader; // 调试用
+
+// 全局捕获 img 加载失败（capture 才能收到 img error，它不冒泡）
+// 只对 twimg 形态的路径兜底：/media/... 与 /profile_images/...
+const peerfsTried = new WeakSet();
+document.addEventListener('error', function (e) {
+  const img = e.target;
+  if (!(img instanceof HTMLImageElement)) return;
+  if (peerfsTried.has(img)) return;
+  let u;
+  try { u = new URL(img.currentSrc || img.src, location.href); } catch (err) { return; }
+  if (!/^\/(media|profile_images)\//.test(u.pathname)) return;
+  peerfsTried.add(img);
+  const path = 'twimg' + u.pathname + u.search;
+  PeerFSLoader.read(path)
+    .then(blob => { img.src = URL.createObjectURL(blob); })
+    .catch(() => {/* 静默：保留原 broken 状态 */});
+}, true);
+
 // ---------- 初始化 ----------
 (function () {
   // 账号卡片收藏状态高亮

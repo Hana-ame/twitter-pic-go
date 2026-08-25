@@ -61,9 +61,107 @@ go run ./server
 
 ## JSON API（只读）
 
-- `GET /api/health` — `{"status","accounts","media"}`
-- `GET /api/accounts?q=&page=&page_size=` — 账号列表（含昵称/媒体数/外链）
-- `GET /api/media?dir=&type=&sort=&page=&page_size=` — 媒体列表（dir 为空表示全站）
+### GET /api/health
+
+返回服务器状态。
+
+```json
+{"status":"ok","accounts":42,"media":12345}
+```
+
+### GET /api/accounts
+
+账号列表，支持按用户名/昵称搜索。
+
+```
+?q=xxx          # 搜索用户名或昵称
+&page=1         # 页码
+&page_size=20   # 每页数量
+```
+
+### GET /api/media
+
+媒体列表，支持目录/类型/排序/分页。
+
+```
+?dir=account          # 目录名，空=全站
+&type=photo           # photo / video / animated_gif
+&sort=time            # name / time / size / random
+&page=1               # 页码
+&page_size=20         # 每页数量
+```
+
+### GET /api/media/view
+
+返回单个媒体条目的完整详情，含前后导航链接。
+
+**参数：** 通过 URL 查询字符串或路径传递
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `path` | 媒体虚拟路径 | `path=account/photo.jpg` |
+| `dir` + `name` | 分拆传目录和文件名 | `dir=account&name=photo.jpg` |
+
+**返回示例：**
+
+```json
+{
+  "media": {
+    "id": "abc123",
+    "path": "account/photo.jpg",
+    "dir": "account",
+    "name": "photo.jpg",
+    "type": "photo",
+    "ext": "jpg",
+    "size": 123456,
+    "url": "http://.../proxy/...",
+    "thumb": "http://.../proxy/...?name=small",
+    "original_url": "https://pbs.twimg.com/media/abc123.jpg",
+    "tweet_id": 123456789,
+    "tags": ["tag1", "tag2"],
+    "like_count": 5,
+    "dislike_count": 1,
+    "mod_time": "2026-08-25T00:00:00Z"
+  },
+  "index": 42,
+  "total": 1000,
+  "prev": "account/previous.jpg",
+  "next": "account/next.jpg",
+  "dir": "account",
+  "dirIndex": 3,
+  "dirTotal": 50,
+  "dirPrev": "account/prev.jpg",
+  "dirNext": "account/next.jpg"
+}
+```
+
+**字段说明：**
+
+| 字段 | 说明 |
+|------|------|
+| `media` | Media 完整对象，包含 URL、标签、赞踩、推文 ID 等 |
+| `index` / `total` | 全局媒体列表中的位置索引和总数 |
+| `prev` / `next` | 全局前后媒体路径（用于全部浏览时的翻页） |
+| `dir` | 当前媒体所属目录 |
+| `dirIndex` / `dirTotal` | 当前目录内的位置索引和总数 |
+| `dirPrev` / `dirNext` | 当前目录内的前后媒体路径（用于目录浏览时的翻页） |
+
+**错误：** 媒体不存在时返回 `{"error":"not found"}`，缺少参数时返回 `{"error":"path or dir+name required"}`。
+
+**使用示例（curl）：**
+
+```bash
+# 通过 path 参数
+curl http://localhost:8090/api/media/view?path=account/photo.jpg
+
+# 通过 dir + name 参数
+curl http://localhost:8090/api/media/view?dir=account&name=photo.jpg
+
+# 通过 JavaScript 调用
+fetch('/api/media/view?path=account/photo.jpg')
+  .then(r => r.json())
+  .then(data => console.log(data.media.url))
+```
 
 ## 数据来源
 

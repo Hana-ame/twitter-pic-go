@@ -127,6 +127,7 @@ func Run(addr string) {
 	mux.HandleFunc("DELETE /api/link", s.handleDeleteLink)
 	mux.HandleFunc("GET /api/health", s.handleAPIHealth)
 	mux.HandleFunc("GET /api/accounts", s.handleAPIAccounts)
+	mux.HandleFunc("GET /api/media/view", s.handleAPIView)
 	mux.HandleFunc("GET /api/media", s.handleAPIMedia)
 
 	log.Printf("gallery: server listening on %s (json dir: %s)", addr, jsonDir)
@@ -1570,6 +1571,88 @@ func (s *Server) buildTemplateTags(g *Gallery, dir string, include, exclude []st
 		list[i].ExcludeLink = buildTagURL(dir, include, addTag(exclude, t), typeFilter, sortKey, recursive)
 	}
 	return list
+}
+
+// ---------- single media view ----------
+
+// handleAPIView GET /api/media/view?path={path}
+// 返回单个媒体条目详情，含导航链接（prev/next）。
+// path: 媒体虚拟路径（如 "account/photo.jpg"）
+// dir:  媒体所在目录（可选，与 name 配合使用）
+// name: 媒体文件名（可选，与 dir 配合使用）
+func (s *Server) handleAPIView(w http.ResponseWriter, r *http.Request) {
+	g := s.current()
+	q := r.URL.Query()
+
+	path := q.Get("path")
+	if path == "" {
+		dir := q.Get("dir")
+		name := q.Get("name")
+		if dir != "" && name != "" {
+			path = dir + "/" + name
+		}
+	}
+	if path == "" {
+		writeJSON(w, map[string]any{"error": "path or dir+name required"})
+		return
+	}
+
+	// 遍历查找
+	var found *Media
+	var index int
+	for i, m := range g.media {
+		if m.Path == path {
+			found = m
+			index = i
+			break
+		}
+	}
+	if found == nil {
+		writeJSON(w, map[string]any{"error": "not found"})
+		return
+	}
+
+	all := g.media
+
+	// 全局导航链接
+	var prev, next string
+	if index > 0 {
+		prev = all[index-1].Path
+	}
+	if index < len(all)-1 {
+		next = all[index+1].Path
+	}
+
+	// 同目录下的媒体列表
+	dir := found.Dir
+	dirMedia := g.byDir[dir]
+	dirIndex := 0
+	var dirPrev, dirNext string
+	for i, m := range dirMedia {
+		if m.Path == path {
+			dirIndex = i
+			if i > 0 {
+				dirPrev = dirMedia[i-1].Path
+			}
+			if i < len(dirMedia)-1 {
+				dirNext = dirMedia[i+1].Path
+			}
+			break
+		}
+	}
+
+	writeJSON(w, map[string]any{
+		"media":    found,
+		"index":    index,
+		"total":    len(all),
+		"prev":     prev,
+		"next":     next,
+		"dir":      dir,
+		"dirIndex": dirIndex,
+		"dirTotal": len(dirMedia),
+		"dirPrev":  dirPrev,
+		"dirNext":  dirNext,
+	})
 }
 
 // ---------- media proxy ----------

@@ -455,25 +455,33 @@ func ingestAccountDoc(next *Gallery, username string, doc *gzDocument, mediaByDi
 }
 
 // Scan walks the json.gz directory and rebuilds the in-memory index.
-func (g *Gallery) Scan() error {
+// scanNext builds a fresh index snapshot from g's configuration/data and returns it
+// without mutating g. The caller decides whether to Replace in place or atomically swap.
+func (g *Gallery) scanNext() (*Gallery, error) {
 	info, err := os.Stat(g.root)
 	if err != nil {
-		return fmt.Errorf("json dir %s is not accessible: %w", g.root, err)
+		return nil, fmt.Errorf("json dir %s is not accessible: %w", g.root, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("json dir %s is not a directory", g.root)
+		return nil, fmt.Errorf("json dir %s is not a directory", g.root)
 	}
 
 	next := NewGallery(g.root, g.accountTags)
 	next.remoteBase = g.remoteBase // 保留远程源配置（Replace 会整体覆盖）
 	next.dbAccounts = g.dbAccounts // 保留 db 账号索引
+	// 拷贝一份远程内存文档快照，避免扫描中与并发 fetch 互相干扰。
+	g.muRemote.Lock()
+	for username, raw := range g.remoteDocs {
+		next.remoteDocs[username] = raw
+	}
+	g.muRemote.Unlock()
 	mediaByDir := map[string][]*Media{}
 	subdirs := map[string]map[string]bool{}
 	seen := map[string]bool{}
 
 	entries, err := os.ReadDir(g.root)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for _, entry := range entries {
@@ -497,19 +505,13 @@ func (g *Gallery) Scan() error {
 	}
 
 	// 远程文档（仅存内存，临时调试）：本地没有的同名账号才用远端数据补入索引。
-	// 注意：先在锁内收集用户名、解锁后再逐个解文档——
-	// peekRemoteDoc 内部也要拿同一把锁，而 sync.Mutex 不可重入，
-	// 在锁内直接调用会自己跟自己死锁（首次成功拉取后的重建必然卡死）。
-	g.muRemote.Lock()
-	pending := make([]string, 0, len(g.remoteDocs))
-	for username := range g.remoteDocs {
-		if !seen[username] {
-			pending = append(pending, username)
+	// 直接遍历 scanNext 开始时拷贝的快照（next.remoteDocs），
+	// 不需要再拿 g.muRemote（也避免了锁内再 Lock 的死锁问题）。
+	for username, raw := range next.remoteDocs {
+		if seen[username] {
+			continue
 		}
-	}
-	g.muRemote.Unlock()
-	for _, username := range pending {
-		if doc := g.peekRemoteDoc(username); doc != nil && len(doc.Timeline) > 0 {
+		if doc := decodeRawDoc(raw); doc != nil && len(doc.Timeline) > 0 {
 			ingestAccountDoc(next, username, doc, mediaByDir, subdirs)
 		}
 	}
@@ -565,6 +567,17 @@ func (g *Gallery) Scan() error {
 		sort.Strings(next.dirs[""])
 	}
 
+	return next, nil
+}
+
+// Scan rebuilds the in-memory index and replaces it in place.
+// This is only safe before the gallery starts serving concurrent requests;
+// after serving begins use Server.rebuild so readers always see immutable snapshots.
+func (g *Gallery) Scan() error {
+	next, err := g.scanNext()
+	if err != nil {
+		return err
+	}
 	g.Replace(next)
 	return nil
 }

@@ -138,12 +138,9 @@ func normalizeGzip(raw []byte) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// peekRemoteDoc 解出内存中的文档（供扫描用）；不存在返回 nil。
-func (g *Gallery) peekRemoteDoc(username string) *gzDocument {
-	g.muRemote.Lock()
-	defer g.muRemote.Unlock()
-	raw, ok := g.remoteDocs[username]
-	if !ok {
+// decodeRawDoc 解出内存中 gzip 格式的远程文档；解析失败返回 nil。
+func decodeRawDoc(raw []byte) *gzDocument {
+	if len(raw) == 0 {
 		return nil
 	}
 	zr, err := gzip.NewReader(bytes.NewReader(raw))
@@ -156,4 +153,15 @@ func (g *Gallery) peekRemoteDoc(username string) *gzDocument {
 		return nil
 	}
 	return &doc
+}
+
+// peekRemoteDoc 解出内存中的文档（供扫描用）；不存在返回 nil。
+func (g *Gallery) peekRemoteDoc(username string) *gzDocument {
+	g.muRemote.Lock()
+	defer g.muRemote.Unlock()
+	raw, ok := g.remoteDocs[username]
+	if !ok {
+		return nil
+	}
+	return decodeRawDoc(raw)
 }

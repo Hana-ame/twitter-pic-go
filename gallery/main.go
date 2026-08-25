@@ -48,6 +48,21 @@ func (s *Server) current() *Gallery {
 	return s.gallery
 }
 
+// rebuild 重建服务中的索引并原子地替换 live gallery。
+// 与原地 Scan 不同，所有 HTTP 读请求看到的是不可变快照，不会并发读写在途 map。
+func (s *Server) rebuild() error {
+	g := s.current()
+	next, err := g.scanNext()
+	if err != nil {
+		return err
+	}
+	next.AttachReactions(s.db)
+	s.mu.Lock()
+	s.gallery = next
+	s.mu.Unlock()
+	return nil
+}
+
 // Run starts the gallery HTTP server on the given address. If addr is empty,
 // it falls back to the GALLERY_ADDR env var, then ":8090".
 // Intended to be launched as a goroutine from the main binary so the whole
@@ -324,6 +339,10 @@ func (s *Server) handleSetLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	if s.db == nil {
+		http.Error(w, "db unavailable", http.StatusInternalServerError)
+		return
+	}
 	platform := resolvePlatform(req.Platform)
 	if err := upsertAccountLink(s.db, req.Account, platform, req.URL); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -340,6 +359,10 @@ func (s *Server) handleDeleteLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Account == "" || req.Platform == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if s.db == nil {
+		http.Error(w, "db unavailable", http.StatusInternalServerError)
 		return
 	}
 	if err := deleteAccountLink(s.db, req.Account, req.Platform); err != nil {
@@ -841,11 +864,15 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 远程源懒加载（临时调试，仅存内存）：本地没有该账号的数据时，
-	// 按需从远端 API 拉取这一个账号的 json 到内存，重建索引后继续。
+	// 按需从远端 API 拉取这一个账号的 json 到内存，原子重建索引后继续。
 	if len(candidates) == 0 && dir != "" && g.RemoteBase() != "" {
 		if _, err := g.FetchRemoteDoc(dir); err == nil {
 			log.Printf("gallery: remote lazy-fetched %s (memory only)", dir)
-			g.Scan() // 重建内存索引（含头像/标签）
+			if err := s.rebuild(); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			g = s.current() // rebuild 会换新快照，重新取指针
 			if !recursive && len(include) == 0 && len(exclude) == 0 {
 				candidates = g.byDir[dir]
 			} else {
@@ -1007,15 +1034,12 @@ func (s *Server) handleClustersPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
-	// 在现有实例上重扫：Replace 会保留 remoteBase / remoteDocs / dbAccounts，
-	// 新建 Gallery 则会把远程源配置与 db 账号索引全部丢掉。
-	g := s.current()
-	if err := g.Scan(); err != nil {
+	// 原子重建并替换索引，避免并发请求读到写了一半的 map；
+	// scanNext 会保留 remoteBase / remoteDocs / dbAccounts。/rescan 后无需再手工 AttachReactions。
+	if err := s.rebuild(); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// 重新扫描后同样要把 per-image 标签回填
-	g.AttachReactions(s.db)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -1033,6 +1057,10 @@ func (s *Server) handleReact(w http.ResponseWriter, r *http.Request) {
 	voter := r.FormValue("voter")
 	if mediaID == "" || emoji == "" {
 		http.Error(w, "missing media_id or emoji", http.StatusBadRequest)
+		return
+	}
+	if s.db == nil {
+		http.Error(w, "db unavailable", http.StatusInternalServerError)
 		return
 	}
 	// 从内存索引取出 tweet_id，写入点赞记录以便溯源。

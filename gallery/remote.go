@@ -34,15 +34,12 @@ var remoteHTTPClient = &http.Client{Timeout: 60 * time.Second}
 // 超限视为异常数据直接拒绝，避免大响应拖垮内存。
 const fetchSizeLimit = 8 << 20
 
-// negativeCache 记录拉取失败（404/超限/解析失败等）的账号，避免每次访问都重复打远端。
-// 进程生命周期内有效；rescan 不清空（失败与索引无关）。
-var negativeCache = map[string]time.Time{}
-
 // negativeTTL 失败记录的保留时长；过期后允许重试（远端可能已补抓该账号）。
 const negativeTTL = 10 * time.Minute
 
-func negativelyCached(username string) bool {
-	t, ok := negativeCache[username]
+// negativelyCached 报告某账号是否在负缓存 TTL 内。必须在持有 g.muRemote 时调用。
+func (g *Gallery) negativelyCached(username string) bool {
+	t, ok := g.negativeCache[username]
 	return ok && time.Since(t) < negativeTTL
 }
 
@@ -60,7 +57,7 @@ func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 	if _, ok := g.remoteDocs[username]; ok {
 		return false, nil // 内存里已有
 	}
-	if negativelyCached(username) {
+	if g.negativelyCached(username) {
 		return false, fmt.Errorf("recently failed; skipped")
 	}
 
@@ -73,21 +70,21 @@ func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 
 	resp, err := remoteHTTPClient.Do(req)
 	if err != nil {
-		negativeCache[username] = time.Now()
+		g.negativeCache[username] = time.Now()
 		return false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		negativeCache[username] = time.Now()
+		g.negativeCache[username] = time.Now()
 		return false, fmt.Errorf("http %s", resp.Status)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, fetchSizeLimit+1))
 	if err != nil {
-		negativeCache[username] = time.Now()
+		g.negativeCache[username] = time.Now()
 		return false, err
 	}
 	if len(raw) > fetchSizeLimit {
-		negativeCache[username] = time.Now()
+		g.negativeCache[username] = time.Now()
 		return false, fmt.Errorf("response exceeds %d bytes", fetchSizeLimit)
 	}
 

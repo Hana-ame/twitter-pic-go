@@ -75,14 +75,6 @@ func (m *Media) HasTag(tag string) bool {
 	return false
 }
 
-// DirInfo describes one subdirectory in a directory listing.
-type DirInfo struct {
-	Name           string `json:"name"`
-	Path           string `json:"path"`
-	Count          int    `json:"count"`           // media directly inside this directory
-	RecursiveCount int    `json:"recursive_count"` // media in the whole subtree
-}
-
 // Gallery is an in-memory index over all json.gz timelines found in root.
 type Gallery struct {
 	root        string
@@ -95,7 +87,6 @@ type Gallery struct {
 	dirs   map[string][]string // parent dir -> immediate subdir names
 	direct map[string]int      // dir -> count of media directly inside
 	recurs map[string]int      // dir -> count of media in subtree
-	tags   map[string]int      // tag -> media count
 	// accountTagCounts: tag -> 账号数（左导航/标签云统计“哪些账号拥有该 tag”用，与 media 数分离）
 	accountTagCounts map[string]int
 	// avatars: 账号头像（account_info.profile_image，已按需走 twimg 反代）
@@ -109,6 +100,8 @@ type Gallery struct {
 	// 远程拉取的文档仅存内存，绝不落盘（临时调试，见 remote.go）
 	muRemote   sync.Mutex
 	remoteDocs map[string][]byte
+	// negativeCache：远程拉取失败记录（由 muRemote 保护），避免同一账号反复重试
+	negativeCache map[string]time.Time
 	// dbAccounts：来自本地 db（users 表）的账号索引，
 	// 用于在未拉取媒体前就能展示完整账号列表（最新/最热/收藏等）。
 	dbAccounts map[string]AccountMeta
@@ -199,11 +192,11 @@ func NewGallery(root string, accountTags map[string][]string) *Gallery {
 		dirs:             map[string][]string{},
 		direct:           map[string]int{},
 		recurs:           map[string]int{},
-		tags:             map[string]int{},
 		avatars:          map[string]string{},
 		bg:               map[string]string{},
 		latestPhoto:      map[string]time.Time{},
 		remoteDocs:       map[string][]byte{},
+		negativeCache:    map[string]time.Time{},
 		accountTagCounts: accountTagCounts,
 		mediaBase:        deriveMediaBase(),
 	}
@@ -531,9 +524,6 @@ func (g *Gallery) scanNext() (*Gallery, error) {
 	// account names (m.DirTags) — those are reachable via the account list instead.
 	for _, m := range next.media {
 		next.recurs[m.Dir]++
-		for _, t := range m.Tags {
-			next.tags[t]++
-		}
 		if m.Type == "photo" && m.ModTime.After(next.latestPhoto[m.Dir]) {
 			// 预计算每个账号最新一张 photo（行/卡片背景），避免每次请求全量扫描。
 			next.latestPhoto[m.Dir] = m.ModTime
@@ -592,7 +582,7 @@ func (g *Gallery) Replace(next *Gallery) {
 	// 逐字段替换索引内容，避免拷贝内嵌锁（vet）
 	g.media, g.byID, g.byURL = next.media, next.byID, next.byURL
 	g.byDir, g.dirs = next.byDir, next.dirs
-	g.direct, g.recurs, g.tags = next.direct, next.recurs, next.tags
+	g.direct, g.recurs = next.direct, next.recurs
 	g.accountTagCounts, g.avatars, g.mediaBase = next.accountTagCounts, next.avatars, next.mediaBase
 	g.bg = next.bg
 

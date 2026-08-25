@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"html/template"
 	"log"
@@ -37,7 +38,6 @@ type Server struct {
 	mu          sync.RWMutex
 	gallery     *Gallery
 	db          *sql.DB
-	tagDB       *sql.DB // 读取账号级 tag / emoji 投票（GALLERY_TAG_DB，默认 twitter.db）
 	accountTags map[string][]string
 	links       map[string][]AccountLink // account → 外部链接
 }
@@ -105,7 +105,6 @@ func Run(addr string) {
 	s := &Server{
 		gallery:     g,
 		db:          db,
-		tagDB:       tagDB,
 		accountTags: accountTags,
 		links:       loadAccountLinks(db),
 	}
@@ -323,7 +322,9 @@ func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		seen[m.Dir] = true
-		fmt.Fprint(w, `  <url><loc>`+host+`/`+m.Dir+`</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>`+"\n")
+		fmt.Fprint(w, "  <url><loc>")
+		xml.EscapeText(w, []byte(host+"/"+m.Dir))
+		fmt.Fprint(w, `</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>`+"\n")
 	}
 	s.mu.RUnlock()
 	fmt.Fprint(w, `</urlset>`)
@@ -662,27 +663,16 @@ func buildTagURL(dir string, include, exclude []string, typeFilter, sortKey stri
 // buildFolderURL enters a directory in normal (non-recursive) browse mode
 // while preserving the current tag/type/sort filters.
 func buildFolderURL(dir string, include, exclude []string, typeFilter, sortKey string) string {
-	basePath := "/"
-	if dir != "" {
-		basePath = "/" + dir
-	}
-	q := url.Values{}
-	if len(include) > 0 {
-		q.Set("tags", strings.Join(include, ","))
-	}
-	if len(exclude) > 0 {
-		q.Set("exclude_tags", strings.Join(exclude, ","))
-	}
-	if typeFilter != "" {
-		q.Set("type", typeFilter)
-	}
-	if sortKey != "" && sortKey != defaultSortKey {
-		q.Set("sort", sortKey)
-	}
-	if len(q) == 0 {
-		return basePath
-	}
-	return basePath + "?" + q.Encode()
+	return buildFolderURLPS(dir, include, exclude, typeFilter, sortKey, 0)
+}
+
+// buildFolderURLPS 是 buildFolderURL 的 page_size 保留版本；pageSize<=0 时不写该参数。
+func buildFolderURLPS(dir string, include, exclude []string, typeFilter, sortKey string, pageSize int) string {
+	return buildBrowseURLParams(browseURLParams{
+		dir: dir, pageSize: pageSize,
+		include: include, exclude: exclude,
+		typeFilter: typeFilter, sortKey: sortKey,
+	})
 }
 
 func buildBreadcrumbs(dir string, include, exclude []string, typeFilter, sortKey string, recursive bool) ([]string, []string) {
@@ -754,7 +744,6 @@ type pageData struct {
 
 	BreadParts []string
 	BreadLinks []string
-	Clusters   []Cluster
 	Home       []HomeSection
 
 	PrevURL       string
@@ -1009,7 +998,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 		RecursiveURL:  buildBrowseURL(dir, 1, include, exclude, typeFilter, sortKey, !recursive),
 	}
 
-	data.Dirs = s.buildTemplateDirs(g, dir, include, exclude, typeFilter, sortKey)
+	data.Dirs = s.buildTemplateDirs(g, dir, include, exclude, typeFilter, sortKey, pageSize)
 	data.Tags = s.buildTemplateTags(g, dir, include, exclude, typeFilter, sortKey, recursive)
 
 	// OG / SEO：账号页用昵称 + 封面图
@@ -1119,7 +1108,8 @@ func pageURL(r *http.Request, page int) string {
 
 // paginateDirs 对账号网格做翻页式分页，并把结果写回 pageData。
 func (s *Server) paginateDirs(dirs []templateDir, r *http.Request, data *pageData) {
-	const pageSize = 24
+	const defaultDirPageSize = 24
+	pageSize := intParam(r, "page_size", defaultDirPageSize, 1, 100)
 	total := len(dirs)
 	totalPages := 0
 	if total > 0 {
@@ -1145,6 +1135,7 @@ func (s *Server) paginateDirs(dirs []templateDir, r *http.Request, data *pageDat
 	}
 	data.Dirs = dirs[start:end]
 	data.Page = page
+	data.PageSize = pageSize
 	data.Total = total
 	data.TotalPages = totalPages
 	if page > 1 {
@@ -1279,7 +1270,7 @@ func (s *Server) buildHome(g *Gallery) pageData {
 // 支持 q= 按用户名 / 昵称子串搜索（大小写不敏感）。
 func (s *Server) handleLatest(w http.ResponseWriter, r *http.Request) {
 	g := s.current()
-	accounts := s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey)
+	accounts := s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey, 0)
 	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
 		accounts = filterAccounts(accounts, query)
 	}
@@ -1371,7 +1362,7 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if tag == "" {
-		data.Dirs = s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey)
+		data.Dirs = s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey, 0)
 		data.Tags = s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false)
 		renderPage(w, data)
 		return
@@ -1520,7 +1511,7 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 
 // ---------- template data builders ----------
 
-func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []string, typeFilter, sortKey string) []templateDir {
+func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []string, typeFilter, sortKey string, pageSize int) []templateDir {
 	names := g.dirs[dir]
 	out := make([]templateDir, 0, len(names))
 	for _, name := range names {
@@ -1531,7 +1522,7 @@ func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []st
 			Path:           p,
 			Count:          g.direct[p],
 			RecursiveCount: g.recurs[p],
-			Link:           buildFolderURL(p, include, exclude, typeFilter, sortKey),
+			Link:           buildFolderURLPS(p, include, exclude, typeFilter, sortKey, pageSize),
 			Cover:          dirCover(g, p),
 			Avatar:         g.Avatar(p),
 			BG:             g.BG(p),

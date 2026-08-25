@@ -496,16 +496,23 @@ func (g *Gallery) Scan() error {
 		ingestAccountDoc(next, username, &doc, mediaByDir, subdirs)
 	}
 
-	// 远程文档（仅存内存，临时调试）：本地没有的同名账号才用远端数据补入索引
+	// 远程文档（仅存内存，临时调试）：本地没有的同名账号才用远端数据补入索引。
+	// 注意：先在锁内收集用户名、解锁后再逐个解文档——
+	// peekRemoteDoc 内部也要拿同一把锁，而 sync.Mutex 不可重入，
+	// 在锁内直接调用会自己跟自己死锁（首次成功拉取后的重建必然卡死）。
 	g.muRemote.Lock()
+	pending := make([]string, 0, len(g.remoteDocs))
 	for username := range g.remoteDocs {
 		if !seen[username] {
-			if doc := g.peekRemoteDoc(username); doc != nil && len(doc.Timeline) > 0 {
-				ingestAccountDoc(next, username, doc, mediaByDir, subdirs)
-			}
+			pending = append(pending, username)
 		}
 	}
 	g.muRemote.Unlock()
+	for _, username := range pending {
+		if doc := g.peekRemoteDoc(username); doc != nil && len(doc.Timeline) > 0 {
+			ingestAccountDoc(next, username, doc, mediaByDir, subdirs)
+		}
+	}
 
 	// Sort media in every directory by name (case-insensitive).
 	for dir := range mediaByDir {

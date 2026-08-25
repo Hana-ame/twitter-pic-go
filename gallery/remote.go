@@ -30,8 +30,24 @@ func (g *Gallery) RemoteBase() string { return g.remoteBase }
 
 var remoteHTTPClient = &http.Client{Timeout: 60 * time.Second}
 
+// fetchSizeLimit 单个账号元数据的解压后上限；图站浏览场景远用不到这么大，
+// 超限视为异常数据直接拒绝，避免大响应拖垮内存。
+const fetchSizeLimit = 8 << 20
+
+// negativeCache 记录拉取失败（404/超限/解析失败等）的账号，避免每次访问都重复打远端。
+// 进程生命周期内有效；rescan 不清空（失败与索引无关）。
+var negativeCache = map[string]time.Time{}
+
+// negativeTTL 失败记录的保留时长；过期后允许重试（远端可能已补抓该账号）。
+const negativeTTL = 10 * time.Minute
+
+func negativelyCached(username string) bool {
+	t, ok := negativeCache[username]
+	return ok && time.Since(t) < negativeTTL
+}
+
 // FetchRemoteDoc 按需拉取某账号的元数据，仅存内存（g.remoteDocs），不写磁盘。
-// 已在内存中的直接跳过。返回是否新拉取了数据。
+// 已在内存中的直接跳过；近期拉取失败过的直接跳过。返回是否新拉取了数据。
 func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 	if g.remoteBase == "" || username == "" {
 		return false, fmt.Errorf("remote json source disabled")
@@ -44,6 +60,9 @@ func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 	if _, ok := g.remoteDocs[username]; ok {
 		return false, nil // 内存里已有
 	}
+	if negativelyCached(username) {
+		return false, fmt.Errorf("recently failed; skipped")
+	}
 
 	u := g.remoteBase + "/" + url.PathEscape(username) + ".json.gz?t=1"
 	req, err := http.NewRequest(http.MethodGet, u, nil)
@@ -54,15 +73,22 @@ func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 
 	resp, err := remoteHTTPClient.Do(req)
 	if err != nil {
+		negativeCache[username] = time.Now()
 		return false, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		negativeCache[username] = time.Now()
 		return false, fmt.Errorf("http %s", resp.Status)
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, fetchSizeLimit+1))
 	if err != nil {
+		negativeCache[username] = time.Now()
 		return false, err
+	}
+	if len(raw) > fetchSizeLimit {
+		negativeCache[username] = time.Now()
+		return false, fmt.Errorf("response exceeds %d bytes", fetchSizeLimit)
 	}
 
 	// 先统一解成明文 JSON 再校验（服务端可能回 gzip 或明文两种形态）
@@ -72,7 +98,7 @@ func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 		if err != nil {
 			return false, err
 		}
-		plain, err = io.ReadAll(io.LimitReader(zr, 64<<20))
+		plain, err = io.ReadAll(io.LimitReader(zr, fetchSizeLimit))
 		if err != nil {
 			return false, err
 		}

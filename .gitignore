@@ -5,10 +5,16 @@
 *.db-shm
 *.db-wal
 
-
 .env
 
 server_bin
 bans.txt
-bans.txt
-bans.txt
+
+__pycache__/
+*.pyc
+
+# 本地构建缓存与测试样例数据
+.gocache/
+.gomodcache/
+.testdata/
+

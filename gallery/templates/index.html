@@ -73,7 +73,6 @@ main { flex: 1; padding: 16px; }
 .social-links a svg { width: 14px; height: 14px; fill: currentColor; }
 .social-links a.edit-link { font-size: 11px; width: auto; padding: 0 4px; opacity: 0.5; }
 .social-links a.edit-link:hover { opacity: 1; }
-.accounts-select { width: 100%; max-width: 420px; padding: 9px 10px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 14px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; transition: border-color .15s, transform .15s; }
 .card:hover { border-color: var(--accent); transform: translateY(-2px); }
@@ -101,8 +100,6 @@ main { flex: 1; padding: 16px; }
 .vthumb { width: 100%; height: 170px; background: #000; }
 .vthumb.sm { width: 100px; height: 75px; border-radius: 8px; overflow: hidden; }
 .vthumb iframe { width: 100%; height: 100%; border: 0; display: block; }
-.history-item { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-bottom: 8px; font-size: 13px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.history-item .time { color: var(--muted); font-size: 12px; min-width: 150px; }
 .filterbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; font-size: 13px; }
 .filterbar a { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 5px 10px; color: var(--muted); }
 .filterbar a.active { color: white; background: var(--accent); }
@@ -233,6 +230,7 @@ main { flex: 1; padding: 16px; }
       <a href="/latest" class="{{if eq .ActiveTab "latest"}}active{{end}}">最新</a>
       <a href="/hot" class="{{if eq .ActiveTab "hot"}}active{{end}}">最热</a>
       <a href="/favorites" class="{{if eq .ActiveTab "favorites"}}active{{end}}">我的收藏</a>
+      <a href="/clusters" class="{{if eq .ActiveTab "clusters"}}active{{end}}">聚类</a>
     </div>
     <h3>搜索账号</h3>
     <form class="searchbox" action="/latest" method="get">
@@ -273,13 +271,13 @@ main { flex: 1; padding: 16px; }
 
     {{else if eq .Mode "index"}}
       <h2>{{if .TagFilter}}搜索：{{.TagFilter}}{{else}}最新{{end}}</h2>
-      {{template "accountRows" .}}
+      {{template "accountsGrid" .}}
       {{template "pagination" .}}
       {{if and .TagFilter (not .Dirs)}}<div class="empty">没有匹配的账号</div>{{end}}
 
     {{else if eq .Mode "accounts"}}
       <h2>{{.Title}}</h2>
-      {{template "accountRows" .}}
+      {{template "accountsGrid" .}}
       {{template "pagination" .}}
       {{if not .Dirs}}<div class="empty">没有内容</div>{{end}}
 
@@ -346,6 +344,37 @@ main { flex: 1; padding: 16px; }
         {{range .Tags}}<a class="tag" href="/tags?tag={{.Name}}&mode={{$.TagMode}}">{{.Name}}({{.Count}}) <span style="color:var(--muted)">＋</span></a>{{end}}
       </div>
       {{if not .Tags}}<div class="empty">暂无标签</div>{{end}}
+
+    {{else if eq .Mode "clusters"}}
+      <h2>自动聚类</h2>
+      <p style="color:var(--muted);font-size:13px;margin:-6px 0 12px">按标签向量的 k-means 分组：同一簇里的媒体共享相同的标签模式，簇名取簇内出现最多的标签。</p>
+      <div class="filterbar">
+        <span>簇数：</span>
+        {{range .ClusterPresets}}<a href="{{.URL}}" class="{{if eq .Value $.ClusterK}}active{{end}}">{{.Value}}</a>{{end}}
+        <span style="width:8px"></span>
+        <span style="color:var(--muted)">每簇预览 12 张 · 点击缩略图进入该账号</span>
+      </div>
+      {{if .Clusters}}
+      {{range .Clusters}}
+      <div class="cluster">
+        <h4>#{{.ID}} · {{.Label}} <span style="color:var(--muted);font-weight:400">({{.Count}} 张)</span></h4>
+        <div class="tags">{{range .Tags}}<span class="tag">{{.}}</span>{{end}}</div>
+        <div class="mini-grid">
+          {{range .Items}}
+          <a href="/{{.Dir}}" title="{{.Name}}">
+            {{if or (eq .Type "video") (eq .Type "animated_gif")}}
+            <div class="vthumb sm" data-vsrc="{{.URL}}"></div>
+            {{else}}
+            <img loading="lazy" src="{{if .Thumb}}{{.Thumb}}{{else}}{{.URL}}{{end}}" alt="{{.Name}}">
+            {{end}}
+          </a>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+      {{else}}
+      <div class="empty">暂无媒体，聚类为空</div>
+      {{end}}
     {{end}}
   </main>
 </div>
@@ -377,12 +406,6 @@ main { flex: 1; padding: 16px; }
   {{if .NextURL}}<a href="{{.NextURL}}">下一页</a>{{end}}
 </div>
 {{end}}
-{{end}}
-
-{{define "accountRows"}}
-<div class="homerows">
-  {{range .Dirs}}<a class="homerow{{if .BG}} hasbg{{end}}" href="{{.Link}}"{{if .BG}} style="background-image:url('{{.BG}}')"{{end}}{{if .Nick}} title="{{.Nick}}"{{end}}>{{if .Avatar}}<img class="avatar" loading="lazy" src="{{.Avatar}}" alt="">{{end}}<span class="hinfo"><b>{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}}</b><i>@{{.Name}}{{if .Votes}} · 🔥 {{.Votes}}{{end}} · 🖼 {{.RecursiveCount}}{{if .Date}} · {{.Date}}{{end}}</i></span><span class="go">›</span></a>{{end}}
-</div>
 {{end}}
 
 {{define "mediaGrid"}}

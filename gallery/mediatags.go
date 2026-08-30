@@ -149,8 +149,7 @@ func (g *Gallery) AttachReactions(db *sql.DB) {
 
 	for mid, a := range acc {
 		if m, ok := g.byID[mid]; ok {
-			m.LikeCount = a.likes
-			m.DislikeCount = a.dislikes
+			m.SetCounts(int32(a.likes), int32(a.dislikes))
 			m.PerImageTags = a.tags
 		}
 	}

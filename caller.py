@@ -4,11 +4,31 @@ import shlex
 import threading
 import socket
 
+# 抓取脚本名。build.sh 上传的是 get_meta_data.py，历史上这里写的是不存在的
+# get2.py，导致队列永远执行失败。
+FETCHER = "get_meta_data.py"
+
+# caller.py 的 TCP listener 绑在非 loopback 地址上且能触发命令执行。
+# 设置 CALLER_TOKEN 后要求客户端第一行发送 "token <CALLER_TOKEN>"，
+# 未设置时保持旧行为（向后兼容，不破坏现有部署）。
+CALLER_TOKEN = os.getenv("CALLER_TOKEN", "")
+
+
 def call(username):
     # 注意：username 来自网络（Go 服务器转发），必须 quote，
     # 否则注入 `;`、`$()` 等字符会直接执行 shell 命令（RCE）。
     # 发现背景：代码审阅时发现 os.system 直接拼接网络输入。
-    os.system(f"timeout 300s ~/twitter/venv/bin/python3 get2.py {shlex.quote(username)}")
+    os.system(f"timeout 300s ~/twitter/venv/bin/python3 {FETCHER} {shlex.quote(username)}")
+
+
+def token_ok(first_line):
+    """校验可选的共享令牌。CALLER_TOKEN 为空时不启用鉴权。
+
+    两侧都转小写再比较：只 lower 输入侧会让带大写字母的 token 永远校验失败。
+    """
+    if not CALLER_TOKEN:
+        return True
+    return first_line.strip().lower() == f"token {CALLER_TOKEN}".lower()
 
 
 def handle_client(client_socket, client_address):
@@ -24,8 +44,20 @@ def handle_client(client_socket, client_address):
         received_str = data.decode('utf-8').strip() # 解码并去除首尾空白字符
         print(f"[*] 收到来自 {client_address} 的字符串: {repr(received_str)}")
         
+        # 可选鉴权：启用 CALLER_TOKEN 时第一行必须是 "token <token>"，
+        # username 取最后一行。未启用时保持旧的单行协议（向后兼容）。
+        lines = received_str.splitlines()
+        username = lines[-1].strip() if lines else ""
+        if CALLER_TOKEN:
+            if len(lines) < 2 or not token_ok(lines[0]):
+                print(f"[-] 客户端 {client_address} 令牌校验失败，拒绝执行")
+                return
+        if not username:
+            print(f"[-] 客户端 {client_address} 未提供 username")
+            return
+
         # 使用接收到的字符串执行调用
-        result = call(received_str)
+        result = call(username)
         
         # (可选)将调用结果发送回客户端
         # response = str(result).encode('utf-8')

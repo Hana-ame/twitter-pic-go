@@ -22,7 +22,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-//go:embed templates/index.html
+//go:embed templates/index.html templates/peerjs.min.js
 var templateFS embed.FS
 
 var pageTemplate = template.Must(
@@ -39,7 +39,28 @@ type Server struct {
 	gallery     *Gallery
 	db          *sql.DB
 	accountTags map[string][]string
-	links       map[string][]AccountLink // account → 外部链接
+
+	// linksMu 保护 links。links 是 map，POST/DELETE /api/link 会整体替换它，
+	// 而页面渲染并发读——map 并发读写会直接 fatal panic
+	// ("concurrent map read and map write")，必须单独加锁。
+	// 不复用 s.mu：rebuild() 持有 s.mu 写锁的时间更长，
+	// 让 links 的读写跟着阻塞没有必要。
+	linksMu sync.RWMutex
+	links   map[string][]AccountLink // account → 外部链接
+}
+
+// linksTable 返回账号外部链接表的快照（读锁）。
+func (s *Server) linksTable() map[string][]AccountLink {
+	s.linksMu.RLock()
+	defer s.linksMu.RUnlock()
+	return s.links
+}
+
+// setLinksTable 原子替换账号外部链接表（写锁）。
+func (s *Server) setLinksTable(v map[string][]AccountLink) {
+	s.linksMu.Lock()
+	s.links = v
+	s.linksMu.Unlock()
 }
 
 func (s *Server) current() *Gallery {
@@ -102,6 +123,9 @@ func Run(addr string) {
 	// 把已持久化的 per-image 标签（含赞/倒赞）回填进内存索引
 	g.AttachReactions(db)
 
+	// 写接口鉴权 + 限流（gallery 是独立 net/http 服务，Gin 侧的 limit 包覆盖不到）
+	sec := loadSecurityPolicy()
+
 	s := &Server{
 		gallery:     g,
 		db:          db,
@@ -118,20 +142,23 @@ func Run(addr string) {
 	mux.HandleFunc("GET /clusters", s.handleClustersPage)
 	mux.HandleFunc("GET /{username}", s.handleBrowse)
 	mux.HandleFunc("GET /{username}/{rest...}", s.handleBrowse)
-	mux.HandleFunc("POST /rescan", s.handleRescan)
+	mux.HandleFunc("POST /rescan", sec.keyHandler(s.handleRescan))
 	mux.HandleFunc("POST /react", s.handleReact)
 	mux.HandleFunc("GET /age-gate", s.handleAgeGatePage)
 	mux.HandleFunc("POST /age-gate", s.handleAgeGateConfirm)
+	// peerjs.min.js 是 WebRTC 图片兜底（peerfs）的前端依赖，必须走独立路由，
+	// 否则会被 GET /{username} 当成账号名吃掉，浏览器收到 HTML 而非 JS。
+	mux.HandleFunc("GET /peerjs.min.js", s.handlePeerJS)
 	mux.HandleFunc("GET /sitemap.xml", s.handleSitemap)
-	mux.HandleFunc("POST /api/link", s.handleSetLink)
-	mux.HandleFunc("DELETE /api/link", s.handleDeleteLink)
+	mux.HandleFunc("POST /api/link", sec.keyHandler(s.handleSetLink))
+	mux.HandleFunc("DELETE /api/link", sec.keyHandler(s.handleDeleteLink))
 	mux.HandleFunc("GET /api/health", s.handleAPIHealth)
 	mux.HandleFunc("GET /api/accounts", s.handleAPIAccounts)
 	mux.HandleFunc("GET /api/media/view", s.handleAPIView)
 	mux.HandleFunc("GET /api/media", s.handleAPIMedia)
 
 	log.Printf("gallery: server listening on %s (json dir: %s)", addr, jsonDir)
-	if err := http.ListenAndServe(addr, logRequests(ageGate(mux))); err != nil {
+	if err := http.ListenAndServe(addr, logRequests(sec.rateLimit(ageGate(mux)))); err != nil {
 		log.Fatalf("gallery: server error: %v", err)
 	}
 }
@@ -274,7 +301,8 @@ p{color:#8b95a7;font-size:14px;line-height:1.6;margin-bottom:28px}
 func ageGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/age-gate" || r.URL.Path == "/sitemap.xml" || r.Method == http.MethodPost ||
-			strings.HasPrefix(r.URL.Path, "/favicon") || strings.HasPrefix(r.URL.Path, "/api/") {
+			strings.HasPrefix(r.URL.Path, "/favicon") || strings.HasPrefix(r.URL.Path, "/api/") ||
+			r.URL.Path == "/peerjs.min.js" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -315,6 +343,7 @@ func (s *Server) handleSitemap(w http.ResponseWriter, r *http.Request) {
   <url><loc>`+host+`/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
   <url><loc>`+host+`/hot</loc><changefreq>daily</changefreq><priority>0.8</priority></url>
   <url><loc>`+host+`/tags</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>
+  <url><loc>`+host+`/clusters</loc><changefreq>weekly</changefreq><priority>0.5</priority></url>
 `)
 	s.mu.RLock()
 	seen := map[string]bool{}
@@ -350,7 +379,7 @@ func (s *Server) handleSetLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.links = loadAccountLinks(s.db)
+	s.setLinksTable(loadAccountLinks(s.db))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -371,7 +400,7 @@ func (s *Server) handleDeleteLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.links = loadAccountLinks(s.db)
+	s.setLinksTable(loadAccountLinks(s.db))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -380,6 +409,28 @@ func (s *Server) handleDeleteLink(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(v)
+}
+
+// writeJSONStatus 与 writeJSON 相同，但带状态码（错误响应不能用 200）。
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+// handlePeerJS GET /peerjs.min.js
+// 提供 vendored 的 PeerJS 客户端库，供前端 WebRTC 兜底（peerfs）使用。
+// 固定 Content-Type 为 application/javascript：MIME 不对时浏览器会直接拒绝执行脚本。
+func (s *Server) handlePeerJS(w http.ResponseWriter, r *http.Request) {
+	data, err := templateFS.ReadFile("templates/peerjs.min.js")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	// 该文件随二进制发布、内容固定，可长期缓存。
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Write(data)
 }
 
 // handleAPIHealth GET /api/health
@@ -592,6 +643,10 @@ const defaultSortKey = "time"
 
 const defaultPageSize = 10
 
+// clusterPresetValues 是聚类页提供的簇数预设（默认值 = 第 0 项）。
+// 保持与 handleClustersPage 的 intParam 上限一致：超过 30 没有意义。
+var clusterPresetValues = []int{6, 12, 18}
+
 func addTag(list []string, tag string) []string {
 	for _, t := range list {
 		if t == tag {
@@ -746,6 +801,10 @@ type pageData struct {
 	BreadParts []string
 	BreadLinks []string
 	Home       []HomeSection
+	Clusters   []Cluster // /clusters 聚类页：k-means 簇
+	ClusterK   int       // /clusters 当前簇数
+	// ClusterPresets 是聚类页的簇数预设按钮（label = 簇数）。
+	ClusterPresets []ClusterPreset
 
 	PrevURL       string
 	NextURL       string
@@ -1019,8 +1078,48 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleClustersPage(w http.ResponseWriter, r *http.Request) {
-	// 聚类页暂未完成：入口已从侧边栏移除，直接访问也回首页。
-	http.Redirect(w, r, "/", http.StatusFound)
+	// 聚类页：把全部媒体按标签向量的 k-means 分组（见 recommend.go）。
+	// k / item_limit 走 query 参数，方便用户在页面上直接调簇数看效果。
+	g := s.current()
+	k := intParam(r, "k", 6, 1, 30)
+	itemLimit := intParam(r, "item_limit", 12, 1, 100)
+
+	clusters := g.Clusters(k, itemLimit)
+
+	// 簇数预设链接：保留 item_limit，只换 k。
+	clusterURL := func(newK int) string {
+		q := r.URL.Query()
+		if newK == clusterPresetValues[0] {
+			q.Del("k")
+		} else {
+			q.Set("k", strconv.Itoa(newK))
+		}
+		if itemLimit == 12 {
+			q.Del("item_limit")
+		} else {
+			q.Set("item_limit", strconv.Itoa(itemLimit))
+		}
+		if len(q) == 0 {
+			return "/clusters"
+		}
+		return "/clusters?" + q.Encode()
+	}
+	presets := make([]ClusterPreset, 0, len(clusterPresetValues))
+	for _, v := range clusterPresetValues {
+		presets = append(presets, ClusterPreset{Value: v, URL: clusterURL(v)})
+	}
+
+	data := pageData{
+		Mode:           "clusters",
+		Title:          "聚类",
+		Clusters:       clusters,
+		ClusterK:       k,
+		ClusterPresets: presets,
+		Dirs:           s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey, 0),
+		Tags:           s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
+		ActiveTab:      "clusters",
+	}
+	renderPage(w, data)
 }
 
 func (s *Server) handleRescan(w http.ResponseWriter, r *http.Request) {
@@ -1064,9 +1163,9 @@ func (s *Server) handleReact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 同步内存中的计数，使 /hot 与卡片上的赞/踩数即时生效（无需等 /rescan）。
+	// SetCounts 内部走 atomic：计数会被其他 goroutine 经 MarshalJSON / 模板渲染 / handleHot 并发读。
 	if m, ok := g.byID[mediaID]; ok {
-		m.LikeCount = likes
-		m.DislikeCount = dislikes
+		m.SetCounts(int32(likes), int32(dislikes))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]int{"likes": likes, "dislikes": dislikes})
@@ -1187,13 +1286,19 @@ type HomeSection struct {
 	Rows    []HomeRow `json:"rows"`
 }
 
+// ClusterPreset 聚类页簇数预设按钮：Value 是簇数，URL 是切到该簇数的链接。
+type ClusterPreset struct {
+	Value int    `json:"value"`
+	URL   string `json:"url"`
+}
+
 // buildHome 组装首页数据：最新 / 最热 各取前 4 个账号，收藏交给前端按 localStorage 渲染。
 func (s *Server) buildHome(g *Gallery) pageData {
 	const homeRows = 4
 	votes := map[string]int{}
 	latest := map[string]time.Time{}
 	for _, m := range g.media {
-		votes[m.Dir] += m.LikeCount
+		votes[m.Dir] += int(m.LikeCount())
 		if m.ModTime.After(latest[m.Dir]) {
 			latest[m.Dir] = m.ModTime
 		}
@@ -1306,7 +1411,7 @@ func (s *Server) handleHot(w http.ResponseWriter, r *http.Request) {
 	accounts := accountList(g)
 	votes := map[string]int{}
 	for _, m := range g.media {
-		votes[m.Dir] += m.LikeCount
+		votes[m.Dir] += int(m.LikeCount())
 	}
 	for i := range accounts {
 		accounts[i].Votes = votes[accounts[i].Name]
@@ -1515,6 +1620,8 @@ func (s *Server) handleTagsPage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []string, typeFilter, sortKey string, pageSize int) []templateDir {
 	names := g.dirs[dir]
 	out := make([]templateDir, 0, len(names))
+	// 链接表只取一次快照：避免循环里每个账号都加一次锁。
+	links := s.linksTable()
 	for _, name := range names {
 		p := joinDir(dir, name)
 		meta := g.dbAccounts[name]
@@ -1529,7 +1636,7 @@ func (s *Server) buildTemplateDirs(g *Gallery, dir string, include, exclude []st
 			BG:             g.BG(p),
 			Nick:           meta.Nick,
 			Date:           formatDate(meta.LastModify),
-			Links:          s.links[name],
+			Links:          links[name],
 		})
 	}
 	return out
@@ -1580,6 +1687,7 @@ func (s *Server) buildTemplateTags(g *Gallery, dir string, include, exclude []st
 // path: 媒体虚拟路径（如 "account/photo.jpg"）
 // dir:  媒体所在目录（可选，与 name 配合使用）
 // name: 媒体文件名（可选，与 dir 配合使用）
+// 只用于内存索引查找（map key），不接触文件系统，因此 path 无需做路径穿越校验。
 func (s *Server) handleAPIView(w http.ResponseWriter, r *http.Request) {
 	g := s.current()
 	q := r.URL.Query()
@@ -1593,26 +1701,22 @@ func (s *Server) handleAPIView(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if path == "" {
-		writeJSON(w, map[string]any{"error": "path or dir+name required"})
+		writeJSONStatus(w, http.StatusBadRequest, map[string]any{"error": "path or dir+name required"})
 		return
 	}
 
-	// 遍历查找
-	var found *Media
-	var index int
-	for i, m := range g.media {
-		if m.Path == path {
-			found = m
-			index = i
-			break
-		}
-	}
+	// O(1) 索引查找，避免每次请求线性扫全量 media（大图库下是明显的热路径）
+	found := g.byPath[path]
 	if found == nil {
-		writeJSON(w, map[string]any{"error": "not found"})
+		writeJSONStatus(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
 	}
 
 	all := g.media
+	index := g.bySeq[path]
+	if index < 0 || index >= len(all) {
+		index = 0
+	}
 
 	// 全局导航链接
 	var prev, next string
@@ -1626,19 +1730,13 @@ func (s *Server) handleAPIView(w http.ResponseWriter, r *http.Request) {
 	// 同目录下的媒体列表
 	dir := found.Dir
 	dirMedia := g.byDir[dir]
-	dirIndex := 0
+	dirIndex := g.byDirIndex[dir][path]
 	var dirPrev, dirNext string
-	for i, m := range dirMedia {
-		if m.Path == path {
-			dirIndex = i
-			if i > 0 {
-				dirPrev = dirMedia[i-1].Path
-			}
-			if i < len(dirMedia)-1 {
-				dirNext = dirMedia[i+1].Path
-			}
-			break
-		}
+	if dirIndex > 0 {
+		dirPrev = dirMedia[dirIndex-1].Path
+	}
+	if dirIndex < len(dirMedia)-1 {
+		dirNext = dirMedia[dirIndex+1].Path
 	}
 
 	writeJSON(w, map[string]any{

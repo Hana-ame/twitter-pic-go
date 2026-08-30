@@ -43,6 +43,9 @@ go run ./server
   - `sort`：`name` / `time` / `size` / `random`
   - `page`：页码
 - `GET /tags` — 标签页：标签云 → 选 tag 后「按账号」/「按图片」两种视图
+- `GET /clusters` — 聚类页：按标签向量的 k-means 自动分组，跨账号找相似内容
+  - `k`：簇数量（默认 6，1-30；页面有 6/12/18 三个预设按钮）
+  - `item_limit`：每簇预览的媒体数（默认 12）
 - `POST /rescan` — 重新扫描 json.gz 目录（保留远程源配置与 db 账号索引）
 - `POST /react` — 单张媒体的 👍/👎（`media_id` + `emoji` + `voter` 识别码）
 - `GET|POST /age-gate` — 年龄验证
@@ -58,6 +61,20 @@ go run ./server
 - 网格缩略图走 twimg `name=small` 小图变体；视频 iframe 滚动到视口附近才创建
 - 分页带页码窗口（基于当前 URL 渐进增强，无 JS 时退回上一页/下一页）
 - 视频/动图：通过 srcdoc iframe + no-referrer 绕过 video.twimg.com 防盗链
+
+## 聚类（/clusters）
+
+图库没有 embedding 服务，聚类走纯离线的「标签向量 k-means」，实现见 `recommend.go`：
+
+1. 每张媒体用 `Media.ClusterTags()`（账号 tag + per-image tag）编码成二值向量，L2 归一化；
+   刻意排除 `DirTags` —— 那是账号名，对每条媒体都相同，算进去会让聚类退化成「按账号分组」，
+   和账号列表页完全重复。
+2. k-means++ 挑初始中心（避免轮转抽样产生重复中心、导致簇塌缩），最多迭代 50 次。
+3. 簇标签取簇内出现次数最多的标签；完全没有标签的媒体落到 `未分类` 簇。
+4. 随机性全部走单个 `math/rand.Rand`（种子由媒体内容推导），同一批数据每次产出同样的聚类。
+
+边界行为：所有媒体标签完全相同时数据没有区分度，结果退化为 1 个簇（不是实现问题）。
+逻辑与页面渲染的单测见 `recommend_test.go`。
 
 ## JSON API（只读）
 

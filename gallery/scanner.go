@@ -13,8 +13,49 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
+
+// mediaCounts 持有单个媒体条目的赞/倒赞计数。
+//
+// 它通过*指针*挂在 Media 上，而不是内嵌 int 字段。原因：代码里存在
+// `items = append(items, *m)` 这类整结构体值拷贝，以及 pageData.Items []Media
+// 交给 html/template 渲染 —— 这些路径都会非原子地读到内嵌的计数字段，race 检测器
+// 会命中。指针本身的拷贝是安全的，真正的读写全部走 atomic。
+//
+// 对调用方暴露 LikeCount()/DislikeCount() 方法（无参），因此模板里的
+// {{$m.LikeCount}} 写法不变。
+type mediaCounts struct {
+	likes    int32
+	dislikes int32
+}
+
+// LikeCount 返回当前赞数（原子读）。
+func (m Media) LikeCount() int32 {
+	if m.Counts == nil {
+		return 0
+	}
+	return atomic.LoadInt32(&m.Counts.likes)
+}
+
+// DislikeCount 返回当前倒赞数（原子读）。
+func (m Media) DislikeCount() int32 {
+	if m.Counts == nil {
+		return 0
+	}
+	return atomic.LoadInt32(&m.Counts.dislikes)
+}
+
+// SetCounts 原子写入赞/倒赞计数。Media 在 ingestAccountDoc 中已初始化 Counts，
+// 这里的 nil 判断只为防御零值 Media（零值 Media 不会被多个 goroutine 共享写入）。
+func (m *Media) SetCounts(likes, dislikes int32) {
+	if m.Counts == nil {
+		m.Counts = &mediaCounts{}
+	}
+	atomic.StoreInt32(&m.Counts.likes, likes)
+	atomic.StoreInt32(&m.Counts.dislikes, dislikes)
+}
 
 // Media represents a single remote image/video entry parsed from a
 // <account>.json.gz timeline.
@@ -30,17 +71,70 @@ type Media struct {
 	Tags         []string  `json:"tags"`
 	DirTags      []string  `json:"dir_tags,omitempty"`
 	PerImageTags []string  `json:"per_image_tags,omitempty"` // 扁平 per-image 标签（与账号 tag 完全分离）
-	LikeCount    int       `json:"like_count"`
-	DislikeCount int       `json:"dislike_count"`
-	URL          string    `json:"url"`             // proxy URL on this server
-	Thumb        string    `json:"thumb,omitempty"` // 网格缩略图（twimg name=small 变体；视频为空）
-	OriginalURL  string    `json:"original_url"`    // pbs.twimg.com / video.twimg.com
-	TweetID      int64     `json:"tweet_id"`        // 原推 ID，溯源用
+	// Counts 不直接进 JSON（由 MarshalJSON 原子输出 like_count/dislike_count）。
+	Counts      *mediaCounts `json:"-"`
+	URL         string       `json:"url"`             // proxy URL on this server
+	Thumb       string       `json:"thumb,omitempty"` // 网格缩略图（twimg name=small 变体；视频为空）
+	OriginalURL string       `json:"original_url"`    // pbs.twimg.com / video.twimg.com
+	TweetID     int64        `json:"tweet_id"`        // 原推 ID，溯源用
 }
 
 // IsVideo reports whether the media is a video or animated gif.
 func (m *Media) IsVideo() bool {
 	return m.Type == "video" || m.Type == "animated_gif"
+}
+
+// mediaJSON 是 Media 的序列化视图。
+//
+// LikeCount/DislikeCount 会被 POST /react 在请求路径上并发写（见 handleReact），
+// 同时被其他 goroutine 经 json.Marshal 读。直接暴露 int32 字段会让 race 检测器
+// 命中 reflect 的非原子读，因此这里用独立的快照结构 + atomic load 输出。
+type mediaJSON struct {
+	ID           string    `json:"id"`
+	Path         string    `json:"path"` // virtual path: account/urlbase_0001.jpg
+	Dir          string    `json:"dir"`  // virtual directory: account
+	Name         string    `json:"name"`
+	Type         string    `json:"type"` // photo / video / animated_gif
+	Ext          string    `json:"ext"`
+	Size         int64     `json:"size"` // unknown for remote media
+	ModTime      time.Time `json:"mod_time"`
+	Tags         []string  `json:"tags"`
+	DirTags      []string  `json:"dir_tags,omitempty"`
+	PerImageTags []string  `json:"per_image_tags,omitempty"`
+	LikeCount    int32     `json:"like_count"`
+	DislikeCount int32     `json:"dislike_count"`
+	URL          string    `json:"url"`
+	Thumb        string    `json:"thumb,omitempty"`
+	OriginalURL  string    `json:"original_url"`
+	TweetID      int64     `json:"tweet_id"`
+}
+
+// MarshalJSON 序列化时用原子的 LikeCount()/DislikeCount() 快照计数，
+// 避免与 handleReact 的写入竞争。mediaJSON 是独立类型且无方法，不会递归。
+//
+// 用*值*接收者：代码里存在 []Media 值切片（pageData.Items、handleAPIMedia 的
+// items）以及零值 Media 直接 Marshal 的路径，指针接收者会让这些场景退回按字段
+// 序列化并把 like_count/dislike_count 整个丢掉。
+func (m Media) MarshalJSON() ([]byte, error) {
+	return json.Marshal(mediaJSON{
+		ID:           m.ID,
+		Path:         m.Path,
+		Dir:          m.Dir,
+		Name:         m.Name,
+		Type:         m.Type,
+		Ext:          m.Ext,
+		Size:         m.Size,
+		ModTime:      m.ModTime,
+		Tags:         m.Tags,
+		DirTags:      m.DirTags,
+		PerImageTags: m.PerImageTags,
+		LikeCount:    m.LikeCount(),
+		DislikeCount: m.DislikeCount(),
+		URL:          m.URL,
+		Thumb:        m.Thumb,
+		OriginalURL:  m.OriginalURL,
+		TweetID:      m.TweetID,
+	})
 }
 
 // AllTags returns account tags plus directory-derived tags (unique, sorted).
@@ -51,6 +145,32 @@ func (m *Media) AllTags() []string {
 	}
 	for _, t := range m.DirTags {
 		set[t] = struct{}{}
+	}
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ClusterTags 返回聚类（/clusters）使用的标签集合：账号级 tag 与 per-image tag，
+// 刻意排除 DirTags。
+//
+// DirTags 就是账号名本身，对图库里的每条媒体都相同 —— 把它算进向量会让 k-means
+// 退化成「按账号分组」，和账号列表页完全重复，聚类页就没意义了。
+// 聚类页的目的是「跨账号找相似内容」，所以只看账号 tag 与 per-image tag。
+func (m *Media) ClusterTags() []string {
+	set := map[string]struct{}{}
+	for _, t := range m.Tags {
+		if t != "" {
+			set[t] = struct{}{}
+		}
+	}
+	for _, t := range m.PerImageTags {
+		if t != "" {
+			set[t] = struct{}{}
+		}
 	}
 	out := make([]string, 0, len(set))
 	for t := range set {
@@ -83,6 +203,11 @@ type Gallery struct {
 	media  []*Media
 	byID   map[string]*Media
 	byURL  map[string]*Media
+	byPath map[string]*Media // virtual path -> media（/api/media/view 的 O(1) 查找）
+	// byDirIndex: dir -> path -> 该 dir 排序后的下标（同目录 prev/next 导航用）
+	byDirIndex map[string]map[string]int
+	// bySeq: path -> 该 media 在 g.media 中的下标（全站 prev/next 导航用）
+	bySeq  map[string]int
 	byDir  map[string][]*Media // direct children only
 	dirs   map[string][]string // parent dir -> immediate subdir names
 	direct map[string]int      // dir -> count of media directly inside
@@ -188,6 +313,9 @@ func NewGallery(root string, accountTags map[string][]string) *Gallery {
 		accountTags:      accountTags,
 		byID:             map[string]*Media{},
 		byURL:            map[string]*Media{},
+		byPath:           map[string]*Media{},
+		byDirIndex:       map[string]map[string]int{},
+		bySeq:            map[string]int{},
 		byDir:            map[string][]*Media{},
 		dirs:             map[string][]string{},
 		direct:           map[string]int{},
@@ -430,6 +558,7 @@ func ingestAccountDoc(next *Gallery, username string, doc *gzDocument, mediaByDi
 			URL:         serveURL(next.mediaBase, te.URL),
 			OriginalURL: te.URL,
 			TweetID:     te.TweetID,
+			Counts:      &mediaCounts{},
 		}
 		if typ == "photo" {
 			m.Thumb = thumbVariant(m.URL)
@@ -437,6 +566,8 @@ func ingestAccountDoc(next *Gallery, username string, doc *gzDocument, mediaByDi
 
 		next.byID[m.ID] = m
 		next.byURL[te.URL] = m
+		next.byPath[m.Path] = m
+		next.bySeq[m.Path] = len(next.media)
 		next.media = append(next.media, m)
 		mediaByDir[dir] = append(mediaByDir[dir], m)
 
@@ -517,6 +648,14 @@ func (g *Gallery) scanNext() (*Gallery, error) {
 		})
 		next.byDir[dir] = items
 		next.direct[dir] = len(items)
+		// 同目录导航下标（与 byDir[dir] 排序结果一致）
+		if len(items) > 0 {
+			idx := make(map[string]int, len(items))
+			for i, it := range items {
+				idx[it.Path] = i
+			}
+			next.byDirIndex[dir] = idx
+		}
 	}
 
 	// Compute recursive counts and tag counts.
@@ -581,7 +720,9 @@ func (g *Gallery) Replace(next *Gallery) {
 
 	// 逐字段替换索引内容，避免拷贝内嵌锁（vet）
 	g.media, g.byID, g.byURL = next.media, next.byID, next.byURL
+	g.byPath, g.bySeq = next.byPath, next.bySeq
 	g.byDir, g.dirs = next.byDir, next.dirs
+	g.byDirIndex = next.byDirIndex
 	g.direct, g.recurs = next.direct, next.recurs
 	g.accountTagCounts, g.avatars, g.mediaBase = next.accountTagCounts, next.avatars, next.mediaBase
 	g.bg = next.bg

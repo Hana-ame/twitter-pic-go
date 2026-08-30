@@ -1,37 +1,74 @@
 import os
+import shlex
 import time
 
 # 文件路径配置
 COMMANDS_FILE = "commands.txt"       # 存放待执行指令的文件
 PENDING_INPUT_FILE = "pending.txt"  # 存放原始输入的文件
 
+# 抓取脚本。build.sh 上传的是 get_meta_data.py，这里必须与之一致，
+# 否则队列为空跑不起来（历史上这里写的是不存在的 get2.py）。
+FETCHER = "get_meta_data.py"
+FETCHER_BIN = "~/twitter/venv/bin/python3"
+
+def extract_username(raw_text):
+    """从输入里提取 Twitter username。
+
+    支持两种输入：
+      * 完整 URL：https://x.example.com/lunara_fawn[/?...]
+      * 裸 username：lunara_fawn
+
+    只返回路径的最后一段。URL 没有路径段时返回 None —— 否则 rstrip('/') 之后
+    split('/')[-1] 会拿到主机名（如 https://x.example.com/ -> "x.example.com"），
+    产生一条注定失败的抓取任务。
+    """
+    line = raw_text.strip().rstrip('/')
+    if not line:
+        return None
+
+    if '://' in line:
+        # 剥掉 scheme
+        line = line.split('://', 1)[1]
+        # 剥掉 host[:port]；没有路径段说明 URL 里根本没有 username
+        if '/' not in line:
+            return None
+        line = line.split('/', 1)[1]
+        # 去掉 query / fragment
+        line = line.split('?', 1)[0].split('#', 1)[0]
+
+    username = line.split('/')[-1].strip()
+    if not username:
+        return None
+    # username 里出现路径分隔符说明解析出了问题，直接放弃
+    if '/' in username or '\\' in username:
+        return None
+    return username
+
+
 def translate_logic(raw_text):
     """
     将 URL 转换为系统指令
     输入: https://x.nmbyd3.top/lunara_fawn
-    输出: [ ! -f lunara_fawn.json.gz ] && timeout 300s py get_meta_data.py lunara_fawn
+    输出: [ ! -f lunara_fawn.json.gz ] && timeout 300s ~/twitter/venv/bin/python3 get_meta_data.py lunara_fawn
     """
-    # 1. 清理空白字符并去除末尾的斜杠（防止提取到空字符串）
-    line = raw_text.strip().rstrip('/')
-    if not line:
-        return None
-    
-    # 2. 提取 URL 的最后一部分作为 username
-    # split('/')[-1] 会拿到 "lunara_fawn"
-    username = line.split('/')[-1]
-    
+    username = extract_username(raw_text)
     if not username:
         return None
 
-    # 3. 构造文件名和执行指令
+    # username 来自外部输入，必须 shlex.quote：否则 `;`、`$()`、反引号、空格等
+    # 会直接改变 shell 语义。命令稍后由 execute_and_pop_command() 经 os.system()
+    # 执行，属于 RCE 面。caller.py 对同类输入做了同样处理。
     target_file = f"{username}.json.gz"
-    
+
     # 这里使用 Shell 的逻辑判断：
     # [ ! -f 文件名 ] 表示“如果文件不存在”
     # && 表示“则执行后面的命令”
     # 注意：这里假设你的运行环境是 Linux/macOS 或 Windows 的 Bash 环境
-    translated_command = f'[ ! -f {target_file} ] && timeout 300s ~/twitter/venv/bin/python3 get2.py {username}'
-    
+    translated_command = (
+        f"[ ! -f {shlex.quote(target_file)} ] && timeout 300s "
+        f"{FETCHER_BIN} {FETCHER} {shlex.quote(username)}"
+    )
+
     return translated_command
 
 # --- 以下是配合你之前的程序逻辑的建议修正 ---

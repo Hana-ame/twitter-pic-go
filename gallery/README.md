@@ -34,7 +34,7 @@ go run ./server
 ## 页面路由
 
 - `GET /` — 首页：最新 / 最热 / 收藏 三块账号摘要（各 4 行，背景图为该账号最新一张图）
-- `GET /latest` — 完整「最新」账号列表（按 db 的 last_modify 排序，翻页式）
+- `GET /latest` — 完整「最新」账号列表（按账号最新媒体时间降序；无媒体、只有 db 索引的账号用 `users.last_modify` 兜底，与首页「最新」板块同口径；翻页式）
 - `GET /hot` — 「最热」账号列表（按 👍 总票数排序）
 - `GET /favorites` — 我的收藏（收藏存浏览器 localStorage，前端过滤渲染）
 - `GET /{username}` 或 `GET /?dir=...` — 某账号的媒体网格（10 条/页）

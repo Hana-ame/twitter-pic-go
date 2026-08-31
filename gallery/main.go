@@ -1292,13 +1292,12 @@ type ClusterPreset struct {
 	URL   string `json:"url"`
 }
 
-// buildHome 组装首页数据：最新 / 最热 各取前 4 个账号，收藏交给前端按 localStorage 渲染。
-func (s *Server) buildHome(g *Gallery) pageData {
-	const homeRows = 4
-	votes := map[string]int{}
+// latestMap 返回 账号 -> 最新时间，作为「最新」排序的唯一口径：
+// 有媒体的账号用其最新一条媒体时间；只有 db 索引（尚无媒体）的账号用 db 的
+// last_modify。buildHome 的「最新」板块与 /latest 页共用，保证两处排序一致。
+func latestMap(g *Gallery) map[string]time.Time {
 	latest := map[string]time.Time{}
 	for _, m := range g.media {
-		votes[m.Dir] += int(m.LikeCount())
 		if m.ModTime.After(latest[m.Dir]) {
 			latest[m.Dir] = m.ModTime
 		}
@@ -1309,6 +1308,29 @@ func (s *Server) buildHome(g *Gallery) pageData {
 			latest[name] = meta.LastModify
 		}
 	}
+	return latest
+}
+
+// sortAccountsByLatest 按「最新」时间降序排账号卡片（同时间按名字字典序），
+// 维持翻页稳定性。
+func sortAccountsByLatest(accounts []templateDir, latest map[string]time.Time) {
+	sort.SliceStable(accounts, func(i, j int) bool {
+		a, b := latest[accounts[i].Name], latest[accounts[j].Name]
+		if !a.Equal(b) {
+			return a.After(b)
+		}
+		return accounts[i].Name < accounts[j].Name
+	})
+}
+
+// buildHome 组装首页数据：最新 / 最热 各取前 4 个账号，收藏交给前端按 localStorage 渲染。
+func (s *Server) buildHome(g *Gallery) pageData {
+	const homeRows = 4
+	votes := map[string]int{}
+	for _, m := range g.media {
+		votes[m.Dir] += int(m.LikeCount())
+	}
+	latest := latestMap(g)
 	names := append([]string(nil), g.dirs[""]...)
 
 	hot := append([]string(nil), names...)
@@ -1373,6 +1395,7 @@ func (s *Server) buildHome(g *Gallery) pageData {
 }
 
 // handleLatest 完整的「最新」账号列表（原首页行为，翻页式）。
+// 排序与首页「最新」板块同口径：账号最新一条媒体时间，db last_modify 兜底。
 // 支持 q= 按用户名 / 昵称子串搜索（大小写不敏感）。
 func (s *Server) handleLatest(w http.ResponseWriter, r *http.Request) {
 	g := s.current()
@@ -1380,6 +1403,7 @@ func (s *Server) handleLatest(w http.ResponseWriter, r *http.Request) {
 	if query := strings.TrimSpace(r.URL.Query().Get("q")); query != "" {
 		accounts = filterAccounts(accounts, query)
 	}
+	sortAccountsByLatest(accounts, latestMap(g))
 	var d pageData
 	d.Mode = "index"
 	d.Title = "最新"
@@ -1753,4 +1777,5 @@ func (s *Server) handleAPIView(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// ---------- media proxy ----------
+// 说明：媒体文件本身由 twimg 反向代理（twimg/main.go，监听 TWIMG_ADDR）提供，
+// 地址经 GALLERY_MEDIA_BASE / TWIMG_ADDR 注入媒体 URL；gallery 自身不持有媒体文件。

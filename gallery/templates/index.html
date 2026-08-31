@@ -51,6 +51,8 @@ aside h3 { font-size: 12px; color: var(--muted); margin: 14px 0 8px; text-transf
 .btn-sm { background: var(--panel2); color: var(--muted); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; font-size: 12px; cursor: pointer; transition: all .15s; }
 .btn-sm:hover { border-color: var(--accent); color: var(--text); }
 .btn-sm.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.accounts-dropdown { display: none; width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 13px; }
+.accounts-dropdown:focus { border-color: var(--accent); outline: none; }
 .tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .tag { background: var(--panel2); border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; font-size: 12px; color: var(--text); display: inline-flex; align-items: center; gap: 6px; }
 .tag a { color: var(--text); }
@@ -242,6 +244,7 @@ main { flex: 1; padding: 16px; }
       <button class="btn-sm active" onclick="setDisplay('grid',this)">网格</button>
       <button class="btn-sm" onclick="setDisplay('dropdown',this)">下拉</button>
     </div>
+    <p class="muted" style="margin-top:8px;font-size:12px">下拉模式下账号列表显示为单个选择框，选账号直接跳转。</p>
     {{if ne .Mode "tags"}}
     <h3>标签速览</h3>
     <div class="tags">
@@ -396,6 +399,10 @@ main { flex: 1; padding: 16px; }
   </div>
   {{end}}
 </div>
+<select class="accounts-dropdown" id="accountsDropdown" onchange="if(this.value)location.href=this.value" aria-label="账号下拉选择">
+  <option value="">— 选择账号 —</option>
+  {{range .Dirs}}<option value="{{.Link}}">{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}} · 🖼 {{.RecursiveCount}}{{if .Votes}} · 🔥 {{.Votes}}{{end}}</option>{{end}}
+</select>
 {{end}}
 
 {{define "pagination"}}
@@ -477,10 +484,50 @@ function setDisplay(mode, btn) {
   if (btn) btn.classList.add('active');
   applyDisplay();
 }
+
+// rebuildAccountSelect 把账号列表渲染成单个下拉选择框。
+// 服务端已在 accountsGrid 里输出 <select id="accountsDropdown">（含全部 .Dirs
+// 的 <option>）；收藏页是纯前端渲染，这里用 ACCOUNTS 数据兜底重建。
+function rebuildAccountSelect() {
+  let sel = document.getElementById('accountsDropdown');
+  if (!sel) {
+    sel = document.createElement('select');
+    sel.id = 'accountsDropdown';
+    sel.className = 'accounts-dropdown';
+    sel.setAttribute('aria-label', '账号下拉选择');
+    sel.addEventListener('change', function () {
+      if (this.value) location.href = this.value;
+    });
+    // 放在账号网格后面（主区内），保证布局不跳变
+    const grid = document.getElementById('accountsGrid');
+    const host = grid && grid.parentNode ? grid.parentNode : document.querySelector('main');
+    if (host) host.appendChild(sel);
+  }
+  // 服务端已渲染出选项（grid 页）：直接显示，不用重建
+  if (sel.options.length > 1) { sel.style.display = 'block'; return; }
+  // 纯前端列表（收藏页 / 无服务端选项时）：用 ACCOUNTS 填
+  // 注意：ACCOUNTS 是顶层 const（不是 window 属性），直接引用即可。
+  let html = '<option value="">— 选择账号 —</option>';
+  (typeof ACCOUNTS !== 'undefined' ? ACCOUNTS : []).forEach(a => {
+    html += `<option value="${a.Link}">${a.Name || a.Nick || ''} · 🖼 ${a.RecursiveCount || 0}</option>`;
+  });
+  sel.innerHTML = html;
+  sel.style.display = 'block';
+}
+
 function applyDisplay() {
   const mode = localStorage.getItem('gallery_display') || 'grid';
   const grid = document.getElementById('accountsGrid');
-  if (grid) grid.style.display = mode === 'dropdown' ? 'none' : 'flex';
+  const sel = document.getElementById('accountsDropdown');
+  if (mode === 'dropdown') {
+    if (grid) grid.style.display = 'none';
+    if (!sel || sel.options.length <= 1) rebuildAccountSelect();
+    const s = document.getElementById('accountsDropdown');
+    if (s) s.style.display = 'block';
+  } else {
+    if (grid) grid.style.display = 'flex';
+    if (sel) sel.style.display = 'none';
+  }
   document.querySelectorAll('.btn-group .btn-sm').forEach(b => {
     b.classList.toggle('active', b.textContent.trim() === (mode === 'grid' ? '网格' : '下拉'));
   });

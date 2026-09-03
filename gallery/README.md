@@ -61,6 +61,7 @@ go run ./server
 - 网格缩略图走 twimg `name=small` 小图变体；视频 iframe 滚动到视口附近才创建
 - 分页带页码窗口（基于当前 URL 渐进增强，无 JS 时退回上一页/下一页）
 - 视频/动图：通过 srcdoc iframe + no-referrer 绕过 video.twimg.com 防盗链
+- 侧栏「显示方式」：`网格 / 下拉` 两档切换。网格模式下账号列表显示为 `.account-card` 网格；下拉模式下替换为单个 `<select id="accountsDropdown">`，选项来自服务端渲染或前端 `ACCOUNTS` 数据兜底，选项跳转账号页面。
 
 ## 聚类（/clusters）
 

@@ -28,12 +28,15 @@ go run ./server
 | `GALLERY_DB` | `./gallery.db` | 赞/踩、账号外链 SQLite 数据库 |
 | `GALLERY_MEDIA_BASE` / `TWIMG_ADDR` | 空 | pbs.twimg.com 图片反代前缀；为空则直链原始 URL |
 | `GALLERY_REMOTE_JSON_BASE` | 空 | 可选，远程 JSON 源（临时调试）。设置后：本地没有的账号按需从远端拉取元数据，仅存内存、绝不落盘 |
+| `GALLERY_RATE_LIMIT` | `20` | 限流：每 IP 每秒允许请求数（令牌桶速率） |
+| `GALLERY_RATE_BURST` | `60` | 限流：每 IP 突发额度（令牌桶初始/最大令牌数）；调大容忍更高瞬时并发，调小更严格 |
+| `GALLERY_ADMIN_KEY` | 空 | 写接口（`POST /rescan`、`/api/link`）鉴权密钥；为空则匿名可写（会打印告警） |
 
 打开 `http://localhost:8090/` 直接浏览。首次访问会先经过 18+ 年龄验证页。
 
 ## 页面路由
 
-- `GET /` — 首页：最新 / 最热 / 收藏 三块账号摘要（各 4 行，背景图为该账号最新一张图）
+- `GET /` — 首页：最新 / 最热 / 收藏 三块账号摘要（各 4 行，背景图为该账号最新一张图）；`?q=` 按用户名/昵称子串搜索（复用「最新」排序口径，与侧栏搜索框一致）
 - `GET /latest` — 完整「最新」账号列表（按账号最新媒体时间降序；无媒体、只有 db 索引的账号用 `users.last_modify` 兜底，与首页「最新」板块同口径；翻页式）
 - `GET /hot` — 「最热」账号列表（按 👍 总票数排序）
 - `GET /favorites` — 我的收藏（收藏存浏览器 localStorage，前端过滤渲染）
@@ -54,14 +57,15 @@ go run ./server
 
 ## 页面功能
 
-- 侧边栏「搜索账号」：按用户名 / 昵称子串过滤（`/latest?q=...`）
+- 侧边栏「搜索账号」：按用户名 / 昵称子串过滤，提交到 `/?q=...`（等价 `/latest?q=...`），全局可用
 - 右上角「识别码」徽标：浏览器本地身份（赞/踩 的 voter），支持「引继」导入其他识别码继承身份
 - 账号卡片：头像、昵称（db users.nick）、@用户名、媒体数、最近更新日期、外部平台图标链接、☆ 收藏
 - Lightbox 灯箱：点击卡片页内预览大图/视频，← → 切换、Esc 关闭，`#lbN` 锚点直达第 N 张
 - 网格缩略图走 twimg `name=small` 小图变体；视频 iframe 滚动到视口附近才创建
 - 分页带页码窗口（基于当前 URL 渐进增强，无 JS 时退回上一页/下一页）
 - 视频/动图：通过 srcdoc iframe + no-referrer 绕过 video.twimg.com 防盗链
-- 侧栏「显示方式」：`网格 / 下拉` 两档切换。网格模式下账号列表显示为 `.account-card` 网格；下拉模式下替换为单个 `<select id="accountsDropdown">`，选项来自服务端渲染或前端 `ACCOUNTS` 数据兜底，选项跳转账号页面。
+- 侧栏「显示方式」：`网格 / 下拉` 两档切换（选择记浏览器 localStorage）。网格模式下账号列表显示为 `.account-card` 网格；下拉模式下替换为单个 `<select id="accountsDropdown">`，选项来自服务端渲染或前端 `ACCOUNTS` 数据兜底，选项跳转账号页面。**首页也支持下拉模式**：切到下拉时隐藏「最新/最热/收藏」摘要板块，只显示账号 `<select>`，避免视觉重叠。
+- 账号卡片「⚙ / +🔗」编辑外部链接：弹窗式 modal（替代原生 `prompt()`），逐平台填写 URL，保存即 `POST /api/link`、清空即 `DELETE`，Esc 关闭；未知平台链接也会作为可编辑行保留，不会误删。
 
 ## 聚类（/clusters）
 
@@ -180,6 +184,18 @@ fetch('/api/media/view?path=account/photo.jpg')
   .then(r => r.json())
   .then(data => console.log(data.media.url))
 ```
+
+## 远程 JSON 源（临时调试）
+
+设置 `GALLERY_REMOTE_JSON_BASE`（如 `https://x.example.com/api/twitter`）后开启**懒加载代理**：
+
+- 访问本地没有的账号（`GET /{username}`）时，按需向 `{base}/{username}.json.gz?t=1` 拉取该账号元数据；
+- 拉回的文档**仅存内存、绝不落盘**，随后走与本地文件相同的扫描逻辑建索引（`scanNext` 合并 `remoteDocs`）；
+- 成功后内存缓存，失败进入 **负缓存**（`negativeTTL`，默认 10 分钟）避免对同一账号反复重试；
+- 非法用户名（含 `..`、路径分隔符）直接拒绝，不发请求；
+- 不设置该环境变量时整段逻辑完全不触发，本地目录扫描零改动。
+
+> 联调需要真实的远端 server（返回 `gzDocument`：含 `account_info` 与 `timeline[]`，媒体 URL 须为 `pbs.twimg.com` / `video.twimg.com`）。`remote_test.go` 用 `httptest` 桩验证了 fetch → 索引合并 → 负缓存 整条路径。
 
 ## 数据来源
 

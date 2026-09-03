@@ -50,13 +50,22 @@ func loadSecurityPolicy() *securityPolicy {
 		}
 	}
 
+	// GALLERY_RATE_BURST 控制每 IP 的突发额度（令牌桶初始/最大令牌数），
+	// 调大可容忍更高的瞬时并发（如预加载 + 灯箱同时开图），调小则更严格。
+	burst := defaultBurst
+	if v := strings.TrimSpace(os.Getenv("GALLERY_RATE_BURST")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			burst = n
+		}
+	}
+
 	if key == "" {
 		log.Printf("gallery: 警告：未设置 GALLERY_ADMIN_KEY / DELETE_KEY，" +
 			"POST /rescan 与 /api/link 仍是匿名可写")
 	}
 
 	return &securityPolicy{
-		lim: newRateLimiter(rps, defaultBurst),
+		lim: newRateLimiter(rps, burst),
 		key: key,
 	}
 }

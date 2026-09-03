@@ -865,6 +865,7 @@ func renderPage(w http.ResponseWriter, data pageData) {
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	g := s.current()
 	q := r.URL.Query()
+	searchQ := strings.TrimSpace(q.Get("q"))
 
 	// 优先读 path（/:username/），fallback 到 ?dir= 兼容旧链接。
 	dir := ""
@@ -1021,6 +1022,22 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if mode == "index" {
+		// 首页搜索：/?q=... 复用 /latest 的「最新」排序口径过滤账号，
+		// 与侧栏搜索框（action 指向 /）一致；无 q 时才渲染三块摘要首页。
+		if searchQ != "" {
+			accounts := s.buildTemplateDirs(g, "", nil, nil, "", defaultSortKey, 0)
+			accounts = filterAccounts(accounts, searchQ)
+			sortAccountsByLatest(accounts, latestMap(g))
+			d := pageData{
+				Mode:      "index",
+				Title:     "搜索",
+				TagFilter: searchQ,
+				Tags:      s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
+			}
+			s.paginateDirs(accounts, r, &d)
+			renderPage(w, d)
+			return
+		}
 		// 首页：最新 / 最热 / 收藏 三块摘要，各 4 行；完整列表走 /latest、/hot、/favorites。
 		renderPage(w, s.buildHome(g))
 		return
@@ -1385,6 +1402,8 @@ func (s *Server) buildHome(g *Gallery) pageData {
 		Mode:  "home",
 		Title: "首页",
 		Tags:  s.buildTemplateTags(g, "", nil, nil, "", defaultSortKey, false),
+		// Dirs 供首页「下拉」显示模式渲染账号 <select>（与 accountsGrid 模板同一份数据）。
+		Dirs: accountList(g),
 		Home: []HomeSection{
 			{Title: "最新", MoreURL: "/latest", Rows: mkRows(lat, false)},
 			{Title: "最热", MoreURL: "/hot", Rows: mkRows(hot, true)},

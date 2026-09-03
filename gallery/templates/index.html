@@ -122,6 +122,12 @@ main { flex: 1; padding: 16px; }
 .modal-box h4{margin:16px 0 6px;font-size:14px}
 .muted{color:var(--muted);font-size:13px;line-height:1.6;margin:0}
 .modal-box hr{border:none;border-top:1px solid var(--border);margin:16px 0}
+.link-row{display:flex;align-items:center;gap:8px;margin:8px 0}
+.link-row label{min-width:84px;color:var(--muted);font-size:13px;flex:none}
+.link-row input{flex:1;min-width:0;background:var(--panel2);color:var(--text);
+  border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:13px}
+.link-row input:focus{border-color:var(--accent);outline:none}
+#linkRows{max-height:50vh;overflow:auto;margin-top:10px}
 .id-row{display:flex;gap:8px;margin-top:8px}
 .id-row input{flex:1;min-width:0;background:var(--panel2);color:var(--text);
   border:1px solid var(--border);border-radius:8px;padding:8px 10px;
@@ -209,6 +215,20 @@ main { flex: 1; padding: 16px; }
   </div>
 </div>
 
+<!-- 账号外部链接管理弹窗（替代原来的 prompt()） -->
+<div class="modal" id="linkModal" style="display:none">
+  <div class="modal-mask" onclick="closeLinkModal()"></div>
+  <div class="modal-box">
+    <h3>编辑链接：<span id="linkAccount"></span></h3>
+    <p class="muted">每行一个平台链接；留空表示不添加，清空已有链接即删除。保存后页面自动刷新。</p>
+    <div id="linkRows"></div>
+    <div class="modal-actions" style="display:flex;gap:8px">
+      <button class="ghost" onclick="closeLinkModal()">取消</button>
+      <button onclick="saveLinks()">保存</button>
+    </div>
+  </div>
+</div>
+
 <!-- 顶部 navbar；游览（看图）时自动隐藏 -->
 <nav class="navbar {{if or (eq .Mode "gallery") (eq .Mode "media")}}navbar--hidden{{end}}">
   <a class="brand" href="/" title="回到首页">🖼️ Gallery</a>
@@ -235,7 +255,7 @@ main { flex: 1; padding: 16px; }
       <a href="/clusters" class="{{if eq .ActiveTab "clusters"}}active{{end}}">聚类</a>
     </div>
     <h3>搜索账号</h3>
-    <form class="searchbox" action="/latest" method="get">
+    <form class="searchbox" action="/" method="get">
       <input type="search" name="q" placeholder="用户名 / 昵称…" value="{{.TagFilter}}" autocomplete="off">
       <button type="submit" title="搜索">🔍</button>
     </form>
@@ -255,6 +275,7 @@ main { flex: 1; padding: 16px; }
 
   <main>
     {{if eq .Mode "home"}}
+    <div id="homeSections">
     {{range .Home}}
     <div class="homesection">
       <div class="section-head">
@@ -271,6 +292,13 @@ main { flex: 1; padding: 16px; }
       {{end}}
     </div>
     {{end}}
+    </div>
+    <!-- 首页「下拉」显示模式：账号列表渲染成单个 <select>，默认隐藏；
+         切到下拉模式时由 applyDisplay() 显示并隐藏上面的摘要板块，避免视觉重叠。 -->
+    <select class="accounts-dropdown" id="accountsDropdown" style="display:none" onchange="if(this.value)location.href=this.value" aria-label="账号下拉选择">
+      <option value="">— 选择账号 —</option>
+      {{range .Dirs}}<option value="{{.Link}}">{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}} · 🖼 {{.RecursiveCount}}{{if .Votes}} · 🔥 {{.Votes}}{{end}}</option>{{end}}
+    </select>
 
     {{else if eq .Mode "index"}}
       <h2>{{if .TagFilter}}搜索：{{.TagFilter}}{{else}}最新{{end}}</h2>
@@ -519,13 +547,17 @@ function applyDisplay() {
   const mode = localStorage.getItem('gallery_display') || 'grid';
   const grid = document.getElementById('accountsGrid');
   const sel = document.getElementById('accountsDropdown');
+  const home = document.getElementById('homeSections');
   if (mode === 'dropdown') {
     if (grid) grid.style.display = 'none';
+    // 首页下拉模式：隐藏摘要板块，只显示账号 <select>，避免视觉重叠
+    if (home) home.style.display = 'none';
     if (!sel || sel.options.length <= 1) rebuildAccountSelect();
     const s = document.getElementById('accountsDropdown');
     if (s) s.style.display = 'block';
   } else {
     if (grid) grid.style.display = 'flex';
+    if (home) home.style.display = '';
     if (sel) sel.style.display = 'none';
   }
   document.querySelectorAll('.btn-group .btn-sm').forEach(b => {
@@ -570,64 +602,95 @@ const knownPlatforms = [
   { key: 'skeb', name: 'Skeb' },
 ];
 
-function editLinks(account) {
-  let existing = [];
+// 从 DOM 读取某账号当前已有的外部链接：grid / dropdown 模式下账号卡片仍在 DOM 中
+// （只是被 display:none 隐藏），title 即平台显示名（platformName），href 即链接。
+function existingLinksFor(account) {
+  const map = {};
   document.querySelectorAll('.account-card').forEach(card => {
     const nameEl = card.querySelector('.name');
-    if (nameEl && nameEl.textContent.trim() === account) {
-      card.querySelectorAll('.social-links a[title]').forEach(a => {
-        if (a.title && a.title !== '管理链接' && !a.title.startsWith('添加')) {
-          existing.push({ platform: a.title, url: a.href });
-        }
-      });
-    }
+    if (!nameEl || nameEl.textContent.trim() !== account) return;
+    card.querySelectorAll('.social-links a[title]').forEach(a => {
+      const t = a.title;
+      if (t && t !== '管理链接' && !t.startsWith('添加')) map[t] = a.href;
+    });
+  });
+  return map;
+}
+// 平台显示名 → 标准 platform key（未知平台用显示名本身）。
+function platformKeyForTitle(title) {
+  const m = knownPlatforms.find(p => p.name === title);
+  return m ? m.key : title;
+}
+
+let linkEditAccount = '';
+function editLinks(account) {
+  linkEditAccount = account;
+  const existing = existingLinksFor(account);
+  // 已知平台 + 当前已有的未知平台（保证未知平台链接不被误删，也能编辑）
+  const platforms = knownPlatforms.concat(
+    Object.keys(existing)
+      .filter(t => !knownPlatforms.some(p => p.name === t))
+      .map(t => ({ key: t, name: t }))
+  );
+
+  const rows = document.getElementById('linkRows');
+  rows.innerHTML = '';
+  platforms.forEach(p => {
+    const wrap = document.createElement('div');
+    wrap.className = 'link-row';
+    const label = document.createElement('label');
+    label.textContent = p.name;
+    label.title = p.name;
+    const input = document.createElement('input');
+    input.type = 'url';
+    input.placeholder = 'https://…';
+    input.dataset.platform = p.key;
+    input.value = existing[p.name] || '';
+    wrap.appendChild(label);
+    wrap.appendChild(input);
+    rows.appendChild(wrap);
   });
 
-  const lines = knownPlatforms.map(p => {
-    const found = existing.find(e => e.platform === p.name);
-    return `${p.name}: ${found ? found.url : ''}`;
-  }).join('\n');
+  document.getElementById('linkAccount').textContent = account;
+  document.getElementById('linkModal').style.display = 'flex';
+  const first = rows.querySelector('input');
+  if (first) first.focus();
+}
 
-  const input = prompt(
-    `为 ${account} 编辑链接（每行格式: 平台名: URL）\n\n` +
-    `已知平台: ${knownPlatforms.map(p => p.name).join(', ')}\n` +
-    `留空=不添加，删除链接只需输入平台名不带URL\n\n` +
-    `当前链接:\n${lines}`,
-    existing.map(e => `${e.platform}: ${e.url}`).join('\n')
-  );
-  if (input === null) return;
-
-  const allLines = input.split('\n').map(l => l.trim()).filter(Boolean);
+function saveLinks() {
+  const account = linkEditAccount;
+  if (!account) return;
   const seen = new Set();
-
-  for (const line of allLines) {
-    const sep = line.indexOf(':');
-    if (sep < 0) continue;
-    const platform = line.slice(0, sep).trim();
-    const url = line.slice(sep + 1).trim();
-    if (!platform || !url) continue;
+  document.querySelectorAll('#linkRows input').forEach(inp => {
+    const platform = inp.dataset.platform;
+    const url = inp.value.trim();
+    if (!url) return;
     seen.add(platform);
     fetch('/api/link', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ account, platform, url })
     });
-  }
-
-  // 删除当前有但输入中没有的链接
-  for (const e of existing) {
-    const matched = knownPlatforms.find(p => p.name === e.platform);
-    const key = matched ? matched.key : e.platform;
-    if (!seen.has(e.platform)) {
+  });
+  // 删除当前有、但编辑后没有的链接
+  const existing = existingLinksFor(account);
+  Object.keys(existing).forEach(title => {
+    const key = platformKeyForTitle(title);
+    if (!seen.has(key)) {
       fetch('/api/link', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ account, platform: key })
       });
     }
-  }
-
+  });
+  closeLinkModal();
   setTimeout(() => location.reload(), 300);
+}
+
+function closeLinkModal() {
+  const m = document.getElementById('linkModal');
+  if (m) m.style.display = 'none';
 }
 
 // ---------- 识别码（右上角徽标 + 引继）----------
@@ -760,6 +823,10 @@ function lbStep(d){
   history.replaceState(null, '', '#lb' + lbIdx);
 }
 document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape') {
+    const lm = document.getElementById('linkModal');
+    if (lm && lm.style.display !== 'none') { closeLinkModal(); return; }
+  }
   const lb = document.getElementById('lightbox');
   if(!lb || lb.style.display === 'none') return;
   if(e.key === 'Escape') lbClose();

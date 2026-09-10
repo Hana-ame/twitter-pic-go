@@ -73,10 +73,9 @@ type Media struct {
 	PerImageTags []string  `json:"per_image_tags,omitempty"` // 扁平 per-image 标签（与账号 tag 完全分离）
 	// Counts 不直接进 JSON（由 MarshalJSON 原子输出 like_count/dislike_count）。
 	Counts      *mediaCounts `json:"-"`
-	URL         string       `json:"url"`             // proxy URL on this server
-	Thumb       string       `json:"thumb,omitempty"` // 网格缩略图（twimg name=small 变体；视频为空）
-	OriginalURL string       `json:"original_url"`    // pbs.twimg.com / video.twimg.com
-	TweetID     int64        `json:"tweet_id"`        // 原推 ID，溯源用
+	URL         string       `json:"url"`          // proxy URL on this server
+	OriginalURL string       `json:"original_url"` // pbs.twimg.com / video.twimg.com
+	TweetID     int64        `json:"tweet_id"`     // 原推 ID，溯源用
 }
 
 // IsVideo reports whether the media is a video or animated gif.
@@ -104,7 +103,6 @@ type mediaJSON struct {
 	LikeCount    int32     `json:"like_count"`
 	DislikeCount int32     `json:"dislike_count"`
 	URL          string    `json:"url"`
-	Thumb        string    `json:"thumb,omitempty"`
 	OriginalURL  string    `json:"original_url"`
 	TweetID      int64     `json:"tweet_id"`
 }
@@ -131,7 +129,6 @@ func (m Media) MarshalJSON() ([]byte, error) {
 		LikeCount:    m.LikeCount(),
 		DislikeCount: m.DislikeCount(),
 		URL:          m.URL,
-		Thumb:        m.Thumb,
 		OriginalURL:  m.OriginalURL,
 		TweetID:      m.TweetID,
 	})
@@ -385,20 +382,6 @@ func deriveMediaBase() string {
 	return strings.TrimRight(base, "/")
 }
 
-// thumbVariant 返回适合网格缩略图的 URL：加/改 name=small 查询参数
-// （twimg 对 pbs 图片会返回小尺寸变体），解析失败则原样返回。
-// raw 可以是原始 URL 或已走反代的 path 形式（查询参数照常透传）。
-func thumbVariant(raw string) string {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return raw
-	}
-	q := u.Query()
-	q.Set("name", "small")
-	u.RawQuery = q.Encode()
-	return u.String()
-}
-
 type gzTimelineEntry struct {
 	URL     string `json:"url"`
 	Date    string `json:"date"`
@@ -560,10 +543,6 @@ func ingestAccountDoc(next *Gallery, username string, doc *gzDocument, mediaByDi
 			TweetID:     te.TweetID,
 			Counts:      &mediaCounts{},
 		}
-		if typ == "photo" {
-			m.Thumb = thumbVariant(m.URL)
-		}
-
 		next.byID[m.ID] = m
 		next.byURL[te.URL] = m
 		next.byPath[m.Path] = m

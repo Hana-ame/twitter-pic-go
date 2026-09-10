@@ -396,7 +396,7 @@ main { flex: 1; padding: 16px; }
             {{if or (eq .Type "video") (eq .Type "animated_gif")}}
             <div class="vthumb sm" data-vsrc="{{.URL}}"></div>
             {{else}}
-            <img loading="lazy" src="{{if .Thumb}}{{.Thumb}}{{else}}{{.URL}}{{end}}" alt="{{.Name}}">
+            <img loading="lazy" src="{{.URL}}" alt="{{.Name}}">
             {{end}}
           </a>
           {{end}}
@@ -451,7 +451,7 @@ main { flex: 1; padding: 16px; }
     <!-- video.twimg.com 直连会被防盗链拦截：套 srcdoc iframe + no-referrer（同 twitter-pic-react 的做法） -->
     <div class="vthumb" data-vsrc="{{$m.URL}}"></div>
     {{else}}
-    <img class="thumb" loading="lazy" src="{{if $m.Thumb}}{{$m.Thumb}}{{else}}{{$m.URL}}{{end}}">
+    <img class="thumb" loading="lazy" src="{{$m.URL}}">
     {{end}}
     <div class="meta">
       <div class="name">{{$m.Name}}</div>

@@ -9,7 +9,7 @@ gallery 作为独立包编译进单一二进制（见 `../server/main.go`），�
 ## 运行
 
 ```bash
-cd /home/lumin/twitter-pic-go
+cd /mnt/d/Workplace/twitter-pic/go
 
 GALLERY_JSON_DIR=./ \
 GALLERY_TAG_DB=./twitter.db \
@@ -61,7 +61,7 @@ go run ./server
 - 右上角「识别码」徽标：浏览器本地身份（赞/踩 的 voter），支持「引继」导入其他识别码继承身份
 - 账号卡片：头像、昵称（db users.nick）、@用户名、媒体数、最近更新日期、外部平台图标链接、☆ 收藏
 - Lightbox 灯箱：点击卡片页内预览大图/视频，← → 切换、Esc 关闭，`#lbN` 锚点直达第 N 张
-- 网格缩略图走 twimg `name=small` 小图变体；视频 iframe 滚动到视口附近才创建
+- 网格与灯箱一律用 origin URL（不再改写 `name=` 档位）；视频 iframe 滚动到视口附近才创建
 - 分页带页码窗口（基于当前 URL 渐进增强，无 JS 时退回上一页/下一页）
 - 视频/动图：通过 srcdoc iframe + no-referrer 绕过 video.twimg.com 防盗链
 - 侧栏「显示方式」：`网格 / 下拉` 两档切换（选择记浏览器 localStorage）。网格模式下账号列表显示为 `.account-card` 网格；下拉模式下替换为单个 `<select id="accountsDropdown">`，选项来自服务端渲染或前端 `ACCOUNTS` 数据兜底，选项跳转账号页面。**首页也支持下拉模式**：切到下拉时隐藏「最新/最热/收藏」摘要板块，只显示账号 `<select>`，避免视觉重叠。
@@ -137,7 +137,6 @@ go run ./server
     "ext": "jpg",
     "size": 123456,
     "url": "http://.../proxy/...",
-    "thumb": "http://.../proxy/...?name=small",
     "original_url": "https://pbs.twimg.com/media/abc123.jpg",
     "tweet_id": 123456789,
     "tags": ["tag1", "tag2"],

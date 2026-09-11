@@ -64,8 +64,11 @@ func main() {
 		// 清理路径（去除多余斜杠、.. 等）
 		fullPath = filepath.Clean(fullPath)
 
-		// 防止路径遍历攻击：确保最终路径仍然在 staticRoot 之下
-		if !strings.HasPrefix(fullPath, staticRoot) {
+		// 防止路径遍历攻击：用 filepath.Rel 判断 fullPath 是否真的在 staticRoot 之下。
+		// HasPrefix 不行：staticRoot=/var/www 时 /../wwwfoo 清成 /var/wwwfoo，
+		// HasPrefix 误判为 true，兄弟目录文件可读。
+		rel, err := filepath.Rel(staticRoot, fullPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 			c.AbortWithStatus(http.StatusForbidden)
 			return
 		}

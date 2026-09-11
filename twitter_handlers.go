@@ -33,6 +33,10 @@ func CreateMetaData(c *gin.Context) {
 
 	// 2026.01.01
 	// 需要检查 body json，是这次添加的tag。
+	// 限制请求体 1MB，防止客户端塞大 payload 打爆内存 / 磁盘。
+	// Twitter 用户元数据远小于此。
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+
 	ip := c.GetHeader(ginkit.XForwardedFor)
 	agent := c.Request.UserAgent()
 
@@ -151,7 +155,8 @@ func GetMetaData(c *gin.Context) {
 	}
 
 	if _, ok := c.GetQuery("t"); !ok {
-		c.Redirect(302, c.Request.URL.String()+".json.gz?t="+user.LastModify.String())
+		// 用 URL.Path 而非 URL.String()：后者带 query，带参请求会拼成 /foo?x=y.json.gz?t=...
+		c.Redirect(302, c.Request.URL.Path+".json.gz?t="+user.LastModify.String())
 		return
 	}
 
@@ -197,23 +202,55 @@ func GetLists(c *gin.Context) {
 	search, ok := c.GetQuery("search")
 	if ok {
 		by, _ := c.GetQuery("by")
-		r, _ := getSearch(by, search)
-		c.JSON(200, r)
+		r, err := getSearch(by, search)
+		if err != nil {
+			// 之前把错误吞掉、nil 也返回 200，会让调用方无法区分「空结果」与「查询失败」。
+			ginkit.AbortWithError(c, http.StatusInternalServerError, err)
+			return
+		}
+		c.JSON(http.StatusOK, r)
 		return
 	}
 
 	c.String(http.StatusNotImplemented, "not implemented")
 }
 
-func DeleteUser(c *gin.Context) {
-	if c.Query("delete") == os.Getenv("DELETE_KEY") {
-		commitUser(c.Param("username"), "BANNED")
+// verifyDeleteKey 校验 ?delete= 参数与 DELETE_KEY 是否匹配。
+// DELETE_KEY 未配置时直接返回 500——空 key 会让 c.Query 与 os.Getenv 都是空串，
+// 空 == 空 恒真，等价于任意 DELETE/PUT 都能改用户状态，必须先挡掉。
+func verifyDeleteKey(c *gin.Context) bool {
+	key := os.Getenv("DELETE_KEY")
+	if key == "" {
+		c.AbortWithStatus(http.StatusInternalServerError)
+		return false
 	}
+	if c.Query("delete") != key {
+		c.AbortWithStatus(http.StatusForbidden)
+		return false
+	}
+	return true
 }
-func CreateUser(c *gin.Context) {
-	if c.Query("delete") == os.Getenv("DELETE_KEY") {
-		commitUser(c.Param("username"), "SUCCESS")
+
+func DeleteUser(c *gin.Context) {
+	if !verifyDeleteKey(c) {
+		return
 	}
+	if err := commitUser(c.Param("username"), "BANNED"); err != nil {
+		c.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "banned", "username": c.Param("username")})
+}
+
+func CreateUser(c *gin.Context) {
+	if !verifyDeleteKey(c) {
+		return
+	}
+	if err := commitUser(c.Param("username"), "SUCCESS"); err != nil {
+		c.AbortWithError(http.StatusInternalServerError, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "unbanned", "username": c.Param("username")})
 }
 
 // 26.02.15

@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 )
 
@@ -173,7 +174,10 @@ func RefreshAllRankings() error {
 	}
 
 	// 4. 清理旧流水
-	DB.Exec(`DELETE FROM emoji_logs WHERE created_at < datetime('now', 'localtime', '-31 days')`)
+	if _, err := DB.Exec(`DELETE FROM emoji_logs WHERE created_at < datetime('now', 'localtime', '-31 days')`); err != nil {
+		// 清理失败不应阻断刷新，但必须留痕——之前被静默丢弃。
+		log.Printf("RefreshAllRankings: 清理旧 emoji_logs 失败: %v", err)
+	}
 
 	return nil
 }

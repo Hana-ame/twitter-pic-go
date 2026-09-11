@@ -47,6 +47,16 @@ type Server struct {
 	// 让 links 的读写跟着阻塞没有必要。
 	linksMu sync.RWMutex
 	links   map[string][]AccountLink // account → 外部链接
+
+	// rebuildMu 保证同一时刻只有一个 rebuild 在跑（单飞）。
+	// 不复用 s.mu：s.mu 只保护 gallery 快照指针的读写；rebuildMu 保护整个
+	// rebuild 流程（含 scanNext 的磁盘扫描），避免并发 rebuild 争抢磁盘 I/O。
+	rebuildMu sync.Mutex
+	// lastRebuild 是上一次 rebuild 完成的时间，用于节流。
+	// handleBrowse 的懒加载 rebuild 是匿名触发的，没有单飞 + 节流的话，
+	// 每次匿名请求（包括 FetchRemoteDoc 返回 "已缓存" 的 (false, nil)）都会
+	// 触发一次全库重建——典型的 DoS 放大。
+	lastRebuild time.Time
 }
 
 // linksTable 返回账号外部链接表的快照（读锁）。
@@ -81,6 +91,38 @@ func (s *Server) rebuild() error {
 	s.mu.Lock()
 	s.gallery = next
 	s.mu.Unlock()
+	return nil
+}
+
+// rebuildMinInterval 是两次匿名触发 rebuild 的最小间隔。
+// POST /rescan（有鉴权）不走这个节流，只有 handleBrowse 的懒加载走。
+const rebuildMinInterval = 60 * time.Second
+
+// errRebuildBusy 表示已有 rebuild 在跑（单飞拒绝）。
+// errRebuildThrottled 表示距上次 rebuild 不足 60s（节流拒绝）。
+// 两者都不该返回 500——这是正常降级，用当前索引继续渲染即可。
+var (
+	errRebuildBusy      = fmt.Errorf("rebuild already in progress")
+	errRebuildThrottled = fmt.Errorf("rebuild throttled")
+)
+
+// tryRebuild 对匿名触发的 rebuild 做单飞 + 节流：
+// 同一时刻最多一个 rebuild 在跑；两次 rebuild 之间至少隔 60s。
+// 拒绝时返回 errRebuildBusy / errRebuildThrottled，调用方据此决定降级。
+func (s *Server) tryRebuild() error {
+	if !s.rebuildMu.TryLock() {
+		return errRebuildBusy
+	}
+	defer s.rebuildMu.Unlock()
+
+	if time.Since(s.lastRebuild) < rebuildMinInterval {
+		return errRebuildThrottled
+	}
+
+	if err := s.rebuild(); err != nil {
+		return err
+	}
+	s.lastRebuild = time.Now()
 	return nil
 }
 
@@ -915,12 +957,13 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
 
 	// 远程源懒加载（临时调试，仅存内存）：本地没有该账号的数据时，
 	// 按需从远端 API 拉取这一个账号的 json 到内存，原子重建索引后继续。
+	// 重建走 tryRebuild 做单飞 + 节流，避免匿名请求把全库 rebuild 刷爆（DoS 放大）。
+	// 被节流 / 单飞拒绝时不报错，用当前索引继续渲染（可能为空）。
 	if len(candidates) == 0 && dir != "" && g.RemoteBase() != "" {
 		if _, err := g.FetchRemoteDoc(dir); err == nil {
 			log.Printf("gallery: remote lazy-fetched %s (memory only)", dir)
-			if err := s.rebuild(); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+			if err := s.tryRebuild(); err != nil {
+				log.Printf("gallery: rebuild skipped: %v", err)
 			}
 			g = s.current() // rebuild 会换新快照，重新取指针
 			if !recursive && len(include) == 0 && len(exclude) == 0 {

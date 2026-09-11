@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"time"
 )
 
 // 问python做的。
@@ -20,11 +21,16 @@ func curlMetaData(username string) (string, error) {
 	if addr == "" {
 		addr = "127.25.9.19:8080"
 	}
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return fmt.Sprintf("无法连接到服务器: %v", err), err
 	}
 	defer conn.Close()
+
+	// 写入超时：连接建立后再给一次 deadline，防止对端 accept 后不读也不关。
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return fmt.Sprintf("设置写超时失败: %v", err), err
+	}
 
 	payload := username
 	if token := strings.TrimSpace(os.Getenv("CALLER_TOKEN")); token != "" {

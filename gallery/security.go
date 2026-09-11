@@ -175,10 +175,15 @@ func (l *rateLimiter) evictOldest() {
 
 // clientIP 取客户端 IP。尊重 X-Forwarded-For 的第一段（gallery 前面有反代），
 // 解析失败时回退到 RemoteAddr 的主机部分。
+//
+// XFF 第一段必须 net.ParseIP 合法才信任：否则客户端随便伪造垃圾串就能拿到
+// 全新限流桶，绕过 per-IP 限流。不合法的回退到 RemoteAddr。
 func clientIP(r *http.Request) string {
 	if xf := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xf != "" {
 		if first := strings.TrimSpace(strings.Split(xf, ",")[0]); first != "" {
-			return first
+			if net.ParseIP(first) != nil {
+				return first
+			}
 		}
 	}
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {

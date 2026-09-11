@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/Hana-ame/twitter-pic-go"
 	"github.com/Hana-ame/twitter-pic-go/Tools/ginkit/middleware"
@@ -96,5 +97,24 @@ func main() {
 		c.File(fullPath)
 	})
 
-	r.Run(os.Getenv("LISTEN_ADDR"))
+	// 用显式 http.Server 代替 r.Run：gin 的 r.Run 无法配置超时。
+	// addr 为空时 gin 的 r.Run 会绑 ":80"（gin 的 net.ListenAddr 把空串归一化
+	// 成 ":80"），而 http.Server{Addr:""} 会绑随机端口 —— 语义不同，这里显式对齐。
+	addr := os.Getenv("LISTEN_ADDR")
+	if addr == "" {
+		addr = ":80"
+	}
+	// 同 gallery / twimg：只设握手期与 keep-alive 的超时，**不设**
+	// ReadTimeout / WriteTimeout。这个服务同时出 /api/twitter 和静态文件
+	//（含媒体下载），长连接是正常业务，WriteTimeout 会把媒体流掐断。
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
+		log.Fatalf("server: %v", err)
+	}
 }

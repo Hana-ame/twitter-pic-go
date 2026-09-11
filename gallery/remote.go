@@ -45,6 +45,7 @@ func (g *Gallery) negativelyCached(username string) bool {
 
 // FetchRemoteDoc 按需拉取某账号的元数据，仅存内存（g.remoteDocs），不写磁盘。
 // 已在内存中的直接跳过；近期拉取失败过的直接跳过。返回是否新拉取了数据。
+// 网络 I/O 在锁外执行，锁内只做状态更新，避免持锁期间阻塞其他 goroutine。
 func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 	if g.remoteBase == "" || username == "" {
 		return false, fmt.Errorf("remote json source disabled")
@@ -52,40 +53,60 @@ func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 	if strings.ContainsAny(username, "/\\") || username == "." || username == ".." {
 		return false, fmt.Errorf("invalid username")
 	}
+
+	// 快速路径：锁内检查缓存，命中即返回
 	g.muRemote.Lock()
-	defer g.muRemote.Unlock()
 	if _, ok := g.remoteDocs[username]; ok {
+		g.muRemote.Unlock()
 		return false, nil // 内存里已有
 	}
 	if g.negativelyCached(username) {
+		g.muRemote.Unlock()
 		return false, fmt.Errorf("recently failed; skipped")
 	}
+	g.muRemote.Unlock()
 
-	u := g.remoteBase + "/" + url.PathEscape(username) + ".json.gz?t=1"
+	// 锁外执行网络 I/O
+	base := g.remoteBase
+	rz, err := fetchAndNormalize(username, base)
+	if err != nil {
+		g.muRemote.Lock()
+		g.negativeCache[username] = time.Now()
+		g.muRemote.Unlock()
+		return false, err
+	}
+
+	// 锁内更新缓存
+	g.muRemote.Lock()
+	g.remoteDocs[username] = rz
+	g.muRemote.Unlock()
+	return true, nil
+}
+
+// fetchAndNormalize 执行远程 HTTP 拉取、解码、校验和 gzip 归一化。
+// 纯 I/O + CPU 工作，不触碰任何共享状态，可在锁外安全调用。
+func fetchAndNormalize(username, base string) ([]byte, error) {
+	u := base + "/" + url.PathEscape(username) + ".json.gz?t=1"
 	req, err := http.NewRequest(http.MethodGet, u, nil)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	req.Header.Set("User-Agent", "twitter-pic-gallery-debug/0.1")
 
 	resp, err := remoteHTTPClient.Do(req)
 	if err != nil {
-		g.negativeCache[username] = time.Now()
-		return false, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		g.negativeCache[username] = time.Now()
-		return false, fmt.Errorf("http %s", resp.Status)
+		return nil, fmt.Errorf("http %s", resp.Status)
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, fetchSizeLimit+1))
 	if err != nil {
-		g.negativeCache[username] = time.Now()
-		return false, err
+		return nil, err
 	}
 	if len(raw) > fetchSizeLimit {
-		g.negativeCache[username] = time.Now()
-		return false, fmt.Errorf("response exceeds %d bytes", fetchSizeLimit)
+		return nil, fmt.Errorf("response exceeds %d bytes", fetchSizeLimit)
 	}
 
 	// 先统一解成明文 JSON 再校验（服务端可能回 gzip 或明文两种形态）
@@ -93,30 +114,25 @@ func (g *Gallery) FetchRemoteDoc(username string) (bool, error) {
 	if len(raw) >= 2 && raw[0] == 0x1f && raw[1] == 0x8b {
 		zr, err := gzip.NewReader(bytes.NewReader(raw))
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 		plain, err = io.ReadAll(io.LimitReader(zr, fetchSizeLimit))
 		if err != nil {
-			return false, err
+			return nil, err
 		}
 	}
 
 	// 结构校验：能解出 timeline 才算有效数据（防止 banned.json 之类被收进索引）
 	var probe gzDocument
 	if err := json.Unmarshal(plain, &probe); err != nil {
-		return false, fmt.Errorf("not a timeline json: %v", err)
+		return nil, fmt.Errorf("not a timeline json: %v", err)
 	}
 	if len(probe.Timeline) == 0 {
-		return false, fmt.Errorf("empty timeline for %s", username)
+		return nil, fmt.Errorf("empty timeline for %s", username)
 	}
 
 	// 统一压成 gzip 存内存，peekRemoteDoc 无需感知两种形态
-	rz, err := normalizeGzip(plain)
-	if err != nil {
-		return false, err
-	}
-	g.remoteDocs[username] = rz
-	return true, nil
+	return normalizeGzip(plain)
 }
 
 // normalizeGzip 统一为 gzip 字节流：已是 gzip 原样返回；明文 JSON 则压成 gzip。

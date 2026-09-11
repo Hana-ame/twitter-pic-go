@@ -49,7 +49,10 @@ func initMediaTagSchema(db *sql.DB) {
 		}
 	}
 	// 兼容旧表：加 tweet_id 列（已存在则忽略）
-	db.Exec(`ALTER TABLE media_tags ADD COLUMN tweet_id INTEGER NOT NULL DEFAULT 0`)
+	if _, err := db.Exec(`ALTER TABLE media_tags ADD COLUMN tweet_id INTEGER NOT NULL DEFAULT 0`); err != nil {
+		// ALTER TABLE 失败通常是列已存在（重复执行），不影响功能
+		log.Printf("gallery: init media tag schema: ALTER TABLE tweet_id: %v", err)
+	}
 }
 
 // ensureTag 返回（或创建）某个扁平 tag 的 id。
@@ -80,7 +83,9 @@ func React(db *sql.DB, mediaID, emoji, voter string, tweetID int64) (likes, disl
 
 	// 该 voter 当前已有的反应
 	var cur int64
-	_ = db.QueryRow(`SELECT tag_id FROM media_tags WHERE media_id=? AND voter=? LIMIT 1`, mediaID, voter).Scan(&cur)
+	if err := db.QueryRow(`SELECT tag_id FROM media_tags WHERE media_id=? AND voter=? LIMIT 1`, mediaID, voter).Scan(&cur); err != nil && err != sql.ErrNoRows {
+		log.Printf("gallery: React: query current reaction failed for %s: %v", mediaID, err)
+	}
 
 	// 清掉该 voter 在此 media 上的所有反应
 	if _, e := db.Exec(`DELETE FROM media_tags WHERE media_id=? AND voter=?`, mediaID, voter); e != nil {
@@ -99,8 +104,16 @@ func React(db *sql.DB, mediaID, emoji, voter string, tweetID int64) (likes, disl
 
 // reactionCounts 返回某个 media 的赞/倒赞聚合计数（跨所有 voter）。
 func reactionCounts(db *sql.DB, mediaID string) (likes, dislikes int, err error) {
-	likeID, _ := ensureTag(db, ReactionLike)
-	dislikeID, _ := ensureTag(db, ReactionDislike)
+	likeID, err := ensureTag(db, ReactionLike)
+	if err != nil {
+		log.Printf("gallery: reactionCounts: ensureTag(%q) failed: %v", ReactionLike, err)
+		return 0, 0, err
+	}
+	dislikeID, err := ensureTag(db, ReactionDislike)
+	if err != nil {
+		log.Printf("gallery: reactionCounts: ensureTag(%q) failed: %v", ReactionDislike, err)
+		return 0, 0, err
+	}
 	row := db.QueryRow(`
 		SELECT
 			COALESCE(SUM(CASE WHEN tag_id=? THEN 1 ELSE 0 END), 0),
@@ -118,6 +131,7 @@ func (g *Gallery) AttachReactions(db *sql.DB) {
 	}
 	rows, err := db.Query(`SELECT m.media_id, t.name FROM media_tags m JOIN tags t ON t.id = m.tag_id`)
 	if err != nil {
+		log.Printf("gallery: AttachReactions: query failed: %v", err)
 		return
 	}
 	defer rows.Close()
@@ -130,6 +144,7 @@ func (g *Gallery) AttachReactions(db *sql.DB) {
 	for rows.Next() {
 		var mid, name string
 		if err := rows.Scan(&mid, &name); err != nil {
+			log.Printf("gallery: AttachReactions: scan row failed: %v", err)
 			continue
 		}
 		a := acc[mid]

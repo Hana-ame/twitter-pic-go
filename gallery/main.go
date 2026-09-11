@@ -96,10 +96,14 @@ func (s *Server) rebuild() error {
 
 // rebuildMinInterval 是两次匿名触发 rebuild 的最小间隔。
 // POST /rescan（有鉴权）不走这个节流，只有 handleBrowse 的懒加载走。
-const rebuildMinInterval = 60 * time.Second
+// 可通过环境变量 GALLERY_REBUILD_MIN_INTERVAL 调整（Go duration 格式，如 "30s"），
+// 默认 60s。
+func rebuildMinInterval() time.Duration {
+	return envDurationOr("GALLERY_REBUILD_MIN_INTERVAL", 60*time.Second)
+}
 
 // errRebuildBusy 表示已有 rebuild 在跑（单飞拒绝）。
-// errRebuildThrottled 表示距上次 rebuild 不足 60s（节流拒绝）。
+// errRebuildThrottled 表示距上次 rebuild 不足节流间隔（节流拒绝）。
 // 两者都不该返回 500——这是正常降级，用当前索引继续渲染即可。
 var (
 	errRebuildBusy      = fmt.Errorf("rebuild already in progress")
@@ -107,7 +111,8 @@ var (
 )
 
 // tryRebuild 对匿名触发的 rebuild 做单飞 + 节流：
-// 同一时刻最多一个 rebuild 在跑；两次 rebuild 之间至少隔 60s。
+// 同一时刻最多一个 rebuild 在跑；两次 rebuild 之间至少隔
+// GALLERY_REBUILD_MIN_INTERVAL（默认 60s）。
 // 拒绝时返回 errRebuildBusy / errRebuildThrottled，调用方据此决定降级。
 func (s *Server) tryRebuild() error {
 	if !s.rebuildMu.TryLock() {
@@ -115,7 +120,7 @@ func (s *Server) tryRebuild() error {
 	}
 	defer s.rebuildMu.Unlock()
 
-	if time.Since(s.lastRebuild) < rebuildMinInterval {
+	if time.Since(s.lastRebuild) < rebuildMinInterval() {
 		return errRebuildThrottled
 	}
 
@@ -200,7 +205,18 @@ func Run(addr string) {
 	mux.HandleFunc("GET /api/media", s.handleAPIMedia)
 
 	log.Printf("gallery: server listening on %s (json dir: %s)", addr, jsonDir)
-	if err := http.ListenAndServe(addr, logRequests(sec.rateLimit(ageGate(mux)))); err != nil {
+	// 同 twimg：只设握手期与 keep-alive 的超时，**不设** ReadTimeout /
+	// WriteTimeout。gallery 直接出图片，还挂着 peerjs 的 WebRTC 兜底
+	//（见上方 GET /peerjs.min.js 注释），长连接是正常业务，
+	// WriteTimeout 会把大图下载和信令连接掐断。
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           logRequests(sec.rateLimit(ageGate(mux))),
+		ReadHeaderTimeout: 10 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("gallery: server error: %v", err)
 	}
 }
@@ -210,6 +226,20 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// envDurationOr 从环境变量读取 Go duration 字符串，失败时返回默认值。
+func envDurationOr(key string, def time.Duration) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		log.Printf("gallery: %s invalid duration %q, using default %v", key, v, def)
+		return def
+	}
+	return d
 }
 
 func openDB(path string) *sql.DB {

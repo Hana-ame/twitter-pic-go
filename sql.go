@@ -44,10 +44,14 @@ func CreateTable() error {
 }
 
 // Base query string to avoid repetition
+// 2026.09.15：tags 改从规范表 account_tags 聚合（json_group_object 现场序列化，
+// 空标签返回 NULL → COALESCE '{}'），不再读旧的 user_tags JSON 大字段。
+// 全部 GET 路径（getUserTags/getUserList/邻居列表等）共用本查询，一处切换。
 const userSelectQuery = `
-	SELECT u.username, u.last_modify, u.status, COALESCE(t.tags, '{}')
+	SELECT u.username, u.last_modify, u.status,
+	       COALESCE((SELECT json_group_object(a.tag, a.weight)
+	                 FROM account_tags a WHERE a.username = u.username), '{}')
 	FROM users u
-	LEFT JOIN user_tags t ON u.username = t.username
 `
 
 // 做个delete方法就行了。

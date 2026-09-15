@@ -51,7 +51,28 @@ func CreateTableV2() error {
 		return fmt.Errorf("创建 user_tags 失败: %v", err)
 	}
 
-	// 3. 创建请求日志表
+	// 3. 创建规范标签表 account_tags：一行一个 (username, tag)。
+	//    POST 直接按行 upsert 权重，GET 由 userSelectQuery 现场聚合，
+	//    不再读-改-写 JSON 大字段；tag 上建索引供反查（gallery /api/tag 同构）。
+	queryAccountTags := `CREATE TABLE IF NOT EXISTS account_tags (
+        username TEXT NOT NULL,
+        tag      TEXT NOT NULL,
+        weight   INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY (username, tag)
+    ) WITHOUT ROWID;`
+	if _, err := DB.Exec(queryAccountTags); err != nil {
+		return fmt.Errorf("创建 account_tags 失败: %v", err)
+	}
+	if _, err := DB.Exec(`CREATE INDEX IF NOT EXISTS idx_account_tags_tag ON account_tags(tag);`); err != nil {
+		return fmt.Errorf("创建 account_tags 标签索引失败: %v", err)
+	}
+
+	// 3b. 旧数据一次性回填：account_tags 为空时从 user_tags 的 JSON 展开。
+	if err := migrateAccountTags(); err != nil {
+		return err
+	}
+
+	// 4. 创建请求日志表
 	queryLogs := `CREATE TABLE IF NOT EXISTS request_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
 		username TEXT,
@@ -68,6 +89,33 @@ func CreateTableV2() error {
 
 }
 
+// migrateAccountTags 把旧 user_tags 的 JSON 权重对象一次性展开进 account_tags。
+// 仅在 account_tags 为空（首次升级）时执行；json_each 属 JSON1，modernc 驱动内置。
+func migrateAccountTags() error {
+	var n int
+	if err := DB.QueryRow(`SELECT COUNT(*) FROM account_tags`).Scan(&n); err != nil {
+		return fmt.Errorf("检查 account_tags: %v", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	res, err := DB.Exec(`
+		INSERT OR IGNORE INTO account_tags (username, tag, weight)
+		SELECT u.username, j.key, CAST(j.value AS INTEGER)
+		FROM user_tags u,
+		     json_each(CASE WHEN u.tags = '' OR NOT json_valid(u.tags) THEN '{}' ELSE u.tags END) j
+		WHERE CAST(j.value AS INTEGER) != 0`)
+	if err != nil {
+		return fmt.Errorf("回填 account_tags 失败: %v", err)
+	}
+	if c, _ := res.RowsAffected(); c > 0 {
+		log.Printf("account_tags 回填完成：%d 行（来自 user_tags JSON）", c)
+	}
+	return nil
+}
+
+// addTag POST 路径：按行 upsert 进 account_tags（不再读-改-写 JSON）。
+// 语义与旧版一致：权重累加，恰好归零则删除该标签行（负权重保留）。
 func addTag(username string, inputMap map[string]int, ip, ua string) error {
 	// 1. 记录请求流水
 
@@ -81,43 +129,23 @@ func addTag(username string, inputMap map[string]int, ip, ua string) error {
 		log.Printf("Warning: 记录日志失败: %v", err)
 	}
 
-	// 2. 开启事务
+	// 2. 事务内逐标签 upsert 累加，最后清扫归零行
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	// 3. 获取现有的权重数据
-	var oldJSON string
-	err = tx.QueryRow(`SELECT tags FROM user_tags WHERE username = ?`, username).Scan(&oldJSON)
-
-	currentWeights := make(map[string]int)
-	if err == nil && oldJSON != "" && oldJSON != "{}" {
-		json.Unmarshal([]byte(oldJSON), &currentWeights)
-	}
-
-	// 4. 核心逻辑：带权重的合并
 	for key, delta := range inputMap {
-		// 检查该标签在数据库中是否已存在
-		currentWeights[key] = currentWeights[key] + delta
-		if currentWeights[key] == 0 {
-			delete(currentWeights, key)
+		if _, err := tx.Exec(`INSERT INTO account_tags (username, tag, weight) VALUES (?, ?, ?)
+			ON CONFLICT (username, tag) DO UPDATE SET weight = weight + excluded.weight`,
+			username, key, delta); err != nil {
+			return fmt.Errorf("更新标签 %s=%d 失败: %v", key, delta, err)
 		}
 	}
-
-	// 5. 如果合并后 map 为空，存 {} 或者是更精简的处理
-	var finalJSON string
-	if len(currentWeights) == 0 {
-		finalJSON = "{}"
-	} else {
-		newJSONBytes, _ := json.Marshal(currentWeights)
-		finalJSON = string(newJSONBytes)
+	if _, err := tx.Exec(`DELETE FROM account_tags WHERE username = ? AND weight = 0`, username); err != nil {
+		return fmt.Errorf("清扫归零标签失败: %v", err)
 	}
-
-	// 6. 写入数据库
-	_, err = tx.Exec(`INSERT OR REPLACE INTO user_tags (username, tags, last_modify) 
-                    VALUES (?, ?, CURRENT_TIMESTAMP)`, username, finalJSON)
 
 	return tx.Commit()
 }

@@ -11,8 +11,9 @@
   #   scp -P 26275 root@bwh...:/tmp/twitter_snap.db ../../data/twitter.db
   python3 build_tags_db.py [twitter.db=../../data/twitter.db] [tags.db=../../data/tags.db]
 
-twitter.db.user_tags.tags 是 JSON 对象 {"tag": weight, ...}，拍平成
-account_tags(username, tag, weight) 规范表，按 (username, weight DESC, tag) 有序。
+标签来源二选一：twitter.db 里已有规范表 account_tags（服务 2026.09 起
+POST 直接按行写它）则原样拷贝；否则回退旧路径——把 user_tags.tags 的
+JSON 对象 {"tag": weight} 拍平。产物统一为 account_tags(username, tag, weight)。
 """
 import json
 import os
@@ -26,7 +27,23 @@ dst = sys.argv[2] if len(sys.argv) > 2 else os.path.join(_here, "..", "..", ".."
 
 s = sqlite3.connect(src)
 try:
-    rows = list(s.execute("SELECT username, tags FROM user_tags"))
+    tabs = {r[0] for r in s.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    pairs = []
+    if "account_tags" in tabs:
+        # 新版服务已直接维护规范表，原样拷贝
+        for u, t, w in s.execute("SELECT username, tag, weight FROM account_tags"):
+            u, t = str(u or "").strip(), str(t or "").strip()
+            if not u or not t:
+                continue
+            try:
+                w = float(w)
+            except Exception:
+                w = 1.0
+            pairs.append((u, t, w))
+        rows = []
+    else:
+        # 旧快照：从 user_tags 的 JSON 拍平
+        rows = list(s.execute("SELECT username, tags FROM user_tags"))
 finally:
     s.close()
 
@@ -52,7 +69,6 @@ DELETE FROM accounts;
 
 # 批插 + 单次 commit：/mnt/d (drvfs) 上逐条 autocommit 会被 fsync 拖死。
 # 建议 dst 先建在 Linux 本地 fs（/tmp），完成后 cp 到 Windows 目录。
-pairs = []
 bad = 0
 for username, tags in rows:
     if not tags:

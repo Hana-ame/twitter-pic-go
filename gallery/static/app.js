@@ -9,9 +9,10 @@
   var data;
   try { data = JSON.parse(dataEl.textContent); } catch (e) { return; }
 
-  var tagCache = {}; // mediaURL -> {tag: count}
-  var tagsEl = document.getElementById('g-tags');
-  try { if (tagsEl) tagCache = JSON.parse(tagsEl.textContent) || {}; } catch (e) {}
+  var aTags = {}; // 账号标签展示计数 {tag: count}（user_tags 权重 + 投票合并，服务端算好）
+  var aTagsEl = document.getElementById('g-atags');
+  var aTagsData = document.getElementById('g-atags-data');
+  try { if (aTagsData) aTags = JSON.parse(aTagsData.textContent) || {}; } catch (e) {}
 
   var slug = grid.getAttribute('data-slug') || '';
   var PER = parseInt(grid.getAttribute('data-per') || '12', 10) || 12;
@@ -57,24 +58,6 @@
     var n = mediaNode(m, false);
     n.addEventListener('click', function () { openLightbox(gIdx); });
     d.appendChild(n);
-    var tags = tagCache[m.url];
-    if (tags) {
-      var names = Object.keys(tags).sort(function (a, b) { return tags[b] - tags[a] || (a < b ? -1 : 1); });
-      if (names.length) {
-        var row = document.createElement('div'); row.className = 'tgs';
-        for (var i = 0; i < names.length && i < 3; i++) {
-          var s = document.createElement('span'); s.className = 'tg';
-          s.textContent = '#' + names[i];
-          row.appendChild(s);
-        }
-        if (names.length > 3) {
-          var more = document.createElement('span'); more.className = 'tg more';
-          more.textContent = '+' + (names.length - 3);
-          row.appendChild(more);
-        }
-        d.appendChild(row);
-      }
-    }
     return d;
   }
   /* ---- 瀑布流：每次插入当前最短的一列；图片/视频加载后再均衡 ---- */
@@ -183,15 +166,15 @@
   function setMyVote(key, v) { ls('gallery:vote:' + key, String(v)); }
   function isFav(key) { return lg('gallery:fav:' + key, '0') === '1'; }
   function setFav(key, on) { ls('gallery:fav:' + key, on ? '1' : '0'); }
-  function myTagVote(key, tag) { return lg('gallery:tagvote:' + key + ':' + tag, '0') === '1' ? 1 : 0; }
-  function setMyTagVote(key, tag, v) { ls('gallery:tagvote:' + key + ':' + tag, v ? '1' : '0'); }
-  function escTag(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
-  function postTag(key, tag, d, cb) {
-    fetch('/api/tag', {
+  function myATagVote(tag) { return lg('gallery:atagvote:' + slug + ':' + tag, '0') === '1' ? 1 : 0; }
+  function setMyATagVote(tag, v) { ls('gallery:atagvote:' + slug + ':' + tag, v ? '1' : '0'); }
+  function escT(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function postATag(tag, d) {
+    fetch('/api/account-tag', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ key: key, tag: tag, d: d })
+      body: JSON.stringify({ user: slug, tag: tag, d: d })
     }).then(function (r) { return r.json(); })
-      .then(function (j) { if (j && j.tags) { tagCache[key] = j.tags; if (cb) cb(); } })
+      .then(function (j) { if (j && j.tags) { aTags = j.tags; renderATags(); } })
       .catch(function () {});
   }
   function keyOf(i) { return slides[i] ? slides[i].url : ''; }
@@ -217,53 +200,49 @@
     if (likeCount) likeCount.textContent = c.likes;
     if (dislikeCount) dislikeCount.textContent = c.dislikes;
   }
-  function paintTags() {
-    var m = slides[cur]; if (!m) return;
-    var key = m.url;
-    var tags = tagCache[key] || {};
-    var names = Object.keys(tags);
-    names.sort(function (a, b) { return tags[b] - tags[a] || (a < b ? -1 : 1); });
+  function renderATags() {
+    if (!aTagsEl) return;
+    var names = Object.keys(aTags);
+    names.sort(function (a, b) { return aTags[b] - aTags[a] || (a < b ? -1 : 1); });
     var html = '';
     for (var i = 0; i < names.length; i++) {
-      var t = names[i], voted = myTagVote(key, t);
-      html += '<span class="ltag' + (voted ? ' on' : '') + '"><span>#' + escTag(t) + '</span> <b>' + tags[t] + '</b>' +
-        '<button class="ltvote" data-t="' + escTag(t) + '" title="' + (voted ? '取消投票' : '投票') + '">' + (voted ? '−' : '+') + '</button></span>';
+      var t = names[i], voted = myATagVote(t);
+      html += '<span class="atag' + (voted ? ' on' : '') + '"><span>#' + escT(t) + '</span> <b>' + aTags[t] + '</b>' +
+        '<button class="atag-vote" data-t="' + escT(t) + '" title="' + (voted ? '取消投票' : '投一票') + '">' + (voted ? '\u2212' : '+') + '</button></span>';
     }
-    html += '<button class="ltag ltagadd" id="lb-tagadd" type="button">＋</button>';
-    tagsEl.innerHTML = html;
-    var add = document.getElementById('lb-tagadd');
+    html += '<button class="atag atag-add" id="g-atagadd" type="button" title="添加标签">\uFF0B 标签</button>';
+    aTagsEl.innerHTML = html;
+    var add = document.getElementById('g-atagadd');
     if (add) add.addEventListener('click', function () {
-      var inp = document.getElementById('lb-taginput');
+      var inp = document.getElementById('g-ataginput');
       if (!inp) return;
       inp.hidden = !inp.hidden;
       if (!inp.hidden) inp.focus();
     });
-    var votes = tagsEl.querySelectorAll('.ltvote');
+    var votes = aTagsEl.querySelectorAll('.atag-vote');
     for (var v = 0; v < votes.length; v++) {
       (function (btn) {
-        btn.addEventListener('click', function (e) {
-          e.stopPropagation();
+        btn.addEventListener('click', function () {
           var t = btn.getAttribute('data-t');
-          var voted = myTagVote(key, t);
-          setMyTagVote(key, t, !voted);
-          btn.textContent = voted ? '+' : '−';
-          postTag(key, t, voted ? -1 : 1, paintTags);
+          var voted = myATagVote(t);
+          setMyATagVote(t, !voted);
+          renderATags();
+          postATag(t, voted ? -1 : 1);
         });
       })(votes[v]);
     }
   }
-  function initTagInput() {
-    var inp = document.getElementById('lb-taginput');
+  function initAccountTags() {
+    var inp = document.getElementById('g-ataginput');
     if (!inp) return;
     inp.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter') return;
-      var m = slides[cur]; if (!m) return;
       var t = inp.value.trim().replace(/^#/, '');
       if (!t) return;
       inp.value = '';
-      var key = m.url;
-      setMyTagVote(key, t, 1);
-      postTag(key, t, 1, paintTags);
+      setMyATagVote(t, 1);
+      renderATags();
+      postATag(t, 1);
     });
     inp.addEventListener('blur', function () { inp.hidden = true; });
   }
@@ -276,7 +255,6 @@
     if (favBtn) favBtn.classList.toggle('on', isFav(key));
     if (lbInd) lbInd.textContent = (cur + 1) + ' / ' + slides.length;
     if (lbInfo) lbInfo.textContent = '@' + slug + (m.id ? ' · ' + m.id : '');
-    paintTags();
     if (prevBtn) prevBtn.classList.toggle('dis', cur <= 0);
     if (nextBtn) nextBtn.classList.toggle('dis', cur >= slides.length - 1);
     loadCounts(key);
@@ -564,6 +542,7 @@
     else if (e.key === 'ArrowLeft' || e.key === 'k') { e.preventDefault(); navTo(-1); }
   });
 
-  initTagInput();
+  initAccountTags();
+  renderATags();
   renderGrid();
 })();

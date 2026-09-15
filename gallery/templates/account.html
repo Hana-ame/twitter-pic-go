@@ -13,6 +13,9 @@
     </div>
   </div>
 
+  <div class="atags" id="g-atags"></div>
+  <input class="atag-input" id="g-ataginput" maxlength="24" autocomplete="off" placeholder="添加标签后回车" hidden>
+
   <div class="modes">
     <a data-mode="" href="{{.HrefAll}}" class="{{if eq .Filter ""}}active{{end}}">全部</a>
     <a data-mode="photo" href="{{.HrefPhoto}}" class="{{if eq .Filter "photo"}}active{{end}}">图片 only</a>
@@ -55,12 +58,10 @@
     <button class="lb-act" id="lb-fav" title="喜欢">♥</button>
   </div>
   <div class="lb-info" id="lb-info"></div>
-  <div class="lb-tags" id="lb-tags"></div>
-  <input class="lb-taginput" id="lb-taginput" maxlength="24" autocomplete="off" placeholder="添加标签后回车" hidden>
 </div>
 
 <script id="g-data" type="application/json">{{.Account.RawJSON}}</script>
-<script id="g-tags" type="application/json">{{.Account.TagsJSON}}</script>
+<script id="g-atags-data" type="application/json">{{.Account.ATagsJSON}}</script>
 <script>{{.AppJS}}</script>
 </body>
 </html>

@@ -101,7 +101,7 @@ type accountPage struct {
 	PrevHref  string
 	NextHref  string
 	RawJSON   template.JS
-	TagsJSON  template.JS
+	ATagsJSON template.JS
 	LegacyURL string
 }
 
@@ -154,15 +154,15 @@ func hueOf(s string) int {
 }
 
 type config struct {
-	addr          string
-	jsonDir       string
-	mediaBase     string
-	legacyBase    string
-	pageSize      int
-	reactionsFile string
-	mediaTagsFile string
-	tags          *tagStore
-	mediaTags     *mediaTagStore
+	addr             string
+	jsonDir          string
+	mediaBase        string
+	legacyBase       string
+	pageSize         int
+	reactionsFile    string
+	accountVotesFile string
+	tags             *tagStore
+	accountVotes     *accountVoteStore
 }
 
 func Run(addr string) {
@@ -170,13 +170,13 @@ func Run(addr string) {
 		addr = envOr("GALLERY_ADDR", ":8090")
 	}
 	cfg := config{
-		addr:          addr,
-		jsonDir:       envOr("GALLERY_JSON_DIR", "."),
-		mediaBase:     strings.TrimRight(envOr("GALLERY_MEDIA_BASE", ""), "/"),
-		legacyBase:    legacyBase(),
-		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
-		reactionsFile: envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
-		mediaTagsFile: envOr("GALLERY_MEDIA_TAGS_FILE", "./media_tags.json"),
+		addr:             addr,
+		jsonDir:          envOr("GALLERY_JSON_DIR", "."),
+		mediaBase:        strings.TrimRight(envOr("GALLERY_MEDIA_BASE", ""), "/"),
+		legacyBase:       legacyBase(),
+		pageSize:         envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
+		reactionsFile:    envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
+		accountVotesFile: envOr("GALLERY_ACCOUNT_VOTES_FILE", "./account_votes.json"),
 	}
 	if cfg.pageSize <= 0 {
 		cfg.pageSize = defaultPageSize
@@ -184,7 +184,7 @@ func Run(addr string) {
 	cfg.tags = openTagStore(envOr("GALLERY_TAGS_DB", "./tags.db"))
 
 	reactions := newReactionStore(cfg.reactionsFile)
-	cfg.mediaTags = newMediaTagStore(cfg.mediaTagsFile)
+	cfg.accountVotes = newAccountVoteStore(cfg.accountVotesFile)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
@@ -202,8 +202,8 @@ func Run(addr string) {
 	mux.HandleFunc("GET /api/reactions", func(w http.ResponseWriter, r *http.Request) { handleGetReactions(w, r, reactions) })
 	mux.HandleFunc("GET /api/tag/{tag}", func(w http.ResponseWriter, r *http.Request) { handleTagUsers(w, r, cfg) })
 	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions) })
-	mux.HandleFunc("GET /api/tags", func(w http.ResponseWriter, r *http.Request) { handleGetTags(w, r, cfg.mediaTags) })
-	mux.HandleFunc("POST /api/tag", func(w http.ResponseWriter, r *http.Request) { handlePostTag(w, r, cfg.mediaTags) })
+	mux.HandleFunc("GET /api/account-tags", func(w http.ResponseWriter, r *http.Request) { handleGetAccountTags(w, r, cfg) })
+	mux.HandleFunc("POST /api/account-tag", func(w http.ResponseWriter, r *http.Request) { handlePostAccountTag(w, r, cfg) })
 
 	if sub, err := fs.Sub(staticFS, "static"); err == nil {
 		mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
@@ -295,7 +295,7 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		return
 	}
 	render(w, "home.html", pageData{
-		Title:      "首页",
+		Title: "首页",
 		Home: &homeData{
 			Total: len(names), Preview: preview, Cloud: top, Untagged: untagged,
 			NamesJSON: template.JS(dataJSON), MediaBase: cfg.mediaBase,
@@ -339,13 +339,13 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		raw = []byte("{}")
 	}
 
-	var tagJSON []byte
-	if cfg.mediaTags != nil {
-		urls := make([]string, 0, len(list))
-		for _, m := range list { urls = append(urls, m.URL) }
-		if b, err := json.Marshal(cfg.mediaTags.snapshot(urls)); err == nil { tagJSON = b }
+	var atagJSON []byte
+	if b, err := json.Marshal(accountTagDisplay(cfg, slug)); err == nil {
+		atagJSON = b
 	}
-	if tagJSON == nil { tagJSON = []byte("{}") }
+	if atagJSON == nil {
+		atagJSON = []byte("{}")
+	}
 
 	acc := &accountPage{
 		Slug:      slug,
@@ -365,7 +365,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		PrevHref:  buildHref(slug, filter, prevCursor),
 		NextHref:  buildHref(slug, filter, nextCursor),
 		RawJSON:   template.JS(raw),
-		TagsJSON:  template.JS(tagJSON),
+		ATagsJSON: template.JS(atagJSON),
 		LegacyURL: legacyURL(cfg.legacyBase, slug),
 	}
 	render(w, "account.html", pageData{Title: acc.Name, Account: acc, AppJS: appJS, LegacyBase: cfg.legacyBase})
@@ -533,7 +533,6 @@ func parseCursorID(s string) int64 {
 	return n
 }
 
-
 func clampStart(items []mediaItem, start, pageSize int) int {
 	if len(items) == 0 {
 		return 0
@@ -550,7 +549,6 @@ func clampStart(items []mediaItem, start, pageSize int) int {
 	}
 	return start
 }
-
 
 func buildHref(slug, filter string, cursor int64) string {
 	q := url.Values{}
@@ -597,6 +595,12 @@ func listAccounts(dir string) ([]string, error) {
 type tagStore struct {
 	db    *sql.DB
 	cloud []tagCount // 全局 top36，仅启动时算一次
+	mode  string     // "account_tags"（归一化）或 "user_tags"（JSON {tag:weight}）
+}
+
+func tableExists(db *sql.DB, name string) bool {
+	var one int
+	return db.QueryRow("SELECT 1 FROM "+name+" LIMIT 1").Scan(&one) == nil
 }
 
 func openTagStore(path string) *tagStore {
@@ -613,26 +617,80 @@ func openTagStore(path string) *tagStore {
 		return nil
 	}
 	st := &tagStore{db: db}
-	rows, err := db.Query("SELECT tag, COUNT(DISTINCT username) FROM account_tags GROUP BY tag ORDER BY 2 DESC, tag LIMIT 36")
-	if err != nil {
-		log.Printf("gallery: tags cloud query failed (degraded to no tags): %v", err)
+	if tableExists(db, "account_tags") {
+		st.mode = "account_tags"
+		rows, err := db.Query("SELECT tag, COUNT(DISTINCT username) FROM account_tags GROUP BY tag ORDER BY 2 DESC, tag LIMIT 36")
+		if err != nil {
+			log.Printf("gallery: tags cloud query failed (degraded to no tags): %v", err)
+			db.Close()
+			return nil
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var tag string
+			var cnt int
+			if err := rows.Scan(&tag, &cnt); err != nil {
+				continue
+			}
+			st.cloud = append(st.cloud, tagCount{Tag: tag, Count: cnt})
+		}
+		if err := rows.Err(); err != nil {
+			log.Printf("gallery: tags cloud scan: %v", err)
+		}
+	} else if tableExists(db, "user_tags") {
+		st.mode = "user_tags"
+		st.cloud = cloudFromUserTags(db)
+	} else {
+		log.Printf("gallery: tags db %s has neither account_tags nor user_tags", path)
 		db.Close()
 		return nil
 	}
+	log.Printf("gallery: tags db ready (mode=%s, cloud cached: %d tags)", st.mode, len(st.cloud))
+	return st
+}
+
+// cloudFromUserTags 扫 user_tags.tags JSON（{tag:weight}），统计每标签覆盖账号数（仅 weight>0）。
+func cloudFromUserTags(db *sql.DB) []tagCount {
+	rows, err := db.Query("SELECT tags FROM user_tags")
+	if err != nil {
+		log.Printf("gallery: user_tags cloud query failed: %v", err)
+		return nil
+	}
 	defer rows.Close()
+	cnt := map[string]int{}
 	for rows.Next() {
-		var tag string
-		var cnt int
-		if err := rows.Scan(&tag, &cnt); err != nil {
+		var raw string
+		if err := rows.Scan(&raw); err != nil {
 			continue
 		}
-		st.cloud = append(st.cloud, tagCount{Tag: tag, Count: cnt})
+		var m map[string]float64
+		if json.Unmarshal([]byte(raw), &m) != nil {
+			continue
+		}
+		for t, w := range m {
+			if w > 0 {
+				cnt[t]++
+			}
+		}
 	}
-	if err := rows.Err(); err != nil {
-		log.Printf("gallery: tags cloud scan: %v", err)
+	names := make([]string, 0, len(cnt))
+	for t := range cnt {
+		names = append(names, t)
 	}
-	log.Printf("gallery: tags db ready (cloud cached: %d tags)", len(st.cloud))
-	return st
+	sort.Slice(names, func(i, j int) bool {
+		if cnt[names[i]] != cnt[names[j]] {
+			return cnt[names[i]] > cnt[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	out := make([]tagCount, 0, min(36, len(names)))
+	for _, t := range names {
+		out = append(out, tagCount{Tag: t, Count: cnt[t]})
+		if len(out) >= 36 {
+			break
+		}
+	}
+	return out
 }
 
 // usersForTag 反查：tag -> usernames（权重降序，走 idx_account_tags_tag 索引）。
@@ -641,6 +699,9 @@ func openTagStore(path string) *tagStore {
 func (st *tagStore) usersForTag(tag string, exist map[string]struct{}, limit int) []string {
 	if st == nil || tag == "" || limit <= 0 {
 		return nil
+	}
+	if st.mode == "user_tags" {
+		return st.usersForTagJSON(tag, exist, limit)
 	}
 	rows, err := st.db.Query("SELECT username FROM account_tags WHERE tag = ? ORDER BY weight DESC, username", tag)
 	if err != nil {
@@ -677,6 +738,10 @@ func (st *tagStore) lastModFor(names []string) map[string]string {
 	if st == nil || len(names) == 0 {
 		return out
 	}
+	table := "accounts"
+	if !tableExists(st.db, "accounts") {
+		table = "users"
+	}
 	const chunk = 400
 	for i := 0; i < len(names); i += chunk {
 		batch := names[i:min(i+chunk, len(names))]
@@ -685,9 +750,9 @@ func (st *tagStore) lastModFor(names []string) map[string]string {
 		for k, n := range batch {
 			args[k] = n
 		}
-		rows, err := st.db.Query("SELECT username, last_modify FROM accounts WHERE username IN (" + ph + ")", args...)
+		rows, err := st.db.Query("SELECT username, last_modify FROM "+table+" WHERE username IN ("+ph+")", args...)
 		if err != nil {
-			log.Printf("gallery: lastModFor: %v (旧 tags.db？跑一遍 build_tags_db.py 重建)", err)
+			log.Printf("gallery: lastModFor: %v", err)
 			return out
 		}
 		for rows.Next() {
@@ -715,6 +780,38 @@ func (st *tagStore) tagsFor(names []string) map[string][]string {
 		args := make([]any, len(batch))
 		for k, n := range batch {
 			args[k] = n
+		}
+		if st.mode == "user_tags" {
+			rows, err := st.db.Query("SELECT username, tags FROM user_tags WHERE username IN ("+ph+")", args...)
+			if err != nil {
+				log.Printf("gallery: tagsFor user_tags chunk@%d failed: %v", i, err)
+				return out
+			}
+			for rows.Next() {
+				var u, raw string
+				if err := rows.Scan(&u, &raw); err != nil {
+					continue
+				}
+				var m map[string]float64
+				if json.Unmarshal([]byte(raw), &m) != nil {
+					continue
+				}
+				tags := make([]string, 0, len(m))
+				for t, w := range m {
+					if w > 0 {
+						tags = append(tags, t)
+					}
+				}
+				sort.Slice(tags, func(a, b int) bool {
+					if m[tags[a]] != m[tags[b]] {
+						return m[tags[a]] > m[tags[b]]
+					}
+					return tags[a] < tags[b]
+				})
+				out[u] = tags
+			}
+			rows.Close()
+			continue
 		}
 		rows, err := st.db.Query(
 			"SELECT username, tag FROM account_tags WHERE username IN ("+ph+") ORDER BY username, weight DESC, tag",
@@ -834,23 +931,168 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
+// ---- 账号级标签：user_tags 权重 + 用户投票（JSON 持久化） ----
 
-// ---- media tags（媒体级标签：投票计数，JSON 文件持久化） ----
-
-type mediaTagStore struct {
-	mu   sync.Mutex
-	path string
-	m    map[string]map[string]int // mediaURL -> tag -> 净票数
+// tagsForUser 返回单个账号的 {tag: weight}（含负权重），用于账号页标签展示与投票合并。
+func (st *tagStore) tagsForUser(name string) map[string]int {
+	out := map[string]int{}
+	if st == nil || name == "" {
+		return out
+	}
+	if st.mode == "user_tags" {
+		var raw string
+		if err := st.db.QueryRow("SELECT tags FROM user_tags WHERE username = ?", name).Scan(&raw); err != nil {
+			return out
+		}
+		var m map[string]float64
+		if json.Unmarshal([]byte(raw), &m) != nil {
+			return out
+		}
+		for t, w := range m {
+			out[t] = int(w)
+		}
+		return out
+	}
+	rows, err := st.db.Query("SELECT tag, weight FROM account_tags WHERE username = ? ORDER BY weight DESC, tag", name)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var t string
+		var w int
+		if rows.Scan(&t, &w) == nil {
+			out[t] = w
+		}
+	}
+	return out
 }
 
-func newMediaTagStore(path string) *mediaTagStore {
-	s := &mediaTagStore{path: path, m: map[string]map[string]int{}}
+// usersForTagJSON 是 user_tags（JSON {tag:weight}）模式下的反查：全表扫描 + 解析，按权重降序。
+func (st *tagStore) usersForTagJSON(tag string, exist map[string]struct{}, limit int) []string {
+	rows, err := st.db.Query("SELECT username, tags FROM user_tags")
+	if err != nil {
+		log.Printf("gallery: usersForTag user_tags scan: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	type pair struct {
+		u string
+		w float64
+	}
+	var found []pair
+	for rows.Next() {
+		var u, raw string
+		if err := rows.Scan(&u, &raw); err != nil {
+			continue
+		}
+		var m map[string]float64
+		if json.Unmarshal([]byte(raw), &m) != nil {
+			continue
+		}
+		w, ok := m[tag]
+		if !ok || w <= 0 {
+			continue
+		}
+		if exist != nil {
+			if _, ok2 := exist[u]; !ok2 {
+				continue
+			}
+		}
+		found = append(found, pair{u, w})
+	}
+	sort.Slice(found, func(i, j int) bool {
+		if found[i].w != found[j].w {
+			return found[i].w > found[j].w
+		}
+		return found[i].u < found[j].u
+	})
+	out := make([]string, 0, min(limit, len(found)))
+	for _, x := range found {
+		out = append(out, x.u)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// accountVoteStore：username -> tag -> 净票数（用户投票，与 user_tags 权重合并展示）。
+type accountVoteStore struct {
+	mu   sync.Mutex
+	path string
+	m    map[string]map[string]int
+}
+
+func newAccountVoteStore(path string) *accountVoteStore {
+	s := &accountVoteStore{path: path, m: map[string]map[string]int{}}
 	if path != "" {
 		if b, err := os.ReadFile(path); err == nil {
 			_ = json.Unmarshal(b, &s.m)
 		}
 	}
 	return s
+}
+
+func (s *accountVoteStore) votesFor(users []string) map[string]map[string]int {
+	if s == nil {
+		return map[string]map[string]int{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]map[string]int, len(users))
+	for _, u := range users {
+		if v := s.m[u]; v != nil {
+			cp := make(map[string]int, len(v))
+			for t, c := range v {
+				cp[t] = c
+			}
+			out[u] = cp
+		} else {
+			out[u] = map[string]int{}
+		}
+	}
+	return out
+}
+
+func (s *accountVoteStore) apply(user, tag string, d int) {
+	if d > 1 {
+		d = 1
+	} else if d < -1 {
+		d = -1
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v := s.m[user]
+	if v == nil {
+		v = map[string]int{}
+		s.m[user] = v
+	}
+	c := v[tag] + d
+	if c < 0 {
+		c = 0
+	}
+	if c == 0 {
+		delete(v, tag)
+	} else {
+		v[tag] = c
+	}
+	s.saveLocked()
+}
+
+func (s *accountVoteStore) saveLocked() {
+	if s.path == "" {
+		return
+	}
+	b, err := json.MarshalIndent(s.m, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, s.path)
 }
 
 func sanitizeTag(t string) string {
@@ -869,101 +1111,69 @@ func sanitizeTag(t string) string {
 	return string(rs)
 }
 
-func (s *mediaTagStore) snapshot(keys []string) map[string]map[string]int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string]map[string]int)
-	for _, k := range keys {
-		if tags := s.m[k]; len(tags) > 0 {
-			cp := make(map[string]int, len(tags))
-			for t, c := range tags {
-				cp[t] = c
-			}
-			out[k] = cp
+// accountTagDisplay 合并账号标签权重与用户投票：显示分 = max(0,weight) + votes，仅保留 >0。
+func accountTagDisplay(cfg config, user string) map[string]int {
+	base := map[string]int{}
+	if cfg.tags != nil {
+		base = cfg.tags.tagsForUser(user)
+	}
+	votes := map[string]int{}
+	if cfg.accountVotes != nil {
+		votes = cfg.accountVotes.votesFor([]string{user})[user]
+	}
+	merged := map[string]int{}
+	for t, w := range base {
+		c := w
+		if c < 0 {
+			c = 0
+		}
+		c += votes[t]
+		if c > 0 {
+			merged[t] = c
 		}
 	}
-	return out
-}
-
-func (s *mediaTagStore) apply(key, tag string, d int) map[string]int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tags := s.m[key]
-	if tags == nil {
-		tags = map[string]int{}
-		s.m[key] = tags
-	}
-	if d > 1 {
-		d = 1
-	} else if d < -1 {
-		d = -1
-	}
-	c := tags[tag] + d
-	if c < 0 {
-		c = 0
-	}
-	if c == 0 {
-		delete(tags, tag)
-	} else {
-		tags[tag] = c
-	}
-	s.saveLocked()
-	cp := make(map[string]int, len(tags))
-	for t, c2 := range tags {
-		cp[t] = c2
-	}
-	return cp
-}
-
-func (s *mediaTagStore) saveLocked() {
-	if s.path == "" {
-		return
-	}
-	b, err := json.MarshalIndent(s.m, "", "  ")
-	if err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, s.path)
-}
-
-func handleGetTags(w http.ResponseWriter, r *http.Request, s *mediaTagStore) {
-	if s == nil {
-		writeJSON(w, map[string]any{})
-		return
-	}
-	var keys []string
-	for _, k := range strings.Split(r.URL.Query().Get("keys"), ",") {
-		if k = strings.TrimSpace(k); k != "" {
-			keys = append(keys, k)
+	for t, v := range votes {
+		if _, ok := base[t]; !ok && v > 0 {
+			merged[t] = v
 		}
 	}
-	writeJSON(w, s.snapshot(keys))
+	return merged
 }
 
-func handlePostTag(w http.ResponseWriter, r *http.Request, s *mediaTagStore) {
-	if s == nil {
-		http.Error(w, "tags disabled", http.StatusNotFound)
+func handleGetAccountTags(w http.ResponseWriter, r *http.Request, cfg config) {
+	var users []string
+	for _, u := range strings.Split(r.URL.Query().Get("keys"), ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			users = append(users, u)
+		}
+	}
+	out := map[string]map[string]int{}
+	for _, u := range users {
+		out[u] = accountTagDisplay(cfg, u)
+	}
+	writeJSON(w, out)
+}
+
+func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
+	if cfg.accountVotes == nil {
+		http.Error(w, "voting disabled", http.StatusNotFound)
 		return
 	}
 	var req struct {
-		Key string `json:"key"`
-		Tag string `json:"tag"`
-		D   int    `json:"d"`
+		User string `json:"user"`
+		Tag  string `json:"tag"`
+		D    int    `json:"d"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	key := strings.TrimSpace(req.Key)
+	user := strings.TrimSpace(req.User)
 	tag := sanitizeTag(req.Tag)
-	if key == "" || tag == "" {
-		http.Error(w, "key and tag required", http.StatusBadRequest)
+	if user == "" || tag == "" {
+		http.Error(w, "user and tag required", http.StatusBadRequest)
 		return
 	}
-	tags := s.apply(key, tag, req.D)
-	writeJSON(w, map[string]any{"key": key, "tags": tags})
+	cfg.accountVotes.apply(user, tag, req.D)
+	writeJSON(w, map[string]any{"user": user, "tags": accountTagDisplay(cfg, user)})
 }

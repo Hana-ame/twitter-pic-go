@@ -1,7 +1,7 @@
 // Command gallery is a standalone, server-rendered gallery for twitter-pic.
 //
-// 账号页把 json 原文嵌进 HTML，前端（static/app.js）做网格分页、TikTok 式竖滑全屏
-// 与赞/踩/喜欢；赞踩计数用本地 JSON 文件持久化。没有全局 media 索引。
+// 账号页把 json 原文嵌进 HTML，前端（static/app.js）做网格分页、手机式全屏查看器
+// （横向翻页 / 捏合与双击缩放 / 下滑关闭）与赞/踩/喜欢；赞踩计数用本地 JSON 文件持久化。没有全局 media 索引。
 package gallery
 
 import (

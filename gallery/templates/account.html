@@ -35,11 +35,12 @@
   {{end}}
 </main>
 
-<!-- 全屏竖滑查看器（TikTok 式） -->
+<!-- 全屏查看器：手机式（横向翻页 / 捏合与双击缩放 / 下滑关闭） -->
 <div class="lb" id="lb" hidden>
   <div class="lb-track" id="lb-track" tabindex="-1"></div>
-  <div class="lb-nav lb-prev" id="lb-prev" title="上一张"><span>‹</span></div>
-  <div class="lb-nav lb-next" id="lb-next" title="下一张"><span>›</span></div>
+  <button class="lb-nav lb-prev" id="lb-prev" aria-label="上一张"><b>‹</b></button>
+  <button class="lb-nav lb-next" id="lb-next" aria-label="下一张"><b>›</b></button>
+  <div class="lb-ind" id="lb-ind"></div>
   <button class="lb-close" id="lb-close" aria-label="close">✕</button>
   <div class="lb-rail">
     <button class="lb-act" id="lb-like" title="赞">👍<span id="lb-likes">0</span></button>

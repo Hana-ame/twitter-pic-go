@@ -385,7 +385,7 @@
     var w = track.clientWidth || 1;
     var t = Math.round(track.scrollLeft / w) + delta;
     if (t < 0 || t >= slides.length) return;
-    track.scrollTo({ left: t * w, behavior: 'smooth' });
+    if (track.scrollTo) { track.scrollTo({ left: t * w, behavior: 'smooth' }); } else { track.scrollLeft = t * w; }
   }
   if (prevBtn) prevBtn.addEventListener('click', function () { navTo(-1); });
   if (nextBtn) nextBtn.addEventListener('click', function () { navTo(1); });

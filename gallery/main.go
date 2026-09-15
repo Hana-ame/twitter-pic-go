@@ -94,6 +94,7 @@ type accountPage struct {
 	PrevHref  string
 	NextHref  string
 	RawJSON   template.JS
+	LegacyURL string
 }
 
 // acctItem 主页账号卡片（首字母头像色相与服务端/前端同算法）。
@@ -111,11 +112,12 @@ type homeData struct {
 }
 
 type pageData struct {
-	Title   string
-	Home    *homeData
-	Account *accountPage
-	AppJS   template.JS
-	HomeJS  template.JS
+	Title      string
+	Home       *homeData
+	Account    *accountPage
+	AppJS      template.JS
+	HomeJS     template.JS
+	LegacyBase string
 }
 
 // hueOf 与 static/home.js 中的 hueOf 保持一致（账号名为 ASCII）。
@@ -131,6 +133,7 @@ type config struct {
 	addr          string
 	jsonDir       string
 	mediaBase     string
+	legacyBase    string
 	pageSize      int
 	reactionsFile string
 }
@@ -143,6 +146,7 @@ func Run(addr string) {
 		addr:          addr,
 		jsonDir:       envOr("GALLERY_JSON_DIR", "."),
 		mediaBase:     strings.TrimRight(envOr("GALLERY_MEDIA_BASE", ""), "/"),
+		legacyBase:    legacyBase(),
 		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
 		reactionsFile: envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
 	}
@@ -206,9 +210,10 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		return
 	}
 	render(w, "home.html", pageData{
-		Title:  "首页",
-		Home:   &homeData{Total: len(names), Preview: preview, NamesJSON: template.JS(namesJSON), MediaBase: cfg.mediaBase},
-		HomeJS: homeJS,
+		Title:      "首页",
+		Home:       &homeData{Total: len(names), Preview: preview, NamesJSON: template.JS(namesJSON), MediaBase: cfg.mediaBase},
+		HomeJS:     homeJS,
+		LegacyBase: cfg.legacyBase,
 	})
 }
 
@@ -264,8 +269,9 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		PrevHref:  buildHref(slug, filter, prevCursor),
 		NextHref:  buildHref(slug, filter, nextCursor),
 		RawJSON:   template.JS(raw),
+		LegacyURL: legacyURL(cfg.legacyBase, slug),
 	}
-	render(w, "account.html", pageData{Title: acc.Name, Account: acc, AppJS: appJS})
+	render(w, "account.html", pageData{Title: acc.Name, Account: acc, AppJS: appJS, LegacyBase: cfg.legacyBase})
 }
 
 // ---- reactions ----
@@ -536,6 +542,23 @@ func mediaURL(base, raw string) string {
 		out += "?" + u.RawQuery
 	}
 	return out
+}
+
+// legacyBase 读 GALLERY_LEGACY_BASE：未设置用默认；显式设为空串则隐藏旧版入口。
+func legacyBase() string {
+	v, ok := os.LookupEnv("GALLERY_LEGACY_BASE")
+	if !ok {
+		v = "https://x.4545810.xyz"
+	}
+	return strings.TrimRight(v, "/")
+}
+
+// legacyURL 拼旧版站点链接：{base}/{user}；base 为空则不显示旧版入口。
+func legacyURL(base, slug string) string {
+	if base == "" {
+		return ""
+	}
+	return base + "/" + url.PathEscape(slug)
 }
 
 func safeName(name string) bool {

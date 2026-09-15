@@ -7,8 +7,14 @@
 :root{--bg:#111;--fg:#e6e9ef;--muted:#8b93a7;--card:#1b1f2a;--acc:#7aa2f7}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
-header{padding:16px 20px;border-bottom:1px solid #232838;position:sticky;top:0;background:var(--bg);z-index:2}
+header{padding:14px 20px;border-bottom:1px solid #232838;position:sticky;top:0;background:var(--bg);z-index:2;
+       display:flex;align-items:center;justify-content:space-between;gap:12px}
 header a{color:var(--fg);text-decoration:none;font-weight:600}
+.lgbtn{padding:6px 14px;border-radius:999px;background:var(--card);border:1px solid #2b3244;color:var(--muted);
+       text-decoration:none;font-size:13px;font-weight:500;white-space:nowrap}
+.lgbtn:hover{color:var(--fg);border-color:var(--acc)}
+.modes a.lg{margin-left:auto;color:#e0af68;border-color:#3a3325}
+.modes a.lg:hover{border-color:#e0af68}
 main{padding:20px;max-width:1500px;margin:0 auto}
 h1{font-size:22px;margin:0 0 6px}
 .muted{color:var(--muted)}
@@ -79,7 +85,10 @@ footer{padding:24px;text-align:center;color:var(--muted)}
 {{end}}
 
 {{define "header"}}
-<header><a href="/">Twitter&nbsp;Pic <span class="muted">·</span> Gallery</a></header>
+<header>
+  <a href="/">Twitter&nbsp;Pic <span class="muted">·</span> Gallery</a>
+  {{if .LegacyBase}}<a class="lgbtn" href="{{.LegacyBase}}" rel="noopener" title="切换到旧版界面">🕹 旧版首页</a>{{end}}
+</header>
 {{end}}
 
 {{define "footer"}}

@@ -9,7 +9,17 @@
   if (!grid || !dataEl) return;
 
   let names = [];
-  try { names = JSON.parse(dataEl.textContent) || []; } catch (e) { return; }
+  const tagsMap = new Map(); // username -> tags（后端从 tags.db 合并进 #a-data）
+  try {
+    const raw = JSON.parse(dataEl.textContent) || [];
+    for (const e of raw) {
+      if (typeof e === "string") { names.push(e); continue; }
+      if (e && typeof e === "object" && e.n) {
+        names.push(e.n);
+        if (Array.isArray(e.t) && e.t.length) tagsMap.set(e.n, e.t);
+      }
+    }
+  } catch (e) { return; }
 
   const search = document.getElementById("a-search");
   const shownEl = document.getElementById("a-shown");
@@ -37,12 +47,19 @@
     return raw;
   };
 
+  const tagPills = (n) => {
+    const ts = tagsMap.get(n) || [];
+    if (!ts.length) return "";
+    let h = ts.slice(0, 3).map((t) => '<span class="tg">#' + esc(t) + "</span>").join("");
+    if (ts.length > 3) h += '<span class="tg more">+' + (ts.length - 3) + "</span>";
+    return '<span class="tgs">' + h + "</span>";
+  };
   const cardHTML = (n) => {
     const ini = esc((n[0] || "?").toUpperCase());
     return '<a class="acct" href="/u/' + encodeURIComponent(n) + '" data-n="' + esc(n) + '">' +
       '<span class="bnr-ph" style="--h:' + hueOf(n) + '">' + ini + "</span>" +
       '<span class="arow"><span class="av" style="--h:' + hueOf(n) + '">' + ini + "</span>" +
-      '<span class="col"><span class="at">@' + esc(n) + "</span><span class=\"nk\"></span></span></span></a>";
+      '<span class="col"><span class="at">@' + esc(n) + "</span><span class=\"nk\"></span></span></span>" + tagPills(n) + "</a>";
   };
 
   // ---- 预览绘制 ----
@@ -214,14 +231,39 @@
     if (emptyEl) emptyEl.hidden = view.length > 0;
   }
 
-  reset(names); // 接管 SSR 预览重绘
+  // ---- 标签分类（tag 数据由后端 tags.db 合并进 #a-data）----
+  const tagbar = document.getElementById("a-tags");
+  const UNTAGGED = "__untagged__";
+  let activeTag = new URLSearchParams(location.search).get("tag") || "";
+  let tagsExpanded = false;
+  const hasTag = (n, t) => (t === UNTAGGED ? !tagsMap.has(n) : (tagsMap.get(n) || []).indexOf(t) >= 0);
 
-  let timer = 0;
-  search && search.addEventListener("input", () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      const q = search.value.trim().toLowerCase();
-      if (!q) return reset(names);
+  function tagCloud() {
+    const cnt = new Map();
+    for (const n of names) {
+      const ts = tagsMap.get(n);
+      if (!ts || !ts.length) { cnt.set(UNTAGGED, (cnt.get(UNTAGGED) || 0) + 1); continue; }
+      for (const t of ts) cnt.set(t, (cnt.get(t) || 0) + 1);
+    }
+    return [...cnt.entries()].sort((x, y) => y[1] - x[1] || (x[0] === UNTAGGED ? 1 : y[0] === UNTAGGED ? -1 : (x[0] < y[0] ? -1 : 1)));
+  }
+
+  function renderTagBar() {
+    if (!tagbar) return;
+    const cloud = tagCloud();
+    if (!cloud.length) { tagbar.hidden = true; return; }
+    const shown = tagsExpanded || cloud.length <= 37 ? cloud : cloud.slice(0, 36);
+    let html = shown.map((x) => '<button class="tag' + (x[0] === activeTag ? " active" : "") + '" type="button" data-t="' +
+      esc(x[0]) + '">' + (x[0] === UNTAGGED ? "未分类" : "#" + esc(x[0])) + " <span>" + x[1] + "</span></button>").join("");
+    if (cloud.length > 36) html += '<button class="tag" type="button" data-expand="1">' + (tagsExpanded ? "收起 ↑" : "更多标签 ↓ " + cloud.length) + "</button>";
+    tagbar.innerHTML = html;
+    tagbar.hidden = false;
+  }
+
+  function applyFilter() {
+    let list = names;
+    const q = ((search && search.value.trim().toLowerCase()) || "");
+    if (q) {
       const pre = [], sub = [];
       for (const n of names) {
         const l = n.toLowerCase();
@@ -229,10 +271,35 @@
         else if (l.includes(q)) sub.push(n);
         if (pre.length >= 2000) break;
       }
-      reset(pre.concat(sub));
-    }, 120);
+      list = pre.concat(sub);
+    }
+    if (activeTag) list = list.filter((n) => hasTag(n, activeTag));
+    reset(list);
+  }
+
+  renderTagBar();
+  applyFilter(); // 接管 SSR 预览
+
+  let timer = 0;
+  search && search.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(applyFilter, 120);
   });
 
+  tagbar && tagbar.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    if (btn.dataset.expand !== undefined) { tagsExpanded = !tagsExpanded; return renderTagBar(); }
+    const t = btn.dataset.t || "";
+    activeTag = activeTag === t ? "" : t;
+    renderTagBar();
+    applyFilter();
+    try {
+      const url = new URL(location.href);
+      if (activeTag) url.searchParams.set("tag", activeTag); else url.searchParams.delete("tag");
+      history.replaceState(null, "", url);
+    } catch (err) { /* file:// 下忽略 */ }
+  });
   moreBtn && moreBtn.addEventListener("click", renderChunk);
 
   randBtn && randBtn.addEventListener("click", () => {

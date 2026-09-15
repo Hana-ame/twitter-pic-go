@@ -6,6 +6,7 @@ package gallery
 
 import (
 	"compress/gzip"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "modernc.org/sqlite" // 纯 Go 驱动，CGO_ENABLED=0 可用
 )
 
 //go:embed templates/*.html
@@ -29,7 +32,11 @@ var tmplFS embed.FS
 //go:embed static
 var staticFS embed.FS
 
-var templates = template.Must(template.New("").ParseFS(tmplFS, "templates/*.html"))
+var templates = template.Must(
+	template.New("").Funcs(template.FuncMap{
+		"sub": func(a, b int) int { return a - b },
+	}).ParseFS(tmplFS, "templates/*.html"),
+)
 
 // appJS 内联进页面，保证导出的 HTML 单文件可用（不依赖 /static/app.js）。
 var appJS = template.JS(mustReadStatic("app.js"))
@@ -102,13 +109,27 @@ type acctItem struct {
 	Name    string
 	Initial string
 	Hue     int
+	Tags    []string
+}
+
+// acctEntry 是嵌入 #a-data 给前端的条目：账号名 + 标签（标签由后端从 tags.db 读出）。
+type acctEntry struct {
+	Name string   `json:"n"`
+	Tags []string `json:"t,omitempty"`
+}
+
+type tagCount struct {
+	Tag   string
+	Count int
 }
 
 type homeData struct {
 	Total     int
 	Preview   []acctItem
-	NamesJSON template.JS
-	MediaBase string // 前端据此重写 pbs.twimg.com 图片域名（同 mediaURL 规则）
+	Cloud     []tagCount // 标签云（SSR 前 36 个；前端拿全量数据重绘）
+	Untagged  int
+	NamesJSON template.JS // 实际是 []acctEntry 的 JSON
+	MediaBase string      // 前端据此重写 pbs.twimg.com 图片域名（同 mediaURL 规则）
 }
 
 type pageData struct {
@@ -136,6 +157,8 @@ type config struct {
 	legacyBase    string
 	pageSize      int
 	reactionsFile string
+	tagsDB        string
+	tags          map[string][]string // username -> tags（按权重降序），启动时一次性加载
 }
 
 func Run(addr string) {
@@ -149,10 +172,12 @@ func Run(addr string) {
 		legacyBase:    legacyBase(),
 		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
 		reactionsFile: envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
+		tagsDB:        envOr("GALLERY_TAGS_DB", "./tags.db"),
 	}
 	if cfg.pageSize <= 0 {
 		cfg.pageSize = defaultPageSize
 	}
+	cfg.tags = loadAccountTags(cfg.tagsDB)
 
 	reactions := newReactionStore(cfg.reactionsFile)
 
@@ -196,22 +221,52 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		return
 	}
 	const previewN = 120
-	preview := make([]acctItem, 0, previewN)
-	for _, n := range names[:min(len(names), previewN)] {
-		initial := "?"
-		if n != "" {
-			initial = strings.ToUpper(n[:1])
+	// 后端合并 tags：全量条目 [{n,t}] 嵌入页面，标签云按现有账号统计。
+	entries := make([]acctEntry, 0, len(names))
+	cloud := map[string]int{}
+	untagged := 0
+	for _, n := range names {
+		t := cfg.tags[n]
+		entries = append(entries, acctEntry{Name: n, Tags: t})
+		if len(t) == 0 {
+			untagged++
 		}
-		preview = append(preview, acctItem{Name: n, Initial: initial, Hue: hueOf(n)})
+		for _, x := range t {
+			cloud[x]++
+		}
 	}
-	namesJSON, err := json.Marshal(names)
+	top := make([]tagCount, 0, len(cloud))
+	for tag, c := range cloud {
+		top = append(top, tagCount{Tag: tag, Count: c})
+	}
+	sort.Slice(top, func(i, j int) bool {
+		if top[i].Count != top[j].Count {
+			return top[i].Count > top[j].Count
+		}
+		return top[i].Tag < top[j].Tag
+	})
+	if len(top) > 36 {
+		top = top[:36]
+	}
+	preview := make([]acctItem, 0, previewN)
+	for _, e := range entries[:min(len(entries), previewN)] {
+		initial := "?"
+		if e.Name != "" {
+			initial = strings.ToUpper(e.Name[:1])
+		}
+		preview = append(preview, acctItem{Name: e.Name, Initial: initial, Hue: hueOf(e.Name), Tags: e.Tags})
+	}
+	dataJSON, err := json.Marshal(entries)
 	if err != nil {
-		http.Error(w, "marshal names: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "marshal entries: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	render(w, "home.html", pageData{
 		Title:      "首页",
-		Home:       &homeData{Total: len(names), Preview: preview, NamesJSON: template.JS(namesJSON), MediaBase: cfg.mediaBase},
+		Home: &homeData{
+			Total: len(names), Preview: preview, Cloud: top, Untagged: untagged,
+			NamesJSON: template.JS(dataJSON), MediaBase: cfg.mediaBase,
+		},
 		HomeJS:     homeJS,
 		LegacyBase: cfg.legacyBase,
 	})
@@ -508,6 +563,47 @@ func listAccounts(dir string) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// loadAccountTags 从 tags.db（account_tags 表，见 scripts/build_tags_db.py）一次性读入内存。
+// 两万行级别常驻也只有几百 KB；文件缺失/损坏只降级为「无标签」，不影响站点。
+func loadAccountTags(path string) map[string][]string {
+	if path == "" {
+		return nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		log.Printf("gallery: tags db %s not used: %v", path, err)
+		return nil
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Clean(path)+"?mode=ro&_pragma=busy_timeout(3000)")
+	if err != nil {
+		log.Printf("gallery: open tags db: %v", err)
+		return nil
+	}
+	defer db.Close()
+	rows, err := db.Query("SELECT username, tag FROM account_tags ORDER BY username, weight DESC, tag")
+	if err != nil {
+		log.Printf("gallery: query account_tags: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var u, t string
+		if err := rows.Scan(&u, &t); err != nil {
+			continue
+		}
+		out[u] = append(out[u], t)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("gallery: tags scan: %v", err)
+	}
+	np := 0
+	for _, v := range out {
+		np += len(v)
+	}
+	log.Printf("gallery: loaded tags for %d accounts (%d pairs)", len(out), np)
+	return out
 }
 
 func loadDocument(fp string) (document, error) {

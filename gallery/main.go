@@ -193,6 +193,7 @@ func Run(addr string) {
 		http.ServeFile(w, r, filepath.Join(cfg.jsonDir, acc+".json.gz"))
 	})
 	mux.HandleFunc("GET /api/reactions", func(w http.ResponseWriter, r *http.Request) { handleGetReactions(w, r, reactions) })
+	mux.HandleFunc("GET /api/tag/{tag}", func(w http.ResponseWriter, r *http.Request) { handleTagUsers(w, r, cfg) })
 	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions) })
 
 	if sub, err := fs.Sub(staticFS, "static"); err == nil {
@@ -210,6 +211,34 @@ func Run(addr string) {
 	if err := srv.ListenAndServe(); err != nil {
 		log.Printf("gallery: %v", err)
 	}
+}
+
+// handleTagUsers GET /api/tag/{tag}?limit= — tag 反查账号（权重降序）。
+// 只返回磁盘上真实存在 json.gz 的账号，避免给出死链；tags.db 缺失时返回空列表。
+func handleTagUsers(w http.ResponseWriter, r *http.Request, cfg config) {
+	tag := strings.TrimSpace(r.PathValue("tag"))
+	if tag == "" || len(tag) > 64 {
+		http.Error(w, "bad tag", http.StatusBadRequest)
+		return
+	}
+	limit := 2000
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = min(n, 50000)
+		}
+	}
+	names, err := listAccounts(cfg.jsonDir)
+	if err != nil {
+		http.Error(w, "read json dir: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	exist := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		exist[n] = struct{}{}
+	}
+	users := cfg.tags.usersForTag(tag, exist, limit)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	json.NewEncoder(w).Encode(map[string]any{"tag": tag, "count": len(users), "users": users})
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
@@ -594,6 +623,41 @@ func openTagStore(path string) *tagStore {
 	}
 	log.Printf("gallery: tags db ready (cloud cached: %d tags)", len(st.cloud))
 	return st
+}
+
+// usersForTag 反查：tag -> usernames（权重降序，走 idx_account_tags_tag 索引）。
+// exist 非 nil 时只保留其中存在的账号。注意是**边扫边滤**：不能先 LIMIT 再过滤，
+// 否则磁盘上存在但权重排名靠后的账号会被截断丢掉。攒满 limit 即提前停。
+func (st *tagStore) usersForTag(tag string, exist map[string]struct{}, limit int) []string {
+	if st == nil || tag == "" || limit <= 0 {
+		return nil
+	}
+	rows, err := st.db.Query("SELECT username FROM account_tags WHERE tag = ? ORDER BY weight DESC, username", tag)
+	if err != nil {
+		log.Printf("gallery: usersForTag %q: %v", tag, err)
+		return nil
+	}
+	defer rows.Close()
+	out := make([]string, 0, min(limit, 512))
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			continue
+		}
+		if exist != nil {
+			if _, ok := exist[u]; !ok {
+				continue
+			}
+		}
+		out = append(out, u)
+		if len(out) >= limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("gallery: usersForTag scan: %v", err)
+	}
+	return out
 }
 
 // tagsFor 按 username 分块查询标签，权重降序。db 不可用返回空 map（调用方按无标签处理）。

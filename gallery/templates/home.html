@@ -23,7 +23,7 @@
   {{with .Home}}
   <div class="agrid" id="a-grid" data-base="{{.MediaBase}}">
     {{range .Preview}}
-    <a class="acct" href="/u/{{.Name}}" data-n="{{.Name}}"><span class="bnr-ph" style="--h:{{.Hue}}">{{.Initial}}</span><span class="arow"><span class="av" style="--h:{{.Hue}}">{{.Initial}}</span><span class="col"><span class="at">@{{.Name}}</span><span class="nk"></span></span></span><span class="tgs">{{range $i, $t := .Tags}}{{if lt $i 3}}<span class="tg">#{{$t}}</span>{{end}}{{end}}{{if gt (len .Tags) 3}}<span class="tg more">+{{sub (len .Tags) 3}}</span>{{end}}</span></a>
+    <a class="acct" href="/u/{{.Name}}" data-n="{{.Name}}"><span class="bnr-ph" style="--h:{{.Hue}}">{{.Initial}}</span><span class="arow"><span class="av" style="--h:{{.Hue}}">{{.Initial}}</span><span class="col"><span class="at">@{{.Name}}</span><span class="nk"></span></span></span><span class="tgs">{{range .Tags}}<span class="tg">#{{.}}</span>{{end}}</span></a>
     {{end}}
   </div>
   <script id="a-data" type="application/json">{{.NamesJSON}}</script>

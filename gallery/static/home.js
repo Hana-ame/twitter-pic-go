@@ -52,11 +52,15 @@
     return raw;
   };
 
+  // 卡片标签**全部显示**：不截断、不折 +N。
+  // 顺序与条数都不在前端二次加工：后端 ForUsers 的 SQL 已经是
+  // `WHERE weight > 0 ... ORDER BY username, weight DESC, tag`（tags/tags.go），
+  // 前端按数组原样渲染即为「只含正分、权重降序、同分按标签名」。
+  // 注意 SSR 模板 templates/home.html 里是同一份逻辑的另一半，两处必须一起改。
   const tagPills = (n) => {
     const ts = tagsMap.get(n) || [];
     if (!ts.length) return "";
-    let h = ts.slice(0, 3).map((t) => '<span class="tg">#' + esc(t) + "</span>").join("");
-    if (ts.length > 3) h += '<span class="tg more">+' + (ts.length - 3) + "</span>";
+    const h = ts.map((t) => '<span class="tg">#' + esc(t) + "</span>").join("");
     return '<span class="tgs">' + h + "</span>";
   };
   const cardHTML = (n) => {

@@ -176,13 +176,22 @@
     if (n > 0) { aTags[tag] = n; } else { delete aTags[tag]; }
   }
   function escT(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  // 与 twitter API 同口径：单次写请求对单标签最多贡献 ±1（服务端同幅限幅）。
+  // 反向切换（本地票 +1 到 -1，净差 ±2）拆成两笔同向 ±1；同向增量可交换，到达顺序无关。
   function postATag(tag, d) {
-    fetch('/api/account-tag', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: slug, tag: tag, d: d })
-    }).then(function (r) { return r.json(); })
-      .then(function (j) { if (j && j.tags) { aTags = j.tags; renderATags(); } })
-      .catch(function () {});
+    var steps = d >= 2 ? [1, 1] : d <= -2 ? [-1, -1] : (d ? [d] : []);
+    var i = 0;
+    (function step() {
+      if (i >= steps.length) return;
+      var dd = steps[i++];
+      fetch('/api/account-tag', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: slug, tag: tag, d: dd })
+      }).then(function (r) { return r.json(); })
+        // 串行：等上一笔返回再发下一笔，保证末次渲染用的是最新权重
+        .then(function (j) { if (j && j.tags) { aTags = j.tags; renderATags(); } step(); })
+        .catch(function () { step(); });
+    })();
   }
   function keyOf(i) { return slides[i] ? slides[i].url : ''; }
 
@@ -244,7 +253,7 @@
           var t = btn.getAttribute('data-t');
           var dir = parseInt(btn.getAttribute('data-d'), 10) || 1;
           var cur = myATagVote(t);
-          // 该方向已投 -> 取消（0）；否则投到该方向（0/-1 转 +1，0/+1 转 -1）
+          // 该方向已投 -> 取消（0）；否则投到该方向。反向切换净差 ±2，由 postATag拆两笔同向 ±1。
           var next = (dir === 1) ? (cur === 1 ? 0 : 1) : (cur === -1 ? 0 : -1);
           var delta = next - cur;
           if (!delta) return;

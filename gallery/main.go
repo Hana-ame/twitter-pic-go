@@ -13,9 +13,9 @@ import (
 	"html/template"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Hana-ame/twitter-pic-go/limit"
 	"github.com/Hana-ame/twitter-pic-go/tags"
 	_ "modernc.org/sqlite" // 纯 Go 驱动，CGO_ENABLED=0 可用
 )
@@ -157,10 +158,11 @@ type config struct {
 	legacyBase    string
 	pageSize      int
 	reactionsFile string
-	db            *sql.DB    // 单一 twitter.db：标签唯一真源（与 twitter API 同一个库同一张表）
+	db            *sql.DB // 单一 twitter.db：标签唯一真源（与 twitter API 同一个库同一张表）
 	tags          *tags.Store
-	cloud         []tags.Count // 全局标签云：启动时聚合一次的缓存
-	writable      bool         // 标签库可写（POST 落 account_tags + request_logs）
+	cloud         []tags.Count       // 全局标签云：启动时聚合一次的缓存
+	writable      bool               // 标签库可写（POST 落 account_tags + request_logs）
+	tagLimit      *limit.FastLimiter // 标签写入的 per-IP 配额，与根 API 同一个实现
 }
 
 func Run(addr string) {
@@ -190,6 +192,7 @@ func Run(addr string) {
 		cfg.cloud = store.Cloud(cloudTopN)
 		defer cfg.db.Close()
 	}
+	cfg.tagLimit = limit.NewFastLimiter(envIntOr("GALLERY_TAG_RATE_MAX", tagRateMax))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
@@ -599,6 +602,10 @@ func listAccounts(dir string) ([]string, error) {
 // cloudTopN 是全局标签云的条目上限（首页 SSR 用）。
 const cloudTopN = 36
 
+// tagRateMax 是标签写入的每 IP 每小时配额，默认值与根 API 的
+// limit.NewFastLimiter(25) 对齐——两层现在写同一张表，配额必须同量。
+const tagRateMax = 25
+
 // openTagStore 打开**与 twitter API 同一个** twitter.db，返回 account_tags 的
 // 读写访问器。读写语义全部在 tags 包里，两层共用一份实现。
 //
@@ -765,6 +772,17 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.Error(w, "tags disabled", http.StatusServiceUnavailable)
 		return
 	}
+	// 限流在最前：与根 API 的中间件顺序一致（先拒配额，再解析 body）。
+	// gallery 现在写的是同一张权威表，没有配额就等于开了一个不限速的写入侧门。
+	ip := clientIP(r)
+	if cfg.tagLimit != nil && !cfg.tagLimit.Allow(ip) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"code": 429, "message": "请求过于频繁，请一小时后再试",
+		})
+		return
+	}
 	var req struct {
 		User string `json:"user"`
 		Key  string `json:"key"` // 旧字段名，兼容保留
@@ -787,7 +805,7 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.Error(w, "user and tag required", http.StatusBadRequest)
 		return
 	}
-	if err := cfg.tags.Add(user, map[string]int{tag: d}, clientIP(r), r.UserAgent()); err != nil {
+	if err := cfg.tags.Add(user, map[string]int{tag: d}, ip, r.UserAgent()); err != nil {
 		log.Printf("gallery: POST tag %s %q=%d: %v", user, tag, d, err)
 		http.Error(w, "write failed", http.StatusInternalServerError)
 		return

@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
-"""从 bwh 拉回的 twitter.db 快照构建 gallery 用的 tags.db。
+"""【已停用 · 2026-09-15】从 bwh 拉回的 twitter.db 快照构建独立的 tags.db。
 
-产出两张表：
+标签已收敛为**单一 twitter.db 的 account_tags 表**：gallery 直接读写线上
+twitter.db（env `GALLERY_DB`，默认 `./twitter.db`），与 twitter REST API 共用
+`tags` 包的同一套读写语义。快照/拍平这条管线在代码里已无任何引用，本脚本仅
+留在仓库备查，不要再跑、不要再往机器上推 tags.db。
+
+历史行为（保留说明）：
   account_tags(username, tag, weight)  —— user_tags 的 JSON 拍平（按账号查标签 / 按标签反查账号）
   accounts(username, last_modify)      —— users 的更新时间（首页按 update 从新到旧排序）
-
-用法：
-  # bwh 快照（含 WAL 一致性）：
-  #   sqlite3 /root/twitter/twitter.db "VACUUM INTO '/tmp/twitter_snap.db'"
-  #   scp -P 26275 root@bwh...:/tmp/twitter_snap.db ../../data/twitter.db
-  python3 build_tags_db.py [twitter.db=../../data/twitter.db] [tags.db=../../data/tags.db]
-
-标签来源二选一：twitter.db 里已有规范表 account_tags（服务 2026.09 起
-POST 直接按行写它）则原样拷贝；否则回退旧路径——把 user_tags.tags 的
-JSON 对象 {"tag": weight} 拍平。产物统一为 account_tags(username, tag, weight)。
+时间排序源现在直接读 `users.last_modify`；旧 user_tags JSON 的一次性回填仍由
+服务端启动时的 migrateAccountTags 负责（见 sql_tags.go）。
 """
 import json
 import os

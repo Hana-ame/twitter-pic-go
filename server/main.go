@@ -22,13 +22,14 @@ import (
 func main() {
 	godotenv.Load(".env")
 
-	go twimg.Run(os.Getenv("TWIMG_ADDR"))
-
-	// gallery 作为独立包运行在同一二进制内，单独监听 GALLERY_ADDR（默认 :8090）
-	go gallery.Run(os.Getenv("GALLERY_ADDR"))
-
+	// DB 与表结构先就位：gallery 与 twitter API 共用同一个 twitter.db
+	//（account_tags + request_logs 是标签唯一真源），监听器不能跑在建表之前。
+	//
+	// busy_timeout 必须有：gallery 现在也写这个库（账号标签投票），
+	// 本进程不再是唯一写入者。没有 busy_timeout 时两侧并发写会直接抛
+	// SQLITE_BUSY，把「两层同一真源」变成「谁抢到谁写」。
 	var err error
-	twitter.DB, err = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC")
+	twitter.DB, err = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC&_pragma=busy_timeout(5000)")
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -37,6 +38,12 @@ func main() {
 	if err != nil {
 		log.Println(err)
 	}
+
+	go twimg.Run(os.Getenv("TWIMG_ADDR"))
+
+	// gallery 作为独立包运行在同一二进制内，单独监听 GALLERY_ADDR（默认 :8090）
+	go gallery.Run(os.Getenv("GALLERY_ADDR"))
+
 	err = twitter.RefreshAllRankings()
 	if err != nil {
 		log.Println(err)

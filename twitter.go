@@ -67,6 +67,10 @@ func getSearch(by, search string) ([]User, error) {
 		return getUserListByUsername(search)
 	case "nick":
 		return getUserListByNick(search)
+	case "tag":
+		// tag 查 user：精确匹配 account_tags（不做 LIKE——标签是规范化的键，
+		// 子串匹配会把「女性」命中到「男女性交」这类不同标签上）。
+		return getUserListByTag(search)
 	}
 	// not implemented
 	return nil, nil

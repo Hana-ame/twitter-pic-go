@@ -210,7 +210,9 @@
   function renderATags() {
     if (!aTagsEl) return;
     var show = voteUIShown();
-    var names = Object.keys(aTags);
+    // account_tags 保留负权重（与 twitter API 的 GET 同口径），但站点只显示正分，
+    // 与首页卡片/标签筛选、以及 applyATagLocal 的隐藏规则一致。
+    var names = Object.keys(aTags).filter(function (t) { return aTags[t] > 0; });
     names.sort(function (a, b) { return aTags[b] - aTags[a] || (a < b ? -1 : 1); });
     var html = '';
     for (var i = 0; i < names.length; i++) {

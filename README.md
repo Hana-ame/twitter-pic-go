@@ -10,7 +10,23 @@ Twitter 媒体抓取与图库浏览。
 | 队列处理 | `deamon.py` | 从 pending 文件读取 URL，翻译成抓取命令，排队执行 |
 | Go API | `twitter_handlers.go` | REST API：创建/查询元数据、标签管理、Emoji 投票 |
 | 图库 | `gallery/` | 直接服务 HTML 的图站后端，读取 json.gz 渲染媒体列表 |
+| 标签存储 | `tags/tags.go` | **账号标签的唯一实现**：`account_tags` 读写 + `request_logs` 流水，Go API 与 gallery 共用同一份语义 |
 | twimg 反代 | `twimg/main.go` | 反向代理 pbs.twimg.com 图片 |
+
+## 标签（账号级）的存储
+
+**只有一个库、只有一张表**：`twitter.db` 的 `account_tags(username, tag, weight)`。
+
+- 两层入口共用 `tags` 包：Go API 的 `GET /api/twitter/tags/:username` /
+  `POST /api/twitter/:username`，与 gallery 的 `GET /api/tags?keys=` /
+  `POST /api/tag`（别名 `/api/account-tags`、`/api/account-tag`）。
+- 写语义：`weight` 累加，恰好归零删行，负权重保留；**每次写请求记一行
+  `request_logs`**（username / tags / ip / ua）。
+- 读语义：直接按 `account_tags` 现场聚合，不再读旧的 `user_tags` JSON 大字段，
+  也不再有独立的 `tags.db` 快照或 `account_votes.json` 投票文件。
+- gallery 的库路径由 `GALLERY_DB` 指定，默认 `./twitter.db`——与 Go API 同一个文件。
+- 旧的 `user_tags` 表只作为历史遗留存在，服务端启动时一次性回填进
+  `account_tags`（`migrateAccountTags`），此后不再作为数据源被读取。
 
 ## 媒体来源
 

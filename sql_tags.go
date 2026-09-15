@@ -16,7 +16,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
+
+	"github.com/Hana-ame/twitter-pic-go/tags"
 )
 
 // 分类：
@@ -52,19 +55,11 @@ func CreateTableV2() error {
 	}
 
 	// 3. 创建规范标签表 account_tags：一行一个 (username, tag)。
+	//    DDL 与两层读写统一由 tags 包提供（唯一真源），此处只调它。
 	//    POST 直接按行 upsert 权重，GET 由 userSelectQuery 现场聚合，
 	//    不再读-改-写 JSON 大字段；tag 上建索引供反查（gallery /api/tag 同构）。
-	queryAccountTags := `CREATE TABLE IF NOT EXISTS account_tags (
-        username TEXT NOT NULL,
-        tag      TEXT NOT NULL,
-        weight   INTEGER NOT NULL DEFAULT 1,
-        PRIMARY KEY (username, tag)
-    ) WITHOUT ROWID;`
-	if _, err := DB.Exec(queryAccountTags); err != nil {
-		return fmt.Errorf("创建 account_tags 失败: %v", err)
-	}
-	if _, err := DB.Exec(`CREATE INDEX IF NOT EXISTS idx_account_tags_tag ON account_tags(tag);`); err != nil {
-		return fmt.Errorf("创建 account_tags 标签索引失败: %v", err)
+	if err := tags.EnsureSchema(DB); err != nil {
+		return err
 	}
 
 	// 3b. 旧数据一次性回填：account_tags 为空时从 user_tags 的 JSON 展开。
@@ -72,18 +67,8 @@ func CreateTableV2() error {
 		return err
 	}
 
-	// 4. 创建请求日志表
-	queryLogs := `CREATE TABLE IF NOT EXISTS request_logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-		username TEXT,
-		tags TEXT,
-        ip TEXT,
-        ua TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );`
-	if _, err := DB.Exec(queryLogs); err != nil {
-		return fmt.Errorf("创建 request_logs 失败: %v", err)
-	}
+	// 4. 请求日志表 request_logs 已由 tags.EnsureSchema 建好（DDL 只此一份，
+	//    gallery 先启动也不会漏建）。
 
 	return nil
 
@@ -114,40 +99,64 @@ func migrateAccountTags() error {
 	return nil
 }
 
-// addTag POST 路径：按行 upsert 进 account_tags（不再读-改-写 JSON）。
+// Store 是标签唯一真源的访问器（account_tags 表 + request_logs 流水）。
+// 根 API 与 gallery 走同一套语义与同一个数据源，保证「两边做成一样」。
+func Store() *tags.Store { return tags.New(DB) }
+
+// addTag POST 路径：委托给 tags.Store.Add —— 请求流水照记，
+// 事务内按行 upsert 进 account_tags（不再读-改-写 JSON）。
 // 语义与旧版一致：权重累加，恰好归零则删除该标签行（负权重保留）。
 func addTag(username string, inputMap map[string]int, ip, ua string) error {
-	// 1. 记录请求流水
+	return Store().Add(username, inputMap, ip, ua)
+}
 
-	input, err := json.Marshal(inputMap)
-	if err != nil {
-		return err
-	}
-	_, err = DB.Exec(`INSERT INTO request_logs (username, tags, ip, ua) VALUES (?, ?, ?, ?)`,
-		username, string(input), ip, ua)
-	if err != nil {
-		log.Printf("Warning: 记录日志失败: %v", err)
+// searchLimit 与其他 by 分支（username/nick 都写死 LIMIT 15）保持一致。
+const searchLimit = 15
+
+// getUserListByTag 「tag 查 user」：先走 tags 包的同一条反查路径
+// （account_tags + idx_account_tags_tag，**权重降序**，只取正权重），
+// 再把命中的 username 水合成与其他搜索一致的 []User。
+//
+// 与 username/nick 两个分支的差异（调用方需要知道）：
+//   - 排序按标签权重降序，不是 last_modify DESC；
+//   - 精确匹配标签，不是 LIKE 子串。
+func getUserListByTag(tag string) ([]User, error) {
+	names := Store().UsersForTag(tag, nil, searchLimit)
+	if len(names) == 0 {
+		return []User{}, nil
 	}
 
-	// 2. 事务内逐标签 upsert 累加，最后清扫归零行
-	tx, err := DB.Begin()
-	if err != nil {
-		return err
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(names)), ",")
+	args := make([]any, len(names))
+	for i, n := range names {
+		args[i] = n
 	}
-	defer tx.Rollback()
+	rows, err := DB.Query(userSelectQuery+` WHERE u.status = 'SUCCESS' AND u.username IN (`+ph+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("按标签取用户失败: %v", err)
+	}
+	defer rows.Close()
 
-	for key, delta := range inputMap {
-		if _, err := tx.Exec(`INSERT INTO account_tags (username, tag, weight) VALUES (?, ?, ?)
-			ON CONFLICT (username, tag) DO UPDATE SET weight = weight + excluded.weight`,
-			username, key, delta); err != nil {
-			return fmt.Errorf("更新标签 %s=%d 失败: %v", key, delta, err)
+	byName := make(map[string]User, len(names))
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		byName[u.Username] = u
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("按标签取用户扫描失败: %v", err)
+	}
+
+	// 按反查回来的权重顺序输出（SQL 的 IN 不保证顺序）。
+	out := make([]User, 0, len(names))
+	for _, n := range names {
+		if u, ok := byName[n]; ok {
+			out = append(out, u)
 		}
 	}
-	if _, err := tx.Exec(`DELETE FROM account_tags WHERE username = ? AND weight = 0`, username); err != nil {
-		return fmt.Errorf("清扫归零标签失败: %v", err)
-	}
-
-	return tx.Commit()
+	return out, nil
 }
 
 // Helper function to scan rows into a User struct

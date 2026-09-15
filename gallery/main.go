@@ -157,8 +157,7 @@ type config struct {
 	legacyBase    string
 	pageSize      int
 	reactionsFile string
-	tagsDB        string
-	tags          map[string][]string // username -> tags（按权重降序），启动时一次性加载
+	tags          *tagStore
 }
 
 func Run(addr string) {
@@ -172,12 +171,11 @@ func Run(addr string) {
 		legacyBase:    legacyBase(),
 		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
 		reactionsFile: envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
-		tagsDB:        envOr("GALLERY_TAGS_DB", "./tags.db"),
 	}
 	if cfg.pageSize <= 0 {
 		cfg.pageSize = defaultPageSize
 	}
-	cfg.tags = loadAccountTags(cfg.tagsDB)
+	cfg.tags = openTagStore(envOr("GALLERY_TAGS_DB", "./tags.db"))
 
 	reactions := newReactionStore(cfg.reactionsFile)
 
@@ -221,32 +219,20 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		return
 	}
 	const previewN = 120
-	// 后端合并 tags：全量条目 [{n,t}] 嵌入页面，标签云按现有账号统计。
+	// 账号级 tags 按 username 现查（PK 前缀索引，分块 IN）；标签云用启动时聚合一次的缓存。
+	tagged := cfg.tags.tagsFor(names)
 	entries := make([]acctEntry, 0, len(names))
-	cloud := map[string]int{}
 	untagged := 0
 	for _, n := range names {
-		t := cfg.tags[n]
+		t := tagged[n]
 		entries = append(entries, acctEntry{Name: n, Tags: t})
 		if len(t) == 0 {
 			untagged++
 		}
-		for _, x := range t {
-			cloud[x]++
-		}
 	}
-	top := make([]tagCount, 0, len(cloud))
-	for tag, c := range cloud {
-		top = append(top, tagCount{Tag: tag, Count: c})
-	}
-	sort.Slice(top, func(i, j int) bool {
-		if top[i].Count != top[j].Count {
-			return top[i].Count > top[j].Count
-		}
-		return top[i].Tag < top[j].Tag
-	})
-	if len(top) > 36 {
-		top = top[:36]
+	var top []tagCount
+	if cfg.tags != nil {
+		top = cfg.tags.cloud // 全局标签云：启动时聚合一次的缓存；db 不可用时为 nil（前端自行从 a-data 重算）
 	}
 	preview := make([]acctItem, 0, previewN)
 	for _, e := range entries[:min(len(entries), previewN)] {
@@ -565,9 +551,16 @@ func listAccounts(dir string) ([]string, error) {
 	return names, nil
 }
 
-// loadAccountTags 从 tags.db（account_tags 表，见 scripts/build_tags_db.py）一次性读入内存。
-// 两万行级别常驻也只有几百 KB；文件缺失/损坏只降级为「无标签」，不影响站点。
-func loadAccountTags(path string) map[string][]string {
+// tagStore 是 tags.db（account_tags 表，见 scripts/build_tags_db.py）的只读访问器。
+// 设计：不把全表常驻内存——账号级标签按 username 现查（WITHOUT ROWID 主键
+// (username,tag) 前缀命中，分块 IN 减少往返）；唯一的缓存是全局标签云，
+// 启动时 GROUP BY 聚合一次，之后不再算。文件缺失/损坏只降级为「无标签」。
+type tagStore struct {
+	db    *sql.DB
+	cloud []tagCount // 全局 top36，仅启动时算一次
+}
+
+func openTagStore(path string) *tagStore {
 	if path == "" {
 		return nil
 	}
@@ -580,29 +573,59 @@ func loadAccountTags(path string) map[string][]string {
 		log.Printf("gallery: open tags db: %v", err)
 		return nil
 	}
-	defer db.Close()
-	rows, err := db.Query("SELECT username, tag FROM account_tags ORDER BY username, weight DESC, tag")
+	st := &tagStore{db: db}
+	rows, err := db.Query("SELECT tag, COUNT(DISTINCT username) FROM account_tags GROUP BY tag ORDER BY 2 DESC, tag LIMIT 36")
 	if err != nil {
-		log.Printf("gallery: query account_tags: %v", err)
+		log.Printf("gallery: tags cloud query failed (degraded to no tags): %v", err)
+		db.Close()
 		return nil
 	}
 	defer rows.Close()
-	out := map[string][]string{}
 	for rows.Next() {
-		var u, t string
-		if err := rows.Scan(&u, &t); err != nil {
+		var tag string
+		var cnt int
+		if err := rows.Scan(&tag, &cnt); err != nil {
 			continue
 		}
-		out[u] = append(out[u], t)
+		st.cloud = append(st.cloud, tagCount{Tag: tag, Count: cnt})
 	}
 	if err := rows.Err(); err != nil {
-		log.Printf("gallery: tags scan: %v", err)
+		log.Printf("gallery: tags cloud scan: %v", err)
 	}
-	np := 0
-	for _, v := range out {
-		np += len(v)
+	log.Printf("gallery: tags db ready (cloud cached: %d tags)", len(st.cloud))
+	return st
+}
+
+// tagsFor 按 username 分块查询标签，权重降序。db 不可用返回空 map（调用方按无标签处理）。
+func (st *tagStore) tagsFor(names []string) map[string][]string {
+	out := map[string][]string{}
+	if st == nil || len(names) == 0 {
+		return out
 	}
-	log.Printf("gallery: loaded tags for %d accounts (%d pairs)", len(out), np)
+	const chunk = 400 // 远低于 SQLite 变量数上限
+	for i := 0; i < len(names); i += chunk {
+		batch := names[i:min(i+chunk, len(names))]
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, len(batch))
+		for k, n := range batch {
+			args[k] = n
+		}
+		rows, err := st.db.Query(
+			"SELECT username, tag FROM account_tags WHERE username IN ("+ph+") ORDER BY username, weight DESC, tag",
+			args...)
+		if err != nil {
+			log.Printf("gallery: tagsFor chunk@%d failed: %v", i, err)
+			return out
+		}
+		for rows.Next() {
+			var u, t string
+			if err := rows.Scan(&u, &t); err != nil {
+				continue
+			}
+			out[u] = append(out[u], t)
+		}
+		rows.Close()
+	}
 	return out
 }
 

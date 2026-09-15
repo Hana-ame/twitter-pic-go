@@ -11,6 +11,7 @@ Twitter 媒体抓取与图库浏览。
 | Go API | `twitter_handlers.go` | REST API：创建/查询元数据、标签管理、Emoji 投票 |
 | 图库 | `gallery/` | 直接服务 HTML 的图站后端，读取 json.gz 渲染媒体列表 |
 | 标签存储 | `tags/tags.go` | **账号标签的唯一实现**：`account_tags` 读写 + `request_logs` 流水，Go API 与 gallery 共用同一份语义 |
+| IP 封禁 | `ipban/ipban.go` | **封禁的唯一实现**：bans.txt 编译 trie + 链上任一命中 + 热重载 + 统一 IP 口径，Go API 与 gallery 共用同一个单例 |
 | twimg 反代 | `twimg/main.go` | 反向代理 pbs.twimg.com 图片 |
 
 ## 标签（账号级）的存储
@@ -36,6 +37,30 @@ Twitter 媒体抓取与图库浏览。
 - gallery 的库路径由 `GALLERY_DB` 指定，默认 `./twitter.db`——与 Go API 同一个文件。
 - 旧的 `user_tags` 表只作为历史遗留存在，服务端启动时一次性回填进
   `account_tags`（`migrateAccountTags`），此后不再作为数据源被读取。
+
+## IP 封禁
+
+**只有一个实现、一个实例**：`ipban/` 包（只依赖 `net/http` + `net/netip` + `go-iptrie`，
+不吃 gin）。根 API 的 `StrictIPBanMiddleware`（`banManager.go`）与 gallery 的
+`handlePostAccountTag` 各自薄薄包一层，调同一个 `ipban.Shared()`。
+
+- **两条 IP 口径，别混用**：
+  - `ipban.Chain(r)` / `Manager.Decide`：**封禁判定**。RemoteAddr host + XFF **全部**条目，
+    **任一命中即封**。只看 XFF 首项会被 `X-Forwarded-For: <好人IP>, <被封IP>` 绕过。
+  - `ipban.Principal(r)`：**「这个请求是谁」**，用于限流分桶与 `request_logs.ip`。
+    按 `TRUSTED_PROXY_HOPS`（默认 1）从 XFF 右往左数；无 XFF 退化 RemoteAddr。
+    原先根 API 记整个 XFF 头串、gallery 记首项，两层流水根本对不上，现统一。
+- **同一份实例**：`Shared()` 用 `sync.Once` 给出进程级单例，热重载协程（`BAN_RELOAD_MINUTES`
+  默认 10 分钟）也只挂这一个。两份内存副本各自 reload 会出现「API 侧已封、gallery 侧没封」。
+- 清单路径 `BANS_FILE`（默认 `bans.txt`）；文件缺失=空表放行（封禁清单丢了不该变成全站 403）；
+  非法行跳过并告警，不因一行脏数据丢掉整张表。
+- 403 响应体统一为 `ipban.Denied{error, reason, ip}`，两层逐字相同。
+
+⚠️ **部署前提（待验证）**：`Principal` 的正确性要求前置 nginx **追加**而非覆写
+`X-Forwarded-For`；gin 侧从未调用 `SetTrustedProxies`（全仓无命中，默认信任所有代理），
+所以 `TRUSTED_PROXY_HOPS` 配错时 25/IP/h 配额仍可被伪造 XFF 换桶绕过——封禁不受影响
+（它看整条链）。见 `ipban.Principal` 的 TODO。反向的代价是「链上任一命中」允许攻击者
+把别人的 IP 塞进 XFF 来陷害其被封，这是既有严格策略的固有权衡。
 
 ## 媒体来源
 

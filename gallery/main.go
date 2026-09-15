@@ -13,7 +13,6 @@ import (
 	"html/template"
 	"io/fs"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Hana-ame/twitter-pic-go/ipban"
 	"github.com/Hana-ame/twitter-pic-go/limit"
 	"github.com/Hana-ame/twitter-pic-go/tags"
 	_ "modernc.org/sqlite" // 纯 Go 驱动，CGO_ENABLED=0 可用
@@ -163,6 +163,7 @@ type config struct {
 	cloud         []tags.Count       // 全局标签云：启动时聚合一次的缓存
 	writable      bool               // 标签库可写（POST 落 account_tags + request_logs）
 	tagLimit      *limit.FastLimiter // 标签写入的 per-IP 配额，与根 API 同一个实现
+	bans          *ipban.Manager     // IP 封禁：与根 API 同一个进程级单例（同一份 bans.txt）
 }
 
 func Run(addr string) {
@@ -193,6 +194,9 @@ func Run(addr string) {
 		defer cfg.db.Close()
 	}
 	cfg.tagLimit = limit.NewFastLimiter(envIntOr("GALLERY_TAG_RATE_MAX", tagRateMax))
+	// 封禁必须与根 API 共用进程级单例：两份内存副本各自 reload 会出现
+	// 「API 侧已封、gallery 侧还没封」的窗口。热重载协程也只在 Shared() 里挂一次。
+	cfg.bans = ipban.Shared()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
@@ -767,14 +771,24 @@ func handleGetAccountTags(w http.ResponseWriter, r *http.Request, cfg config) {
 // handlePostAccountTag POST /api/tag · POST /api/account-tag
 // body {user|key, tag, d}：d 归一到 ±1（与根 API 的 POST 归一化一致），
 // 累加写进 account_tags，并照记一条 request_logs 流水。
+//
+// 守卫顺序（与根 API 的中间件链同构）：
+// 封禁 403 → 库不可写 503 → 配额 429 → 入参 400 → 写失败 500 → 200。
+// 封禁放最前：被封 IP 不该消耗自己的配额，也不该靠状态码差异探出
+// 「标签功能开没开」；且它在 Add 之前，所以既不写库也不写 request_logs。
 func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
+	if ip, banned := cfg.bans.Decide(r); banned {
+		ipban.WriteDenied(w, ip)
+		return
+	}
 	if cfg.tags == nil || !cfg.writable {
 		http.Error(w, "tags disabled", http.StatusServiceUnavailable)
 		return
 	}
-	// 限流在最前：与根 API 的中间件顺序一致（先拒配额，再解析 body）。
-	// gallery 现在写的是同一张权威表，没有配额就等于开了一个不限速的写入侧门。
-	ip := clientIP(r)
+	// IP 口径统一走 ipban.Principal（按可信跳数取）：限流分桶、request_logs.ip、
+	// 根 API 三处同一个值。原先这里是「XFF 首项」，既能被
+	// `X-Forwarded-For: <好人IP>, <被封IP>` 绕过封禁，也和流水里的归属对不上。
+	ip := ipban.Principal(r)
 	if cfg.tagLimit != nil && !cfg.tagLimit.Allow(ip) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -811,20 +825,4 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		return
 	}
 	writeJSON(w, map[string]any{"user": user, "tags": cfg.tags.Weights(user)})
-}
-
-// clientIP 取 XFF 首个地址（根 API 记 request_logs 用的是同一个头），退化到 RemoteAddr。
-func clientIP(r *http.Request) string {
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		if i := strings.IndexByte(v, ','); i >= 0 {
-			v = v[:i]
-		}
-		if ip := strings.TrimSpace(v); ip != "" {
-			return ip
-		}
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

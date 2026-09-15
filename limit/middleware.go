@@ -3,14 +3,20 @@ package limit
 import (
 	"net/http"
 
+	"github.com/Hana-ame/twitter-pic-go/ipban"
 	"github.com/gin-gonic/gin"
 )
 
-// RateLimitMiddleware 包装 FastLimiter 为 Gin 中间件
+// RateLimitMiddleware 包装 FastLimiter 为 Gin 中间件。
+//
+// 分桶键用 ipban.Principal 而不是 gin 的 c.ClientIP()：gin 侧从未调用
+// SetTrustedProxies（默认信任所有代理），ClientIP 直接吃客户端自带的
+// X-Forwarded-For 首项——伪造一个头就能无限换桶，25/IP/h 等于没配。
+// Principal 按可信跳数从右往左取，与 gallery 侧、与 request_logs 记的 IP 同一口径。
 func RateLimitMiddleware(l *FastLimiter) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 1. 获取客户端 IP (Gin 会自动处理 X-Forwarded-For 等头部)
-		ip := c.ClientIP()
+		// 1. 取「这个请求是谁」（统一口径，见 ipban.Principal）
+		ip := ipban.Principal(c.Request)
 
 		// 2. 检查是否允许访问
 		if !l.Allow(ip) {

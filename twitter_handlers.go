@@ -12,9 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Hana-ame/twitter-pic-go/Tools/ginkit"
+	"github.com/Hana-ame/twitter-pic-go/ipban"
 	"github.com/Hana-ame/twitter-pic-go/limit"
 	"github.com/gin-gonic/gin"
 )
@@ -38,7 +38,9 @@ func CreateMetaData(c *gin.Context) {
 	// Twitter 用户元数据远小于此。
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 
-	ip := c.GetHeader(ginkit.XForwardedFor)
+	// 统一 IP 口径：流水里记的是「这个请求是谁」（按可信跳数取），
+	// 不再记整个 XFF 头串——原先两层各记各的，反查同 IP 关联账号时对不上。
+	ip := ipban.Principal(c.Request)
 	agent := c.Request.UserAgent()
 
 	// do_not_tag flag is not exist.
@@ -351,16 +353,11 @@ func AddToGroup(g *gin.RouterGroup) {
 
 	limiter := limit.NewFastLimiter(25)
 
-	banFile := "bans.txt"
-	banMgr := NewBanManagerFromFile(banFile)
-	// Update list every 10 minute
-	go func() {
-		for range time.Tick(10 * time.Minute) {
-			_ = banMgr.ReloadFromFile(banFile)
-		}
-	}()
+	// 封禁走 ipban 进程级单例：根 API 与 gallery 必须是同一份内存副本、
+	// 同一个热重载协程（协程由 Shared() 内部挂，这里不再自己起，
+	// 否则两份各自 reload 会出现「一边已封一边没封」的窗口）。
+	banMgr := ipban.Shared()
 
-	// g.Use(StrictIPBanMiddleware(banMgr))
 	g.POST("/:username", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), limit.GlobalRateLimitMiddleware(), CreateMetaData)
 	g.GET("/:fn", GetMetaData)
 	g.GET("/tags/:username", GetTags)

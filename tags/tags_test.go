@@ -2,13 +2,14 @@ package tags
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "tags.db"))
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "tags.db")+"?_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,16 +24,41 @@ func newTestStore(t *testing.T) *Store {
 	return New(db)
 }
 
-// TestAddSemantics 钉住两层的写语义：累加、恰好归零删行、负权重保留。
-func TestAddSemantics(t *testing.T) {
+// seedWeights 造"历史底数"：绕过写路径直接插 account_tags 权重，再快照底数。
+// 这是升级后旧数据的真实形状（权重是票系统之前攒下来的），读路径用例只关心
+// 最终权重值，不该依赖投票过程——过程由 votes_test.go 钉。
+func seedWeights(t *testing.T, s *Store, user string, w map[string]int) {
+	t.Helper()
+	for tag, v := range w {
+		if _, err := s.db.Exec(`INSERT OR REPLACE INTO account_tags (username, tag, weight) VALUES (?, ?, ?)`,
+			user, tag, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := BackfillVoteBase(s.db); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// voteN 从 n 个不同 IP 各投 target 票，等价于"贡献 n×target 的权重增量"。
+func voteN(t *testing.T, s *Store, user, tag string, n int, target int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		if err := s.CastVotes(user, fmt.Sprintf("10.1.%d.%d", n, i), map[string]int{tag: target}, "ua"); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestVoteKeepsLegacyRollupSemantics 钉住滚动值的三条既有语义：
+// 多个 IP 叠加、恰好归零删行、负权重保留。
+func TestVoteKeepsLegacyRollupSemantics(t *testing.T) {
 	s := newTestStore(t)
 
-	if err := s.Add("u1", map[string]int{"女性": 1, "COS": 2}, "1.2.3.4", "ua"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Add("u1", map[string]int{"女性": 1, "COS": -2, "男娘": -1}, "1.2.3.4", "ua"); err != nil {
-		t.Fatal(err)
-	}
+	seedWeights(t, s, "u1", map[string]int{"COS": 2, "男娘": -1})
+	voteN(t, s, "u1", "女性", 2, VoteUp)    // 两个 IP 各 +1
+	voteN(t, s, "u1", "COS", 2, VoteDown) // 把底数 2 减到 0
+	voteN(t, s, "u1", "男娘", 1, VoteDown)  // -1 底数上再 -1 → -2
 
 	w := s.Weights("u1")
 	if w["女性"] != 2 {
@@ -41,8 +67,8 @@ func TestAddSemantics(t *testing.T) {
 	if _, ok := w["COS"]; ok {
 		t.Fatalf("恰好归零应删行: %+v", w)
 	}
-	if w["男娘"] != -1 {
-		t.Fatalf("负权重应保留: %+v", w)
+	if w["男娘"] != -2 {
+		t.Fatalf("负权重应保留可续投: %+v", w)
 	}
 }
 
@@ -50,11 +76,10 @@ func TestAddSemantics(t *testing.T) {
 func TestRequestLogRetained(t *testing.T) {
 	s := newTestStore(t)
 
-	if err := s.Add("u1", map[string]int{"女性": 1}, "9.9.9.9", "curl/8"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Add("u1", map[string]int{"足控": 1}, "9.9.9.9", "curl/8"); err != nil {
-		t.Fatal(err)
+	for _, tag := range []string{"女性", "足控"} {
+		if err := s.CastVotes("u1", "9.9.9.9", map[string]int{tag: VoteUp}, "curl/8"); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	var n int
@@ -81,12 +106,8 @@ func TestRequestLogRetained(t *testing.T) {
 func TestReadPaths(t *testing.T) {
 	s := newTestStore(t)
 
-	if err := s.Add("a", map[string]int{"女性": 3, "男娘": -1}, "ip", "ua"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Add("b", map[string]int{"女性": 1}, "ip", "ua"); err != nil {
-		t.Fatal(err)
-	}
+	seedWeights(t, s, "a", map[string]int{"女性": 3, "男娘": -1})
+	seedWeights(t, s, "b", map[string]int{"女性": 1})
 
 	if got := s.ForUsers([]string{"a", "b"})["a"]; len(got) != 1 || got[0] != "女性" {
 		t.Fatalf("ForUsers 应只给正权重标签: %v", got)
@@ -117,7 +138,7 @@ func TestNilStoreDegrades(t *testing.T) {
 	if len(s.Weights("u")) != 0 || len(s.ForUsers([]string{"u"})) != 0 || s.UsersForTag("t", nil, 10) != nil {
 		t.Fatal("nil store 读路径应安全降级")
 	}
-	if err := s.Add("u", map[string]int{"t": 1}, "ip", "ua"); err == nil {
+	if err := (*Store)(nil).CastVotes("u", "ip", map[string]int{"t": 1}, "ua"); err == nil {
 		t.Fatal("nil store 写入应报错")
 	}
 }
@@ -149,7 +170,7 @@ func TestTimestampOrderingInvariant(t *testing.T) {
 // 降级路径（newTestStore 为了时间排序会预建一张最小 users，盖不到这个分支）。
 func newBareStore(t *testing.T) *Store {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "twitter.db"))
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "twitter.db")+"?_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,12 +193,8 @@ func openUsers(t *testing.T, s *Store) {
 // TestBannedUsernamesSemantics 钉住"谁算被封"的判定，以及两种"空"必须可分。
 func TestBannedUsernamesSemantics(t *testing.T) {
 	s := newBareStore(t)
-	if err := s.Add("ok", map[string]int{"女性": 1}, "ip", "ua"); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Add("ghost", map[string]int{"女性": 1}, "ip", "ua"); err != nil {
-		t.Fatal(err)
-	}
+	seedWeights(t, s, "ok", map[string]int{"女性": 1})
+	seedWeights(t, s, "ghost", map[string]int{"女性": 1})
 
 	// 没有 users 表 = 读不到（error 非 nil），调用方据此 fail-open；
 	// 这必须与"有表但一个都没封"（error 为 nil + 空切片）区分开。
@@ -229,8 +246,8 @@ func TestBannedUsernamesSemantics(t *testing.T) {
 // true = SQL 侧排除被封账号；且 users 表缺失时 true 要能退回而不是返回空。
 func TestCloudBanExclusion(t *testing.T) {
 	s := newBareStore(t)
-	_ = s.Add("alice", map[string]int{"共有": 1, "仅正常": 1}, "ip", "ua")
-	_ = s.Add("bob", map[string]int{"共有": 1, "仅被封": 1}, "ip", "ua")
+	seedWeights(t, s, "alice", map[string]int{"共有": 1, "仅正常": 1})
+	seedWeights(t, s, "bob", map[string]int{"共有": 1, "仅被封": 1})
 
 	// 表缺失：不排除才有结果；排除应自动退回全量（fail-open）而不是清空标签云
 	if c := s.Cloud(10, true); len(c) != 3 {
@@ -260,7 +277,7 @@ func TestCloudBanExclusion(t *testing.T) {
 		t.Fatalf("只剩被封账号的标签不该出现: %+v", m)
 	}
 	// 负权重本来就不进云；确认排除没把它带回来
-	_ = s.Add("alice", map[string]int{"负": -1}, "ip", "ua")
+	seedWeights(t, s, "alice", map[string]int{"负": -1})
 	for _, c := range s.Cloud(10, true) {
 		if c.Tag == "负" {
 			t.Fatalf("排除封禁不该改变权重口径: %+v", s.Cloud(10, true))

@@ -67,6 +67,14 @@ func CreateTableV2() error {
 		return err
 	}
 
+	// 3c. 历史底数快照（幂等），**必须**排在 3b 之后：account_tags 的行是在 3b 里
+	//     从 user_tags 灌进来的，快照若跑在前面，首次升级的那 2.3 万行就永远没有
+	//     底数、weight = 底数 + Σ票 对它们不成立。写侧另有逐行兜底，但只有这里
+	//     能把既有历史一次性纳入审计范围。
+	if _, err := tags.BackfillVoteBase(DB); err != nil {
+		return err
+	}
+
 	// 4. 请求日志表 request_logs 已由 tags.EnsureSchema 建好（DDL 只此一份，
 	//    gallery 先启动也不会漏建）。
 
@@ -103,11 +111,16 @@ func migrateAccountTags() error {
 // 根 API 与 gallery 走同一套语义与同一个数据源，保证「两边做成一样」。
 func Store() *tags.Store { return tags.New(DB) }
 
-// addTag POST 路径：委托给 tags.Store.Add —— 请求流水照记，
-// 事务内按行 upsert 进 account_tags（不再读-改-写 JSON）。
-// 语义与旧版一致：权重累加，恰好归零则删除该标签行（负权重保留）。
+// addTag 是根 API（App 入口）的写路径：委托 tags.Store.CastVotes。
+//
+// inputMap 的 value 现在是**该 IP 的目标值**（+1/-1/0=撤票），不再是变化量——
+// 与图站 POST /api/account-tag 的 d 同一个语义，两个入口都"一 IP 一票"。
+// 这里保留原有的"归一化到 ±1"（比图站宽：图站对越界直接 400），因为本接口一次收
+// 一组标签的批量体，为一个越界值把整批退回去对 App 不友好；归一化不影响
+// "同一 IP 重复提交同值不落库"这个幂等结论。
+// 0 的旧含义是"忽略这个标签"（从 map 里删掉），新含义是"撤掉这个 IP 的票"。
 func addTag(username string, inputMap map[string]int, ip, ua string) error {
-	return Store().Add(username, inputMap, ip, ua)
+	return Store().CastVotes(username, ip, inputMap, ua)
 }
 
 // searchLimit 与其他 by 分支（username/nick 都写死 LIMIT 15）保持一致。

@@ -7,16 +7,34 @@ import (
 	"testing"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/Hana-ame/twitter-pic-go/tags"
 )
 
 func setupTagsDB(t *testing.T) {
 	t.Helper()
-	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "t.db"))
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "t.db")+
+		"?_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		t.Fatal(err)
 	}
 	DB = db
 	t.Cleanup(func() { db.Close() })
+}
+
+// seedWeight 造历史权重：绕过写路径直插 + 快照底数（= 票系统上线前就攒下的权重）。
+// 读路径用例只关心最终权重，不该依赖投票过程；投票过程由下面的往返用例钉。
+func seedWeight(t *testing.T, user string, w map[string]int) {
+	t.Helper()
+	for tag, v := range w {
+		if _, err := DB.Exec(`INSERT OR REPLACE INTO account_tags (username, tag, weight) VALUES (?,?,?)`,
+			user, tag, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tags.BackfillVoteBase(DB); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAccountTagsRoundTrip(t *testing.T) {
@@ -48,8 +66,9 @@ func TestAccountTagsRoundTrip(t *testing.T) {
 		t.Fatalf("回填错误: %+v", u.Tags)
 	}
 
-	// POST：新账号打标签
-	if err := addTag("u1", map[string]int{"女性": 1, "足控": 1}, "ip", "ua"); err != nil {
+	// POST：新账号打标签（A 与 B 是两个不同的客户端身份，票按 IP 记）
+	const A, B = "1.1.1.1", "2.2.2.2"
+	if err := addTag("u1", map[string]int{"女性": 1, "足控": 1}, A, "ua"); err != nil {
 		t.Fatal(err)
 	}
 	u, _ = getUserTags("u1")
@@ -57,19 +76,38 @@ func TestAccountTagsRoundTrip(t *testing.T) {
 		t.Fatalf("addTag: %+v", u.Tags)
 	}
 
-	// 累加与归零删除（旧语义：恰好 0 删行，负权重保留）
-	if err := addTag("u1", map[string]int{"女性": 1, "足控": -1, "男娘": -1}, "ip", "ua"); err != nil {
+	// ---- 一 IP 一票（App 入口同样按 (账号,标签,IP) 记票）----
+	// A 重复提交同值 → 幂等，不加票；足控从 +1 改成 -1 → 单请求净变化 -2。
+	if err := addTag("u1", map[string]int{"女性": 1, "足控": -1, "男娘": -1}, A, "ua"); err != nil {
 		t.Fatal(err)
 	}
 	u, _ = getUserTags("u1")
-	if u.Tags["女性"] != 2 {
-		t.Fatalf("累加: %+v", u.Tags)
+	if u.Tags["女性"] != 1 {
+		t.Fatalf("同一 IP 重复投 +1 必须还是 1（一 IP 一票），实际 %+v", u.Tags)
 	}
-	if _, ok := u.Tags["足控"]; ok {
-		t.Fatalf("归零应删除: %+v", u.Tags)
+	if u.Tags["足控"] != -1 {
+		t.Fatalf("同 IP 从 +1 改 -1 应得 -1（夹的是目标值，差值可达 ±2），实际 %+v", u.Tags)
 	}
 	if u.Tags["男娘"] != -1 {
 		t.Fatalf("负权重应保留: %+v", u.Tags)
+	}
+	// 换第二个 IP → 才加第二票
+	if err := addTag("u1", map[string]int{"女性": 1}, B, "ua"); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ = getUserTags("u1"); u.Tags["女性"] != 2 {
+		t.Fatalf("两个 IP 各投 +1 应是 2，实际 %+v", u.Tags)
+	}
+	// A 撤掉足控的票 → 该标签只剩 0 票 → 恰好归零删行（票行保留在账本里）
+	if err := addTag("u1", map[string]int{"足控": 0}, A, "ua"); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ = getUserTags("u1"); u.Tags["足控"] != 0 {
+		t.Fatalf("撤票后足控应归零并被删行，实际 %+v", u.Tags)
+	}
+	// 底数与票账本必须自洽
+	if v, err := Store().InvariantViolations(); err != nil || len(v) != 0 {
+		t.Fatalf("根 API 写入后恒等式被破坏: %+v %v", v, err)
 	}
 
 	// 反查走 tag 索引
@@ -114,9 +152,7 @@ func TestGetUserListByTag(t *testing.T) {
 		{"light", "女性", 1}, {"heavy", "女性", 5},
 		{"other", "男女性交", 3}, {"ban", "女性", 99},
 	} {
-		if err := addTag(c.u, map[string]int{c.tag: c.w}, "ip", "ua"); err != nil {
-			t.Fatal(err)
-		}
+		seedWeight(t, c.u, map[string]int{c.tag: c.w})
 	}
 
 	got, err := getUserListByTag("女性")

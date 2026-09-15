@@ -65,13 +65,12 @@ func CreateMetaData(c *gin.Context) {
 			ginkit.AbortWithError(c, http.StatusBadRequest, fmt.Errorf("你没加tag，这是不行的"))
 			return
 		}
+		// 归一化到目标值 ±1；0 **保留**（新语义=该 IP 撤票，旧语义=忽略该标签）。
 		for k, v := range o {
 			if v > 0 {
 				o[k] = 1
 			} else if v < 0 {
 				o[k] = -1
-			} else {
-				delete(o, k)
 			}
 		}
 
@@ -123,13 +122,12 @@ func CreateMetaData(c *gin.Context) {
 				return
 			}
 		}
+		// 归一化到目标值 ±1；0 **保留**（新语义=该 IP 撤票，旧语义=忽略该标签）。
 		for k, v := range o {
 			if v > 0 {
 				o[k] = 1
 			} else if v < 0 {
 				o[k] = -1
-			} else {
-				delete(o, k)
 			}
 		}
 		// 同上：写失败要报 500，不再回假 200。

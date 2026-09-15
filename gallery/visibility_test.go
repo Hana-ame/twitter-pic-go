@@ -49,11 +49,10 @@ func newVisCfg(t *testing.T) config {
 }
 
 // seedTag 直接写一条账号标签（绕过 handler，造出"被封账号也有标签"的前提）。
+// 走 seedTags：那是历史权重的形状，投票过程另有用例钉。
 func seedTag(t *testing.T, cfg config, user, tag string, w int) {
 	t.Helper()
-	if err := cfg.tags.Add(user, map[string]int{tag: w}, "9.9.9.9", "test"); err != nil {
-		t.Fatal(err)
-	}
+	seedTags(t, cfg, user, map[string]int{tag: w})
 }
 
 // statusOf / bodyOf 都走完整路由，而不是直调 handler：
@@ -131,9 +130,7 @@ func TestBannedAccountInvisibleEverywhere(t *testing.T) {
 	}
 
 	// 批量标签接口：被封的 key 省略，其余照给
-	if err := cfg.tags.Add("carol", map[string]int{"女性": 1}, "ip", "ua"); err != nil {
-		t.Fatal(err)
-	}
+	seedTags(t, cfg, "carol", map[string]int{"女性": 1})
 	var m map[string]map[string]int
 	if err := json.Unmarshal([]byte(bodyOf(t, cfg, "/api/tags?keys=alice,bob,carol,dave")), &m); err != nil {
 		t.Fatal(err)
@@ -205,9 +202,7 @@ func TestCloudSubtractsBannedAccounts(t *testing.T) {
 	for i := 0; i < cloudTopN+5; i++ {
 		many[fmt.Sprintf("bobonly%d", i)] = 1
 	}
-	if err := cfg.tags.Add("bob", many, "ip", "ua"); err != nil {
-		t.Fatal(err)
-	}
+	seedTags(t, cfg, "bob", many)
 	expireVis(cfg)
 	after := cfg.vis.cloud()
 	if len(after) != 1 || after[0].Tag != "共有" {

@@ -191,6 +191,14 @@ func Run(addr string) {
 		cfg.db = store.DB()
 		cfg.tags = store
 		cfg.writable = writable
+		if writable {
+			// 历史底数快照（幂等；与根包的 CreateTableV2 各调一次，谁先到谁快照，
+			// 后到的那个不会重复改已有底数）。只读挂载不开写事务。
+			// 放在这里而不是 EnsureSchema 里：见 tags.BackfillVoteBase 的"调用时机"注释。
+			if _, err := tags.BackfillVoteBase(store.DB()); err != nil {
+				log.Printf("gallery: 历史底数快照失败（计票仍可用，写侧会逐行补）: %v", err)
+			}
+		}
 		defer cfg.db.Close()
 	}
 	cfg.vis = newVis(cfg.tags) // cfg.tags 为 nil 时 vis 一律 fail-open（不隐身）
@@ -634,6 +642,9 @@ const tagRateMax = 25
 // 读写访问器。读写语义全部在 tags 包里，两层共用一份实现。
 //
 // 同一个 sqlite 文件由 API 侧连接与本连接共同读写：busy_timeout + WAL 兜底并发。
+// _txlock=immediate 是**计票正确性**的一部分（不是性能调优）：CastVotes 先读 Σ票
+// 再写回滚动值，deferred 事务下两个不同 IP 并发写同一行可能各自读到旧 Σ，
+// 后写覆盖先写，票静默丢失。modernc 驱动据此拼出 BEGIN IMMEDIATE。
 // 文件缺失/打不开只降级为「无标签」（图站照常跑）；建表失败降级为只读（POST 503）。
 func openTagStore(path string) (*tags.Store, bool, error) {
 	if path == "" {
@@ -643,7 +654,7 @@ func openTagStore(path string) (*tags.Store, bool, error) {
 		return nil, false, err
 	}
 	db, err := sql.Open("sqlite", "file:"+filepath.Clean(path)+
-		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
+		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_txlock=immediate")
 	if err != nil {
 		return nil, false, err
 	}
@@ -812,7 +823,7 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		return
 	}
 	// IP 口径统一走 ipban.Principal（按可信跳数取）：限流分桶、request_logs.ip、
-	// 根 API 三处同一个值。原先这里是「XFF 首项」，既能被
+	// 根 API、以及**票桶 (账号,标签,IP)** 四处同一个值。原先这里是「XFF 首项」，既能被
 	// `X-Forwarded-For: <好人IP>, <被封IP>` 绕过封禁，也和流水里的归属对不上。
 	ip := ipban.Principal(r)
 	if cfg.tagLimit != nil && !cfg.tagLimit.Allow(ip) {
@@ -827,7 +838,9 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		User string `json:"user"`
 		Key  string `json:"key"` // 旧字段名，兼容保留
 		Tag  string `json:"tag"`
-		D    int    `json:"d"`
+		// D 是**指针**：`d` 缺省值 0 在新语义下是「撤票」，客户端漏传字段
+		// 不该被当成一次静默撤票，所以必须区分"没传"和"传了 0"。
+		D *int `json:"d"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
 		http.Error(w, "bad json", http.StatusBadRequest)
@@ -835,16 +848,18 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 	}
 	user := firstNonEmpty(strings.TrimSpace(req.User), strings.TrimSpace(req.Key))
 	tag := sanitizeTag(req.Tag)
-	d := req.D
-	if d > 1 {
-		d = 1
-	} else if d < -1 {
-		d = -1
-	}
-	if user == "" || tag == "" || d == 0 || !safeName(user) {
-		http.Error(w, "user and tag required", http.StatusBadRequest)
+	if user == "" || tag == "" || !safeName(user) || req.D == nil {
+		http.Error(w, "user, tag and d required", http.StatusBadRequest)
 		return
 	}
+	// d 是**该 IP 的目标值**（+1 投 / -1 减 / 0 撤），不是本次变化量。
+	// 超出 {-1,0,1} 直接 400 而不是夹住：一个把 d 当"分数"发 5 的客户端是有 bug 的，
+	// 静默夹成 1 会让它以为投了 5 票。
+	if *req.D < -1 || *req.D > 1 {
+		http.Error(w, "d must be -1, 0 or 1", http.StatusBadRequest)
+		return
+	}
+	d := *req.D
 	// 不给被封账号投票：投了就会把它的标签重新推上首页标签云，等于把刚挡掉的
 	// 存在性又写回去。404 与 /u/{name} 的口径一致（不确认存在）。
 	// 放在配额之后：刷不存在账号的 IP 照样该被配额管住。
@@ -852,8 +867,11 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := cfg.tags.Add(user, map[string]int{tag: d}, ip, r.UserAgent()); err != nil {
-		log.Printf("gallery: POST tag %s %q=%d: %v", user, tag, d, err)
+	err := cfg.tags.CastVotes(user, ip, map[string]int{tag: d}, r.UserAgent())
+	if err != nil {
+		// 取不到客户端身份时 CastVotes 报 ErrNoPrincipal：绝不能退化成空串记账，
+		// 那会把全站访客塌成同一个票桶（一票变一票=全站共一票）。回 500 让它响。
+		log.Printf("gallery: POST tag %s %q=%d ip=%q: %v", user, tag, d, ip, err)
 		http.Error(w, "write failed", http.StatusInternalServerError)
 		return
 	}

@@ -7,8 +7,8 @@
 // + 独立的 tags.db 快照），语义与数据源都不一致。
 //
 // 本包把读写收敛到**同一张 account_tags 表**（单一 twitter.db）：
-//   - 写：Add 在事务内按行累加权重（恰好归零删行、负权重保留），
-//     并**保留 request_logs 流水**（每个写请求一行，含 ip/ua）；
+//   - 写：CastVotes（votes.go）按「(账号,标签,IP) → 目标值」记票，流水照记；
+//     account_tags.weight 是**物化滚动值** = 历史底数 + Σ票，恰好归零删行、负权重保留；
 //   - 读：Weights / ForUsers / UsersForTag / Cloud / LastModifyFor。
 //
 // 两层都只调这里，保证「两边做成一样」。
@@ -16,7 +16,6 @@ package tags
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -90,46 +89,9 @@ func EnsureSchema(db *sql.DB) error {
 	return nil
 }
 
-// Add 记录一条请求流水，并在事务内把 input 的权重**累加**进 account_tags。
-// 语义（两层一致）：weight 累加；累加后恰好为 0 的行删除；负权重保留。
-func (s *Store) Add(username string, input map[string]int, ip, ua string) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("tags: store 未初始化")
-	}
-	if username == "" || len(input) == 0 {
-		return nil
-	}
-
-	// 1. 请求流水（保留：每次写请求一行）
-	if raw, err := json.Marshal(input); err == nil {
-		if _, err := s.db.Exec(`INSERT INTO request_logs (username, tags, ip, ua) VALUES (?, ?, ?, ?)`,
-			username, string(raw), ip, ua); err != nil {
-			log.Printf("Warning: 记录日志失败: %v", err)
-		}
-	}
-
-	// 2. 事务内逐标签 upsert 累加，最后清扫归零行
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-
-	for tag, delta := range input {
-		if tag == "" {
-			continue
-		}
-		if _, err := tx.Exec(`INSERT INTO account_tags (username, tag, weight) VALUES (?, ?, ?)
-			ON CONFLICT (username, tag) DO UPDATE SET weight = weight + excluded.weight`,
-			username, tag, delta); err != nil {
-			return fmt.Errorf("更新标签 %s=%d 失败: %v", tag, delta, err)
-		}
-	}
-	if _, err := tx.Exec(`DELETE FROM account_tags WHERE username = ? AND weight = 0`, username); err != nil {
-		return fmt.Errorf("清扫归零标签失败: %v", err)
-	}
-	return tx.Commit()
-}
+// 写路径只有 CastVotes 一条（见 votes.go）。这里刻意不留 Add/累加型的旧接口：
+// 旧语义是 weight += delta，与新语义 weight = 底数 + Σ票 互斥，留着就等于留一条
+// 会静默破坏恒等式的旁路。读侧函数全部保持原语义不变。
 
 // Weights 返回单个账号的 {tag: weight}（非零行，权重降序、同权按名字）。
 // 读路径的规范形态：根 API 的 GET 与 gallery 的展示都以此为准。

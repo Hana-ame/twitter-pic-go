@@ -30,7 +30,9 @@ func main() {
 	// 本进程不再是唯一写入者。没有 busy_timeout 时两侧并发写会直接抛
 	// SQLITE_BUSY，把「两层同一真源」变成「谁抢到谁写」。
 	var err error
-	twitter.DB, err = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC&_pragma=busy_timeout(5000)")
+	// _txlock=immediate：见 tags/votes.go 的 CastVotes——写事务必须在第一条语句前
+	// 拿到写锁，否则两个 IP 并发改同一标签行会丢票。gallery 侧同一个参数。
+	twitter.DB, err = sqlite.NewSQLiteDB("./twitter.db?parseTime=true&_loc=UTC&_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		fmt.Println(err)
 		return

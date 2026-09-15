@@ -55,12 +55,53 @@
     d.appendChild(n);
     return d;
   }
+  /* ---- 瀑布流：每次插入当前最短的一列；图片/视频加载后再均衡 ---- */
+  var GRID_MIN_COL = 300;
+  function nCols() {
+    var w = grid.clientWidth || 900;
+    return Math.max(1, Math.min(8, Math.floor(w / GRID_MIN_COL)));
+  }
+  function balanceGrid() {
+    var cols = Array.prototype.slice.call(grid.children);
+    if (cols.length < 2) return;
+    var guard = 0;
+    while (guard++ < 120) {
+      var t = 0, s = 0;
+      for (var i = 1; i < cols.length; i++) {
+        if (cols[i].offsetHeight > cols[t].offsetHeight) t = i;
+        if (cols[i].offsetHeight < cols[s].offsetHeight) s = i;
+      }
+      if (t === s) break;
+      if (cols[t].offsetHeight - cols[s].offsetHeight < 160 || cols[t].children.length <= 1) break;
+      var last = cols[t].lastElementChild;
+      if (!last) break;
+      cols[s].appendChild(last);
+    }
+  }
+  var gridBalTimer = 0;
+  function scheduleGridBalance() {
+    clearTimeout(gridBalTimer);
+    gridBalTimer = setTimeout(balanceGrid, 150);
+  }
   function renderGrid() {
     var arr = list();
     var start = clampStart(arr, cursorID());
     var end = Math.min(start + PER, arr.length);
+    var n = nCols();
+    var cols = [], hs = [];
+    for (var i = 0; i < n; i++) {
+      var c = document.createElement('div'); c.className = 'gcol';
+      cols.push(c); hs.push(0);
+    }
+    for (var i = start; i < end; i++) {
+      var j = 0;
+      for (var k = 1; k < n; k++) if (hs[k] < hs[j]) j = k;
+      var card = gridCard(arr[i], i);
+      cols[j].appendChild(card);
+      hs[j] += card.offsetHeight || 140;
+    }
     var frag = document.createDocumentFragment();
-    for (var i = start; i < end; i++) frag.appendChild(gridCard(arr[i], i));
+    for (var i = 0; i < n; i++) frag.appendChild(cols[i]);
     grid.replaceChildren(frag);
     if (countEl) countEl.textContent = arr.length + ' media';
     if (info) info.textContent = arr.length ? (start + 1) + '–' + end + ' / ' + arr.length : '0';
@@ -68,6 +109,18 @@
     if (nextA) { nextA.href = href(typeFilter(), end < arr.length ? end : 0); nextA.hidden = !(end < arr.length); }
     modes.forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-mode') === typeFilter()); });
   }
+  grid.addEventListener('load', function (e) {
+    var t = e.target;
+    if (t && (t.tagName === 'IMG' || t.tagName === 'VIDEO')) scheduleGridBalance();
+  }, true);
+  grid.addEventListener('loadedmetadata', function () { scheduleGridBalance(); }, true);
+  var gridResTimer = 0;
+  window.addEventListener('resize', function () {
+    clearTimeout(gridResTimer);
+    gridResTimer = setTimeout(function () {
+      if (lb.hidden && nCols() !== grid.children.length) renderGrid();
+    }, 200);
+  });
   function go(t, c) { setURL(t, c); renderGrid(); }
 
   modes.forEach(function (a) {

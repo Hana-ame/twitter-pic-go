@@ -13,10 +13,15 @@
   try {
     const raw = JSON.parse(dataEl.textContent) || [];
     for (const e of raw) {
-      if (typeof e === "string") { names.push(e); continue; }
-      if (e && typeof e === "object" && e.n) {
-        names.push(e.n);
-        if (Array.isArray(e.t) && e.t.length) tagsMap.set(e.n, e.t);
+      // 只接受字符串账号名；畸形条目（n 是对象等）直接丢弃。
+      // 否则 cardHTML 里 String(obj) 会渲染成 "@[object Object]"，
+      // n[0] 取不到 → "?"，hueOf(obj) 循环不执行 → 0 → 红色占位块。
+      const n = typeof e === "string" ? e : (e && typeof e === "object" ? e.n : null);
+      if (typeof n !== "string" || !n) continue;
+      names.push(n);
+      if (e && Array.isArray(e.t)) {
+        const ts = e.t.filter((x) => typeof x === "string" && x);
+        if (ts.length) tagsMap.set(n, ts);
       }
     }
   } catch (e) { return; }
@@ -65,8 +70,9 @@
   // ---- 预览绘制 ----
   function paint(el, m) {
     el.dataset.painted = "1";
+    if (!m || typeof m !== "object") return;
     const name = el.dataset.n;
-    const b = mediaURL(m.b || "");
+    const b = mediaURL(typeof m.b === "string" ? m.b : "");
     if (b) {
       const ph = el.querySelector(".bnr-ph");
       if (ph) {
@@ -76,13 +82,13 @@
         ph.outerHTML = media;
       }
     }
-    const a = mediaURL(m.a || "");
+    const a = mediaURL(typeof m.a === "string" ? m.a : "");
     if (a) {
       const av = el.querySelector(".av");
       if (av && !av.querySelector("img")) av.insertAdjacentHTML("afterbegin", '<img alt="" src="' + esc(a) + '">');
     }
     const nick = el.querySelector(".nk");
-    if (nick && m.i && m.i !== name) nick.textContent = m.i;
+    if (nick && typeof m.i === "string" && m.i && m.i !== name) nick.textContent = m.i;
   }
 
   function fallback(el) {

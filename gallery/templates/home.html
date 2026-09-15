@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+{{template "head" .}}
+<body>
+{{template "header" .}}
+<main>
+  <p class="muted">{{len .Home.Accounts}} accounts</p>
+  <div class="grid">
+    {{range .Home.Accounts}}
+      <a class="card" href="/u/{{.}}"><span class="pill">@{{.}}</span></a>
+    {{else}}
+      <p class="muted">没有找到 *.json.gz（设 GALLERY_JSON_DIR 指向数据目录）。</p>
+    {{end}}
+  </div>
+</main>
+{{template "footer" .}}
+</body>
+</html>

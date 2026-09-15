@@ -1,0 +1,54 @@
+{{define "head"}}
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{.Title}} · Gallery</title>
+<style>
+:root{--bg:#111;--fg:#e6e9ef;--muted:#8b93a7;--card:#1b1f2a;--acc:#7aa2f7}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:16px 20px;border-bottom:1px solid #232838;position:sticky;top:0;background:var(--bg);z-index:2}
+header a{color:var(--fg);text-decoration:none;font-weight:600}
+main{padding:20px;max-width:1500px;margin:0 auto}
+h1{font-size:22px;margin:0 0 6px}
+.muted{color:var(--muted)}
+.grid{columns:320px;column-gap:16px}
+.card{background:var(--card);border-radius:12px;padding:8px;margin:0 0 16px;display:block;width:100%;
+      break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid}
+.card img,.card video{width:100%;height:auto;border-radius:8px;background:#0b0d13;display:block;cursor:zoom-in}
+.pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#222838;color:var(--muted);font-size:12px}
+.modes{display:flex;gap:8px;margin:0 0 16px;flex-wrap:wrap}
+.modes a{padding:7px 14px;border-radius:999px;background:#1b1f2a;color:var(--muted);text-decoration:none;border:1px solid #2b3244;font-size:14px}
+.modes a.active{background:#2b3244;color:var(--fg)}
+.pager{display:flex;gap:14px;align-items:center;justify-content:center;margin:22px 0}
+.pager .btn{background:#222838;color:var(--fg);border:1px solid #2b3244;border-radius:8px;padding:9px 16px;text-decoration:none;cursor:pointer}
+.pager .btn[hidden]{display:none}
+footer{padding:24px;text-align:center;color:var(--muted)}
+
+/* 全屏竖滑查看器 */
+.lb{position:fixed;inset:0;z-index:50;background:#000}
+.lb[hidden]{display:none}
+.lb-track{height:100vh;height:100dvh;overflow-y:scroll;scroll-snap-type:y mandatory;overscroll-behavior:contain;
+          -webkit-overflow-scrolling:touch;outline:none}
+.lb-slide{height:100vh;height:100dvh;scroll-snap-align:center;scroll-snap-stop:always;
+          display:flex;align-items:center;justify-content:center;position:relative}
+.lb-media{max-width:100vw;max-height:100vh;max-height:100dvh;width:auto;height:auto;object-fit:contain;background:#000}
+.lb-close{position:fixed;top:14px;right:16px;z-index:52;width:40px;height:40px;border-radius:50%;
+          background:rgba(0,0,0,.55);color:#fff;border:1px solid rgba(255,255,255,.25);font-size:18px;cursor:pointer}
+.lb-rail{position:fixed;right:12px;bottom:36px;z-index:52;display:flex;flex-direction:column;gap:14px;align-items:center}
+.lb-act{display:flex;flex-direction:column;align-items:center;gap:2px;background:rgba(0,0,0,.5);color:#fff;
+        border:1px solid rgba(255,255,255,.22);border-radius:14px;padding:8px 10px;font-size:18px;cursor:pointer;min-width:52px}
+.lb-act span{font-size:12px;color:#cfd6e4}
+.lb-act.on{background:rgba(255,64,96,.85);border-color:rgba(255,64,96,.9)}
+.lb-info{position:fixed;left:16px;bottom:20px;z-index:52;color:#fff;text-shadow:0 1px 3px #000;font-size:14px}
+</style>
+</head>
+{{end}}
+
+{{define "header"}}
+<header><a href="/">← Twitter Pic Gallery</a></header>
+{{end}}
+
+{{define "footer"}}
+<footer>server-rendered by Go · html/template</footer>
+{{end}}

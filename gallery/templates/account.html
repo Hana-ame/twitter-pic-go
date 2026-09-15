@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+{{template "head" .}}
+<body>
+{{template "header" .}}
+<main>
+  {{with .Account}}
+  <h1>{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}} <span class="muted">@{{.Name}}</span></h1>
+  <p class="muted"><span id="g-count">{{.Total}} media</span> · <span id="g-range"></span></p>
+
+  <div class="modes">
+    <a data-mode="" href="{{.HrefAll}}" class="{{if eq .Filter ""}}active{{end}}">全部</a>
+    <a data-mode="photo" href="{{.HrefPhoto}}" class="{{if eq .Filter "photo"}}active{{end}}">图片 only</a>
+    <a data-mode="video" href="{{.HrefVideo}}" class="{{if eq .Filter "video"}}active{{end}}">视频 only</a>
+  </div>
+
+  <div class="grid" id="g-grid" data-slug="{{.Slug}}" data-per="{{.PageSize}}">
+    {{range .Media}}
+      <div class="card">
+        {{if .IsVideo}}
+          <video preload="metadata" src="{{.URL}}"></video>
+        {{else}}
+          <img loading="lazy" src="{{.URL}}" alt="">
+        {{end}}
+      </div>
+    {{end}}
+  </div>
+
+  <nav class="pager">
+    <a id="g-prev" class="btn" href="{{.PrevHref}}" {{if not .HasPrev}}hidden{{end}}>← Prev</a>
+    <span id="g-info" class="muted"></span>
+    <a id="g-next" class="btn" href="{{.NextHref}}" {{if not .HasNext}}hidden{{end}}>Next →</a>
+  </nav>
+  {{end}}
+</main>
+
+<!-- 全屏竖滑查看器（TikTok 式） -->
+<div class="lb" id="lb" hidden>
+  <div class="lb-track" id="lb-track" tabindex="-1"></div>
+  <button class="lb-close" id="lb-close" aria-label="close">✕</button>
+  <div class="lb-rail">
+    <button class="lb-act" id="lb-like" title="赞">👍<span id="lb-likes">0</span></button>
+    <button class="lb-act" id="lb-dislike" title="踩">👎<span id="lb-dislikes">0</span></button>
+    <button class="lb-act" id="lb-fav" title="喜欢">♥</button>
+  </div>
+  <div class="lb-info" id="lb-info"></div>
+</div>
+
+<script id="g-data" type="application/json">{{.Account.RawJSON}}</script>
+<script>{{.AppJS}}</script>
+</body>
+</html>

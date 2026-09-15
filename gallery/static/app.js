@@ -137,27 +137,67 @@
     loadCounts(key);
   }
 
-  function buildSlide(m) {
+  // 全屏媒体不用原生 controls：CSS 里 pointer-events:none 让触摸落到滑面上，
+  // 竖滑才能滚 track（原生视频控件会吞掉滑动手势）。点击滑面自行切换播放/暂停。
+  function buildSlide(m, i) {
     var s = document.createElement('div'); s.className = 'lb-slide';
-    var n = mediaNode(m, true);
-    n.classList.add('lb-media');
-    s.appendChild(n);
+    if (m.video) {
+      var v = mediaNode(m, false);
+      v.preload = 'none'; v.loop = true;
+      v.classList.add('lb-media');
+      s.appendChild(v);
+      var icon = document.createElement('div'); icon.className = 'lb-playicon'; icon.textContent = '▶';
+      s.appendChild(icon);
+      s._v = v;
+      s.addEventListener('click', function () { toggleVideo(s, v); });
+    } else {
+      var n = mediaNode(m, false);
+      n.classList.add('lb-media');
+      s.appendChild(n);
+    }
     return s;
+  }
+  function playVideo(s, v) {
+    var p = v.play();
+    if (p && p.catch) p.catch(function () { v.muted = true; var q = v.play(); if (q && q.catch) q.catch(function () {}); });
+    s.classList.remove('paused');
+  }
+  function toggleVideo(s, v) {
+    if (v.paused || v.ended) playVideo(s, v);
+    else { v.pause(); s.classList.add('paused'); }
+  }
+  function activate(i) {
+    var nodes = track.children;
+    for (var j = 0; j < nodes.length; j++) {
+      var v = nodes[j]._v; if (v && j !== i) v.pause();
+    }
+    var c = nodes[i];
+    if (c && c._v) playVideo(c, c._v);
+  }
+  function pauseAll() {
+    var nodes = track.children;
+    for (var j = 0; j < nodes.length; j++) { var v = nodes[j]._v; if (v) v.pause(); }
   }
   function openLightbox(idx) {
     slides = list();                       // 全局（受 type 过滤影响）而不是当前页
     if (!slides.length) return;
     cur = Math.max(0, Math.min(idx || 0, slides.length - 1));
     var frag = document.createDocumentFragment();
-    for (var i = 0; i < slides.length; i++) frag.appendChild(buildSlide(slides[i]));
+    for (var i = 0; i < slides.length; i++) frag.appendChild(buildSlide(slides[i], i));
     track.replaceChildren(frag);
     lb.hidden = false;
     document.documentElement.style.overflow = 'hidden';
-    requestAnimationFrame(function () { track.scrollTop = cur * track.clientHeight; track.focus(); paintRail(); });
+    requestAnimationFrame(function () {
+      track.scrollTop = cur * track.clientHeight;
+      track.focus();
+      paintRail();
+      activate(cur);
+    });
   }
   function closeLightbox() {
     lb.hidden = true;
     document.documentElement.style.overflow = '';
+    pauseAll();
     track.replaceChildren();
     slides = []; cur = 0;
   }
@@ -169,7 +209,7 @@
       scrollTimer = null;
       var h = track.clientHeight || 1;
       var i = Math.round(track.scrollTop / h);
-      if (i !== cur && slides[i]) { cur = i; setURL(typeFilter(), slides[cur].id); paintRail(); }
+      if (i !== cur && slides[i]) { cur = i; setURL(typeFilter(), slides[cur].id); paintRail(); activate(cur); }
     }, 120);
   }, { passive: true });
 

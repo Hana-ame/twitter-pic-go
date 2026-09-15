@@ -7,6 +7,7 @@ package twitter
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -72,9 +73,18 @@ func CreateMetaData(c *gin.Context) {
 			}
 		}
 
-		addTag(username, o, ip, agent)
+		// 写库失败必须报出去：以前吞掉 error 照样回 200 {"message":"ok"}，
+		// 客户端无从判断标签到底进没进 account_tags。
+		if err := addTag(username, o, ip, agent); err != nil {
+			ginkit.AbortWithError(c, http.StatusInternalServerError, err)
+			return
+		}
 
-		curlMetaData(username)
+		// 抓取排队失败**不改**本请求结论：标签已经写进去了，caller.py 不在
+		// 是开发环境的常态，不该让它把一次成功的写入判成失败。但要留痕。
+		if msg, err := curlMetaData(username); err != nil {
+			log.Printf("curlMetaData(%s) 排队失败: %v (%s)", username, err, msg)
+		}
 
 		c.JSON(200, gin.H{"message": "ok"})
 		return
@@ -88,7 +98,9 @@ func CreateMetaData(c *gin.Context) {
 			return
 		}
 
-		curlMetaData(username)
+		if msg, err := curlMetaData(username); err != nil {
+			log.Printf("curlMetaData(%s) 排队失败: %v (%s)", username, err, msg)
+		}
 
 		c.JSON(200, gin.H{"message": "ok"})
 		return
@@ -118,7 +130,11 @@ func CreateMetaData(c *gin.Context) {
 				delete(o, k)
 			}
 		}
-		addTag(username, o, ip, agent)
+		// 同上：写失败要报 500，不再回假 200。
+		if err := addTag(username, o, ip, agent); err != nil {
+			ginkit.AbortWithError(c, http.StatusInternalServerError, err)
+			return
+		}
 
 		c.JSON(200, gin.H{"message": "ok"})
 		return

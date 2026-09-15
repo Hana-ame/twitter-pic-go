@@ -47,10 +47,16 @@ func CreateTable() error {
 // 2026.09.15：tags 改从规范表 account_tags 聚合（json_group_object 现场序列化，
 // 空标签返回 NULL → COALESCE '{}'），不再读旧的 user_tags JSON 大字段。
 // 全部 GET 路径（getUserTags/getUserList/邻居列表等）共用本查询，一处切换。
+//
+// `weight != 0` 不是可选的：它必须与共享包 tags.Store.Weights 的过滤口径逐字一致，
+// 否则同一账号在根 API 与 gallery 两层会给出不同标签集（外部 sqlite3 运维写入或
+// 历史脏数据一旦出现 weight=0 行就会暴露）。归零删行是写侧（tags.Add）的责任，
+// 读侧这里只是不再依赖它一定发生过。负权重两边都保留。
 const userSelectQuery = `
 	SELECT u.username, u.last_modify, u.status,
 	       COALESCE((SELECT json_group_object(a.tag, a.weight)
-	                 FROM account_tags a WHERE a.username = u.username), '{}')
+	                 FROM account_tags a
+	                 WHERE a.username = u.username AND a.weight != 0), '{}')
 	FROM users u
 `
 

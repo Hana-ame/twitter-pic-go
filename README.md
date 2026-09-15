@@ -18,12 +18,21 @@ Twitter 媒体抓取与图库浏览。
 **只有一个库、只有一张表**：`twitter.db` 的 `account_tags(username, tag, weight)`。
 
 - 两层入口共用 `tags` 包：Go API 的 `GET /api/twitter/tags/:username` /
-  `POST /api/twitter/:username`，与 gallery 的 `GET /api/tags?keys=` /
-  `POST /api/tag`（别名 `/api/account-tags`、`/api/account-tag`）。
-- 写语义：`weight` 累加，恰好归零删行，负权重保留；**每次写请求记一行
-  `request_logs`**（username / tags / ip / ua）。
+  `POST /api/twitter/:username` / `GET /api/twitter/?by=tag&search=<tag>`，与 gallery 的
+  `GET /api/tags?keys=` / `POST /api/tag`（别名 `/api/account-tags`、`/api/account-tag`）。
+- 写语义：`weight` 累加，恰好归零删行，负权重保留；每次 POST 的 delta 归一到 ±1；
+  **每次写请求记一行 `request_logs`**（username / tags / ip / ua，两层都记）。
+- 写失败**报 500**，不再吞掉错误回 `200 {"message":"ok"}`；gallery 侧对应 400/500/503。
+  抓取排队（`curlMetaData`）失败不算写失败，只记日志——否则 caller.py 不在时会把
+  一次成功的标签写入判成失败。
 - 读语义：直接按 `account_tags` 现场聚合，不再读旧的 `user_tags` JSON 大字段，
   也不再有独立的 `tags.db` 快照或 `account_votes.json` 投票文件。
+  两层的过滤口径**逐字一致**：`weight != 0` 都返回（含负权重）、`weight = 0` 都不返回。
+  根 API 侧由 `userSelectQuery` 的 `AND a.weight != 0` 保证，与 `tags.Store.Weights` 对齐，
+  并有测试钉住（`sql_tags_readparity_test.go`）——否则库上一旦出现零权行（外部 sqlite3
+  运维直写、历史脏数据），同一账号两层会给出不同标签集。
+- `by=tag` 的反查只取**正权重**、按权重降序、精确匹配（非 LIKE）、`status='SUCCESS'`、
+  `LIMIT 15`；空结果返回 `[]` 而不是 `null`。
 - gallery 的库路径由 `GALLERY_DB` 指定，默认 `./twitter.db`——与 Go API 同一个文件。
 - 旧的 `user_tags` 表只作为历史遗留存在，服务端启动时一次性回填进
   `account_tags`（`migrateAccountTags`），此后不再作为数据源被读取。

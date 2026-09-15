@@ -22,9 +22,12 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 打同一张 `account_tags` 表、调同一套语义——两层是同一份实现，不存在漂移。
 
 - **写**：`POST /api/tag`（别名 `POST /api/account-tag`），body `{user|key, tag, d}`。
-  `d` 归一到 ±1（与根 API 的 POST 归一化一致），事务内 `weight += d` 按行 upsert，
+  `d` 是**该 IP 的目标值**（`1`/`-1`/`0`=撤票，越界 400 不静默夹），服务端按
+  `(账号,标签,IP)` 记票并把 `weight` **重算**为「历史底数 + Σ票」（不是累加），
   **恰好归零删行、负权重保留**；同时**照记一条 `request_logs` 流水**
-  （username / tags / ip / ua，ip 取 `X-Forwarded-For` 首个地址）。
+  （username / tags / ip / ua，`ip` 取 `ipban.Principal`——与票桶、限流分桶同一个值）。
+  完整契约（含响应体、错误码阶梯、恒等式与校验 SQL）在根 `README.md` 的
+  「一 IP 一票」一节，两处改一处要同步。
 - **读**：`GET /api/tags?keys=a,b`（别名 `GET /api/account-tags`）**直接用新数据源**，
   返回 `{user: {tag: weight}}`；账号页把同一份结果嵌进 `#g-atags-data`。
   接口按实返回（含负权重，与根 API 的 `GET /tags/:username` 同口径），
@@ -121,7 +124,7 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 | 1 | `ipban.Decide` 链上任一命中 | **403** | `{"error":"Access Denied","reason":"Banned IP detected in chain","ip":"<命中IP>"}` |
 | 2 | 标签库缺失/不可写 | 503 | `tags disabled` |
 | 3 | 超 `GALLERY_TAG_RATE_MAX` | 429 | `{"code":429,"message":"请求过于频繁，请一小时后再试"}` |
-| 4 | 空 user/tag、`d==0`、user 含路径穿越 | 400 | `user and tag required` |
+| 4 | 空 user/tag、`d` 缺失或 ∉ `{-1,0,1}`、user 含路径穿越 | 400 | `user, tag and d required` / `d must be -1, 0 or 1` |
 | 5 | 投票目标是被封账号 | **404** | `404 page not found`（不给被封账号补标签）|
 | 6 | 写库失败 | 500 | `write failed` |
 | 7 | 成功 | 200 | `{"user":...,"tags":{tag:weight}}` |

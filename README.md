@@ -21,8 +21,10 @@ Twitter 媒体抓取与图库浏览。
 - 两层入口共用 `tags` 包：Go API 的 `GET /api/twitter/tags/:username` /
   `POST /api/twitter/:username` / `GET /api/twitter/?by=tag&search=<tag>`，与 gallery 的
   `GET /api/tags?keys=` / `POST /api/tag`（别名 `/api/account-tags`、`/api/account-tag`）。
-- 写语义：`weight` 累加，恰好归零删行，负权重保留；每次 POST 的 delta 归一到 ±1；
-  **每次写请求记一行 `request_logs`**（username / tags / ip / ua，两层都记）。
+- 写语义：见下一节「一 IP 一票」——请求里的 `d` 是**该 IP 的目标值**，不是变化量；
+  `account_tags.weight` 是**物化滚动值** = 历史底数 + Σ票；恰好归零删行、负权重保留；
+  **每次写请求记一行 `request_logs`**（username / tags / ip / ua，两层都记，幂等的是
+  权重不是审计）。
 - 写失败**报 500**，不再吞掉错误回 `200 {"message":"ok"}`；gallery 侧对应 400/500/503。
   抓取排队（`curlMetaData`）失败不算写失败，只记日志——否则 caller.py 不在时会把
   一次成功的标签写入判成失败。
@@ -37,6 +39,90 @@ Twitter 媒体抓取与图库浏览。
 - gallery 的库路径由 `GALLERY_DB` 指定，默认 `./twitter.db`——与 Go API 同一个文件。
 - 旧的 `user_tags` 表只作为历史遗留存在，服务端启动时一次性回填进
   `account_tags`（`migrateAccountTags`），此后不再作为数据源被读取。
+
+## 一 IP 一票（标签计票契约）
+
+**给客户端看的就这一节。** 两个入口同一个模型，只是包壳不同。
+
+### 请求与语义
+
+| 入口 | 方法/路径 | 请求体 | `d`/value 的含义 |
+|---|---|---|---|
+| 网页端（图站） | `POST /api/tag`（别名 `/api/account-tag`） | `{"user":"<账号>","tag":"<标签>","d":1}` | **该访客的目标值**：`1` 投 / `-1` 减 / `0` 撤票。`d` **必填** |
+| App（根 API） | `POST /api/twitter/:username?do_not_renew=true` | `{"<标签>":1,"<另一个>":-1}` | 同上，按标签逐项给目标值；`0` = 撤掉该 IP 在这个标签上的票 |
+
+一条票的键是 **(账号, 标签, IP)**，IP 取 `ipban.Principal`（与限流分桶、
+`request_logs.ip` **同一个值**）。所以：
+
+- **幂等**：同一 IP 对同一 (账号,标签) 连发 100 次 `d:1`，权重只动一次。
+  服务端不读任何 cookie / localStorage，换浏览器、开无痕都只是重复投同一张票。
+- **反向改票是一笔**：`+1 → -1` 对权重的影响是 **±2**（旧实现把输入夹到 ±1，
+  于是"从减分改成加分"会被夹成 0 分——那个死结就是这次改语义要消掉的）。
+  夹取的位置在**目标值**上，不在输入差值上。
+- **归一化差别**：图站对越界的 `d`（`2`、`-5`…）直接 **400**（一个把 `d` 当分数发的
+  客户端是有 bug 的，静默夹成 1 会让它以为投了 5 票）；根 API 保留原有的归一化到 ±1
+  （它一次收一组标签的批量体，为一个越界值退回整批不友好）。
+- **`d` 缺失**：图站 400（`0` 现在是有效值，不能拿缺省值当撤票）。
+
+### 响应与错误码
+
+- 图站成功：`200 {"user":"<账号>","tags":{<标签>:<权重>, …}}` —— **该账号的权威全量**
+  （含负权重、不含归零行）。客户端应整份覆盖本地缓存，**不要**自己按 ±1 累加显示值。
+- App 成功：`200 {"message":"ok"}`（形态未变；要看权威值用 `GET /api/twitter/tags/:username`）。
+- 图站守卫阶梯（顺序即优先级）：封禁 IP `403` → 库不可写 `503` → 配额超限 `429` →
+  入参非法 `400` → 目标账号被封 `404` → 写失败 `500` → 成功 `200`。
+  4xx 全部**不落库、不落流水**。`429` 按 IP 计（默认 25 次/小时，`GALLERY_TAG_RATE_MAX`），
+  与票数**分开计数**：同一人发 3 次请求扣 3 点配额，但只有 1 票。
+- 拿不到客户端 IP 时**拒绝写入**（500）而不是退化成空串：票桶键变成 `""` 会把全站
+  访客塌成同一个桶，一 IP 一票当场变成"全站共一票"。
+
+### 存储与恒等式
+
+```
+tag_votes(username, tag, ip, value, updated_at)   PK(username,tag,ip) WITHOUT ROWID  ← 票账本（真源）
+tag_weight_base(username, tag, base)              PK(username,tag)    WITHOUT ROWID  ← 历史底数，快照后不可变
+account_tags(username, tag, weight)               PK(username,tag)    WITHOUT ROWID  ← 物化滚动值
+```
+
+**恒等式：`weight = IFNULL(base,0) + IFNULL(Σ votes.value, 0)`**（只对"被票系统管过"的行成立；
+从没被投过的行没有底数，权重就是历史值）。现有权重在一次幂等迁移里整体快照成底数，
+**不清零、不重算**。
+
+票行生命周期：投 / 改 → upsert（值相同则连 `updated_at` 都不动）；撤票 → **删行**
+（不留 `value=0` 的噪声行，且该 IP 之后仍可重投）；**归零删的是 `account_tags` 行，
+票行必须保留**——删了票行，该 IP 以后再也投不了这个标签，权重也无法从底数重算。
+
+一致性校验（随时可跑，两条都该返回 0 行）：
+
+```sql
+-- ① 不自洽的滚动值
+SELECT a.username, a.tag, a.weight, IFNULL(b.base,0) AS base, IFNULL(v.s,0) AS votes
+FROM account_tags a
+LEFT JOIN tag_weight_base b ON b.username=a.username AND b.tag=a.tag
+LEFT JOIN (SELECT username,tag,SUM(value) s FROM tag_votes GROUP BY username,tag) v
+       ON v.username=a.username AND v.tag=a.tag
+WHERE (b.username IS NOT NULL OR v.username IS NOT NULL)
+  AND a.weight <> IFNULL(b.base,0) + IFNULL(v.s,0);
+
+-- ② 有票却该有权重行而缺失的（孤儿票）
+SELECT k.username, k.tag, IFNULL(b.base,0)+IFNULL(k.s,0) AS should_be
+FROM (SELECT username,tag,SUM(value) s FROM tag_votes GROUP BY username,tag) k
+LEFT JOIN tag_weight_base b ON b.username=k.username AND b.tag=k.tag
+LEFT JOIN account_tags a ON a.username=k.username AND a.tag=k.tag
+WHERE IFNULL(b.base,0)+IFNULL(k.s,0) <> 0 AND a.username IS NULL;
+```
+
+同一份 SQL 也编在代码里（`tags.InvariantCheckSQL` / `tags.OrphanVotesSQL`，
+`Store.InvariantViolations()` 一次跑两条），并有测试证明它**真能抓到**绕过写路径的篡改。
+
+规模：底数表与 `account_tags` 同行数（线上 2.3 万 → 约 1.0 MB）。票行按实测 ~57 B/行
+（`WITHOUT ROWID`，含 `updated_at`）：账号×标签×1 个 IP = 2.3 万行 ≈ 2.3 MB；
+×10 IP ≈ 14 MB；×100 IP ≈ 132 MB。涨到 GB 级需要"每个标签平均上百个不同访客投过"。
+读路径**不查**票账本（只看 `account_tags`），所以计票对读性能零影响；票行只在写入时
+按单行主键点查/聚合。
+
+⚠️ `tag_votes.ip` 记**原始 IP（不哈希，用户已定）**，是隐私敏感表，导出/备份按
+`bans.txt` 同等待遇。它也是一张"谁给谁投了什么"的关系表，能反查同一 IP 投过哪些账号。
 
 ## IP 封禁
 

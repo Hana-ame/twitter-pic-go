@@ -164,6 +164,7 @@ type config struct {
 	writable      bool               // 标签库可写（POST 落 account_tags + request_logs）
 	tagLimit      *limit.FastLimiter // 标签写入的 per-IP 配额，与根 API 同一个实现
 	bans          *ipban.Manager     // IP 封禁：与根 API 同一个进程级单例（同一份 bans.txt）
+	vis           *vis               // 被封账号隐身：users.status 视图（与根 API 同真源）
 }
 
 func Run(addr string) {
@@ -190,22 +191,43 @@ func Run(addr string) {
 		cfg.db = store.DB()
 		cfg.tags = store
 		cfg.writable = writable
-		cfg.cloud = store.Cloud(cloudTopN)
 		defer cfg.db.Close()
 	}
+	cfg.vis = newVis(cfg.tags) // cfg.tags 为 nil 时 vis 一律 fail-open（不隐身）
 	cfg.tagLimit = limit.NewFastLimiter(envIntOr("GALLERY_TAG_RATE_MAX", tagRateMax))
 	// 封禁必须与根 API 共用进程级单例：两份内存副本各自 reload 会出现
 	// 「API 侧已封、gallery 侧还没封」的窗口。热重载协程也只在 Shared() 里挂一次。
 	cfg.bans = ipban.Shared()
 
+	mux := galleryMux(cfg, reactions)
+
+	srv := &http.Server{
+		Addr:              cfg.addr,
+		Handler:           logRequests(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 20,
+	}
+	log.Printf("gallery: serving %s (json dir: %s)", cfg.addr, cfg.jsonDir)
+	if err := srv.ListenAndServe(); err != nil {
+		log.Printf("gallery: %v", err)
+	}
+}
+
+// galleryMux 注册图站全部路由。
+//
+// 单独成函数是为了**能被测试走到**：/raw/{account} 的隐身判断写在路由闭包里，
+// 只直调 handler 的测试永远盖不到它。路由语义（404 还是 200）应当在真实入口上验。
+func galleryMux(cfg config, reactions *reactionStore) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { handleHome(w, r, cfg) })
 	mux.HandleFunc("GET /u/{account}", func(w http.ResponseWriter, r *http.Request) { handleAccount(w, r, cfg) })
 	// /raw/{account} 原样吐 json.gz（不解析）；首页卡片的头像/昵称/首图由前端流式自取。
+	// 这是最大的泄漏口子：被封账号的完整时间线快照。用户已定「都挡」，不保留直链。
 	mux.HandleFunc("GET /raw/{account}", func(w http.ResponseWriter, r *http.Request) {
 		acc := r.PathValue("account")
-		if !safeName(acc) {
+		if !safeName(acc) || cfg.vis.hidden(acc) {
 			http.NotFound(w, r)
 			return
 		}
@@ -223,22 +245,11 @@ func Run(addr string) {
 	if sub, err := fs.Sub(staticFS, "static"); err == nil {
 		mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 	}
-
-	srv := &http.Server{
-		Addr:              cfg.addr,
-		Handler:           logRequests(mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 20,
-	}
-	log.Printf("gallery: serving %s (json dir: %s)", cfg.addr, cfg.jsonDir)
-	if err := srv.ListenAndServe(); err != nil {
-		log.Printf("gallery: %v", err)
-	}
+	return mux
 }
 
 // handleTagUsers GET /api/tag/{tag}?limit= — tag 反查账号（权重降序）。
-// 只返回磁盘上真实存在 json.gz 的账号，避免给出死链；tags.db 缺失时返回空列表。
+// 只返回磁盘上真实存在 json.gz、且未被封的账号，避免给出死链；标签库缺失时返回空列表。
 func handleTagUsers(w http.ResponseWriter, r *http.Request, cfg config) {
 	tag := strings.TrimSpace(r.PathValue("tag"))
 	if tag == "" || len(tag) > 64 {
@@ -256,6 +267,10 @@ func handleTagUsers(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.Error(w, "read json dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// 反查列表也挡被封账号：过滤 exist 集合即可——UsersForTag 一边扫一边拿它筛，
+	// 被过滤掉的不会占 limit 名额。根 API 的 by=tag 靠 SQL 里的 status='SUCCESS'
+	// 挡的是同一件事，两层结果集因此对齐。
+	names = cfg.vis.filter(names)
 	exist := make(map[string]struct{}, len(names))
 	for _, n := range names {
 		exist[n] = struct{}{}
@@ -271,6 +286,9 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.Error(w, "read json dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// 被封账号在首页隐身：账号列表和 #a-data 里都不出现（#a-data 是前端筛选与
+	// 「加载更多」的数据源，漏在这里就等于全站泄漏）。
+	names = cfg.vis.filter(names)
 	const previewN = 120
 	// 账号级 tags 按 username 现查（PK 前缀索引，分块 IN）；标签云用启动时聚合一次的缓存。
 	tagged := cfg.tags.ForUsers(names)
@@ -292,10 +310,9 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		}
 		return entries[i].Name < entries[j].Name
 	})
-	var top []tags.Count
-	if cfg.tags != nil {
-		top = cfg.cloud // 全局标签云：启动时聚合一次的缓存；db 不可用时为 nil（前端自行从 a-data 重算）
-	}
+	// 全局标签云：与账号列表同一个视图，封禁排除在 SQL 侧做（不做事后扣减）。
+	// 视图没建立（无库/读不到 users）时为 nil，前端自行从已过滤的 a-data 重算。
+	top := cfg.vis.cloud()
 	preview := make([]acctItem, 0, previewN)
 	for _, e := range entries[:min(len(entries), previewN)] {
 		initial := "?"
@@ -322,7 +339,10 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 
 func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 	slug := r.PathValue("account")
-	if !safeName(slug) {
+	if !safeName(slug) || cfg.vis.hidden(slug) {
+		// 被封账号一律 404（不是 403）：与"这个账号在图站上不存在"完全不可区分，
+		// 不确认"存在但被封"。gallery 现有约定里找不到账号就是 http.NotFound，
+		// 且这里没有"授权"语义，403 会被误解成"换个身份就能看"。
 		http.NotFound(w, r)
 		return
 	}
@@ -761,9 +781,15 @@ func sanitizeTag(t string) string {
 func handleGetAccountTags(w http.ResponseWriter, r *http.Request, cfg config) {
 	out := map[string]map[string]int{}
 	for _, u := range strings.Split(r.URL.Query().Get("keys"), ",") {
-		if u = strings.TrimSpace(u); u != "" {
-			out[u] = cfg.tags.Weights(u)
+		if u = strings.TrimSpace(u); u == "" {
+			continue
 		}
+		// 被封的 key 直接从返回里省略——等价于"没有这个账号"。批量接口逐个 404
+		// 会把整批请求打断，而且"少一个 key"和"不存在"本来就无法区分。
+		if cfg.vis.hidden(u) {
+			continue
+		}
+		out[u] = cfg.tags.Weights(u)
 	}
 	writeJSON(w, out)
 }
@@ -773,7 +799,7 @@ func handleGetAccountTags(w http.ResponseWriter, r *http.Request, cfg config) {
 // 累加写进 account_tags，并照记一条 request_logs 流水。
 //
 // 守卫顺序（与根 API 的中间件链同构）：
-// 封禁 403 → 库不可写 503 → 配额 429 → 入参 400 → 写失败 500 → 200。
+// 封禁 403 → 库不可写 503 → 配额 429 → 入参 400 → 目标被封 404 → 写失败 500 → 200。
 // 封禁放最前：被封 IP 不该消耗自己的配额，也不该靠状态码差异探出
 // 「标签功能开没开」；且它在 Add 之前，所以既不写库也不写 request_logs。
 func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
@@ -817,6 +843,13 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 	}
 	if user == "" || tag == "" || d == 0 || !safeName(user) {
 		http.Error(w, "user and tag required", http.StatusBadRequest)
+		return
+	}
+	// 不给被封账号投票：投了就会把它的标签重新推上首页标签云，等于把刚挡掉的
+	// 存在性又写回去。404 与 /u/{name} 的口径一致（不确认存在）。
+	// 放在配额之后：刷不存在账号的 IP 照样该被配额管住。
+	if cfg.vis.hidden(user) {
+		http.NotFound(w, r)
 		return
 	}
 	if err := cfg.tags.Add(user, map[string]int{tag: d}, ip, r.UserAgent()); err != nil {

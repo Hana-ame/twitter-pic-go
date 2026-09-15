@@ -98,7 +98,7 @@ func TestReadPaths(t *testing.T) {
 	if got := s.UsersForTag("男娘", nil, 10); len(got) != 0 {
 		t.Fatalf("负权重不应被反查到: %v", got)
 	}
-	cloud := s.Cloud(10)
+	cloud := s.Cloud(10, false)
 	if len(cloud) != 1 || cloud[0].Tag != "女性" || cloud[0].Count != 2 {
 		t.Fatalf("Cloud 错: %+v", cloud)
 	}
@@ -142,5 +142,128 @@ func TestTimestampOrderingInvariant(t *testing.T) {
 	}
 	if !(m["new"] > m["old"]) {
 		t.Fatalf("字典序应等于时间序: new=%q old=%q", m["new"], m["old"])
+	}
+}
+
+// newBareStore 只建 tags 包拥有的表，**不**建 users——用于测「users 表不存在」这条
+// 降级路径（newTestStore 为了时间排序会预建一张最小 users，盖不到这个分支）。
+func newBareStore(t *testing.T) *Store {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "twitter.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := EnsureSchema(db); err != nil {
+		t.Fatal(err)
+	}
+	return New(db)
+}
+
+// openUsers 建带 status 的 users 表（真源里由根包 CreateTableV2 建，tags 包不拥有它，
+// 但 BannedUsernames 与 Cloud 的封禁排除都要读它，所以测试自己造）。
+func openUsers(t *testing.T, s *Store) {
+	t.Helper()
+	if _, err := s.db.Exec(`CREATE TABLE users (username TEXT PRIMARY KEY, status TEXT)`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestBannedUsernamesSemantics 钉住"谁算被封"的判定，以及两种"空"必须可分。
+func TestBannedUsernamesSemantics(t *testing.T) {
+	s := newBareStore(t)
+	if err := s.Add("ok", map[string]int{"女性": 1}, "ip", "ua"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Add("ghost", map[string]int{"女性": 1}, "ip", "ua"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 没有 users 表 = 读不到（error 非 nil），调用方据此 fail-open；
+	// 这必须与"有表但一个都没封"（error 为 nil + 空切片）区分开。
+	if _, err := s.BannedUsernames(); err == nil {
+		t.Fatal("users 表缺失时必须报 error，不能当成『一个都没封』")
+	}
+
+	openUsers(t, s)
+	list, err := s.BannedUsernames()
+	if err != nil || len(list) != 0 {
+		t.Fatalf("有表但无行应返回空且无错: %v %v", list, err)
+	}
+
+	for _, tc := range []struct{ u, status any }{
+		{"banned", "BANNED"},
+		{"empty", ""},    // 根 API 要求 = 'SUCCESS'，空串同样算被封
+		{"nullish", nil}, // NULL 同理
+	} {
+		if _, err := s.db.Exec(`INSERT INTO users (username, status) VALUES (?, ?)`, tc.u, tc.status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(`INSERT INTO users (username, status) VALUES ('ok', 'SUCCESS')`); err != nil {
+		t.Fatal(err)
+	}
+	list, err = s.BannedUsernames()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, u := range list {
+		got[u] = true
+	}
+	for _, u := range []string{"banned", "empty", "nullish"} {
+		if !got[u] {
+			t.Fatalf("%s 应算被封: %v", u, list)
+		}
+	}
+	if got["ok"] {
+		t.Fatalf("SUCCESS 不该出现在封禁列表: %v", list)
+	}
+	// ghost 没有 users 行 → 不在列表里（"没注册过" ≠ "被封"）
+	if got["ghost"] {
+		t.Fatalf("无 users 行的账号不该被顺带隐藏: %v", list)
+	}
+}
+
+// TestCloudBanExclusion 钉住标签云的两种模式：false = 全量（根 API 原语义），
+// true = SQL 侧排除被封账号；且 users 表缺失时 true 要能退回而不是返回空。
+func TestCloudBanExclusion(t *testing.T) {
+	s := newBareStore(t)
+	_ = s.Add("alice", map[string]int{"共有": 1, "仅正常": 1}, "ip", "ua")
+	_ = s.Add("bob", map[string]int{"共有": 1, "仅被封": 1}, "ip", "ua")
+
+	// 表缺失：不排除才有结果；排除应自动退回全量（fail-open）而不是清空标签云
+	if c := s.Cloud(10, true); len(c) != 3 {
+		t.Fatalf("users 表缺失时应退回全量聚合，实际 %+v", c)
+	}
+
+	openUsers(t, s)
+	if _, err := s.db.Exec(`INSERT INTO users VALUES ('alice','SUCCESS'),('bob','BANNED')`); err != nil {
+		t.Fatal(err)
+	}
+	all := s.Cloud(10, false)
+	if len(all) != 3 {
+		t.Fatalf("不带排除时应看到全部 3 个标签，实际 %+v", all)
+	}
+	vis := s.Cloud(10, true)
+	m := map[string]int{}
+	for _, c := range vis {
+		m[c.Tag] = c.Count
+	}
+	if len(vis) != 2 {
+		t.Fatalf("「仅被封」该整条消失，实际 %+v", vis)
+	}
+	if m["共有"] != 1 {
+		t.Fatalf("「共有」应扣成 1，实际 %+v", m)
+	}
+	if _, ok := m["仅被封"]; ok {
+		t.Fatalf("只剩被封账号的标签不该出现: %+v", m)
+	}
+	// 负权重本来就不进云；确认排除没把它带回来
+	_ = s.Add("alice", map[string]int{"负": -1}, "ip", "ua")
+	for _, c := range s.Cloud(10, true) {
+		if c.Tag == "负" {
+			t.Fatalf("排除封禁不该改变权重口径: %+v", s.Cloud(10, true))
+		}
 	}
 }

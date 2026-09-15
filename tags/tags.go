@@ -17,6 +17,7 @@ package tags
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -30,6 +31,10 @@ type Count struct {
 	Tag   string
 	Count int
 }
+
+// ErrNoStore 表示没有可用的库连接（twitter.db 缺失或打开失败）。
+// 调用方据此决定降级方向：读不到 ≠ 一个都没有。
+var ErrNoStore = errors.New("tags: 无可用数据库")
 
 // Store 是 account_tags 的访问器。零值不可用，用 New 构造。
 type Store struct {
@@ -213,20 +218,76 @@ func (s *Store) UsersForTag(tag string, exist map[string]struct{}, limit int) []
 	return out
 }
 
+// BannedUsernames 返回 users 表里**显式标记为非 SUCCESS** 的账号（封禁隐身用）。
+//
+// 返回值区分两种"空"：error != nil 才是读不到（库/表缺失），error == nil 且切片为空
+// 表示「确实一个都没封」。调用方必须按这个区分决定降级方向——把"读不到"当成
+// "一个都没封"是安全的（不隐身），反过来（读不到就全隐藏）会清空整站。
+//
+// 只认显式标记：磁盘上有 json.gz 但 users 表里没行的账号**不在**结果里——那是
+// "没注册过"，不是"被封"；把它们一起藏起来会在数据形状不符合预期时把首页清空。
+//
+// 判定条件与根 API 的 `u.status = 'SUCCESS'` 严格互补：根侧要求等于 SUCCESS 才出现，
+// 这里要求"有行且不等于 SUCCESS"才隐藏。
+func (s *Store) BannedUsernames() ([]string, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrNoStore
+	}
+	rows, err := s.db.Query(
+		`SELECT username FROM users WHERE status IS NULL OR status != 'SUCCESS'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err == nil {
+			out = append(out, u)
+		}
+	}
+	return out, rows.Err()
+}
+
 // Cloud 返回覆盖账号数最多的前 n 个标签（仅正权重）。n<=0 时默认 36。
-func (s *Store) Cloud(n int) []Count {
+//
+// excludeBanned=true 时在 SQL 里就排掉被封账号（users 表里 status 非 SUCCESS 的行），
+// 而不是"先全量聚合、再由调用方按缓存扣减"——后者有个实测出来的正确性缺陷：
+// 扣减用的是缓存快照，窗口内被封账号新增的标签根本扣不掉。
+// users 表不存在时自动退回不过滤（fail-open：读不到封禁状态不该把标签云清空）。
+func (s *Store) Cloud(n int, excludeBanned bool) []Count {
 	if s == nil || s.db == nil {
 		return nil
 	}
 	if n <= 0 {
 		n = 36
 	}
-	rows, err := s.db.Query(
-		`SELECT tag, COUNT(DISTINCT username) FROM account_tags WHERE weight > 0
-		 GROUP BY tag ORDER BY 2 DESC, tag LIMIT ?`, n)
+	const base = `SELECT tag, COUNT(DISTINCT username) FROM account_tags a WHERE weight > 0`
+	const banned = ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+	                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
+	const tail = ` GROUP BY tag ORDER BY 2 DESC, tag LIMIT ?`
+
+	q := base + tail
+	if excludeBanned {
+		q = base + banned + tail
+	}
+	out, err := s.queryCloud(q, n)
+	if err != nil && excludeBanned {
+		// 多半是 users 表还没建（老库/独立部署的图站库）：退回不过滤并说一声。
+		log.Printf("tags: Cloud 排除被封账号失败，退回全量聚合: %v", err)
+		out, err = s.queryCloud(base+tail, n)
+	}
 	if err != nil {
 		log.Printf("tags: Cloud: %v", err)
 		return nil
+	}
+	return out
+}
+
+func (s *Store) queryCloud(q string, n int) ([]Count, error) {
+	rows, err := s.db.Query(q, n)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	out := make([]Count, 0, n)
@@ -237,10 +298,7 @@ func (s *Store) Cloud(n int) []Count {
 		}
 		out = append(out, c)
 	}
-	if err := rows.Err(); err != nil {
-		log.Printf("tags: Cloud scan: %v", err)
-	}
-	return out
+	return out, rows.Err()
 }
 
 // LastModifyFor 按 username 分块查 users.last_modify（PK 点查）。

@@ -78,6 +78,35 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 
 已废弃（代码不再读取）：`GALLERY_TAGS_DB`、`GALLERY_ACCOUNT_VOTES_FILE`、`GALLERY_MEDIA_TAGS_FILE`。
 
+## 被封账号隐身
+
+真源是 `twitter.db` 的 `users.status`，判定只有一条：**`status = 'SUCCESS'` 才可见**，
+与根 API 逐字同向。图站原先只看「磁盘上有没有 `<name>.json.gz`」，完全不看 status。
+
+实现在 `visibility.go` 的 `vis`（60s TTL 缓存视图，标签云在同一次刷新里由 SQL 排除，
+不做"事后扣减"——扣减用快照会漏掉窗口内被封账号新增的标签，这个缺陷是实测出来的）。
+
+**用 404 而不是 403**：403 会确认「这个账号存在但被封」，且图站没有授权语义，
+403 会被理解成"换个身份就能看"；而图站找不到账号本来就是 `http.NotFound`。
+因此被封账号在图站上与"从不存在"完全不可区分。批量接口 `/api/tags?keys=` 用
+**省略 key** 表达同一件事（逐个 404 会打断整批）。
+
+**不保留直链看快照的口子**：`/raw/{account}` 是最大的泄漏面（整个时间线原样吐出），
+一并 404。
+
+| URL | 被封账号 | 正常账号 |
+|---|---|---|
+| `GET /u/{name}` | **404**（原 200） | 200 |
+| `GET /raw/{name}` | **404**（原 200，直吐快照） | 200 |
+| `GET /`（列表 + `#a-data` + 标签云计数） | 不出现；只剩它 in 用的标签整条消失 | 正常 |
+| `GET /api/tag/{tag}` | 不出现在 `users` | 正常 |
+| `GET /api/tags?keys=`（含别名） | 该 key 从返回里省略 | 正常 |
+| `POST /api/tag` 投给被封账号 | **404**，不落库不落流水 | 正常 |
+
+降级方向是 **fail-open**：`users` 表读不到时不隐身（把整站藏起来等于自我 DoS），
+并在日志里吼一声。磁盘有 `json.gz` 但 `users` 表里没行的账号**按可见处理**——
+那是"没注册过"不是"被封"，把它们一起隐藏会在数据形状不符合预期时清空首页。
+
 ## 路由
 
 `GET /` · `GET /u/{account}?type=&cursor=` · `GET /raw/{account}` · `GET /api/tag/{tag}?limit=` · `GET /api/tags?keys=` · `POST /api/tag` · `GET /api/account-tags`（别名）· `POST /api/account-tag`（别名）· `GET /api/reactions` · `POST /api/react` · `GET /static/*` · `GET /healthz`
@@ -93,7 +122,8 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 | 2 | 标签库缺失/不可写 | 503 | `tags disabled` |
 | 3 | 超 `GALLERY_TAG_RATE_MAX` | 429 | `{"code":429,"message":"请求过于频繁，请一小时后再试"}` |
 | 4 | 空 user/tag、`d==0`、user 含路径穿越 | 400 | `user and tag required` |
-| 5 | 写库失败 | 500 | `write failed` |
-| 6 | 成功 | 200 | `{"user":...,"tags":{tag:weight}}` |
+| 5 | 投票目标是被封账号 | **404** | `404 page not found`（不给被封账号补标签）|
+| 6 | 写库失败 | 500 | `write failed` |
+| 7 | 成功 | 200 | `{"user":...,"tags":{tag:weight}}` |
 
-1–4 都在 `tags.Add` 之前返回，因此**不会**留下 `account_tags` 行或 `request_logs` 流水。
+1–5 都在 `tags.Add` 之前返回，因此**不会**留下 `account_tags` 行或 `request_logs` 流水。

@@ -273,8 +273,8 @@ img.lb-media{cursor:pointer}
 .lb-slide.paused .lb-playicon{display:flex}
 
 /* chrome：毛玻璃圆形按钮，统一淡入淡出，3.2s 自动隐藏 */
-.lb-close,.lb-nav,.lb-rail,.lb-info,.lb-ind{transition:opacity .25s}
-.lb.hide-ui .lb-close,.lb.hide-ui .lb-nav,.lb.hide-ui .lb-rail,.lb.hide-ui .lb-info,.lb.hide-ui .lb-ind{opacity:0;pointer-events:none}
+.lb-close,.lb-nav,.lb-rail,.lb-info,.lb-ind,.lb-tags{transition:opacity .25s}
+.lb.hide-ui .lb-close,.lb.hide-ui .lb-nav,.lb.hide-ui .lb-rail,.lb.hide-ui .lb-info,.lb.hide-ui .lb-ind,.lb.hide-ui .lb-tags{opacity:0;pointer-events:none}
 .lb-topfade{position:fixed;top:0;left:0;right:0;height:80px;z-index:51;pointer-events:none;
             background:linear-gradient(180deg,rgba(0,0,0,.6),transparent)}
 .lb-bottomfade{position:fixed;bottom:0;left:0;right:0;height:80px;z-index:51;pointer-events:none;
@@ -310,6 +310,16 @@ img.lb-media{cursor:pointer}
 .lb-act.on{background:rgba(255,64,96,.85);border-color:rgba(255,64,96,.9)}
 .lb-act.on:hover{background:rgba(255,64,96,.95)}
 .lb-info{position:fixed;left:16px;bottom:20px;z-index:52;color:#fff;text-shadow:0 1px 3px #000;font-size:14px;opacity:.9}
+.lb-tags{position:fixed;left:16px;right:96px;bottom:22px;z-index:52;display:flex;flex-wrap:wrap;gap:6px;align-items:center;pointer-events:auto}
+.ltag{display:inline-flex;align-items:center;gap:4px;background:rgba(255,255,255,.12);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.2);color:#fff;border-radius:999px;padding:3px 10px;font-size:12.5px;cursor:pointer;box-shadow:0 4px 16px -2px rgba(0,0,0,.5)}
+.ltag b{font-weight:600;opacity:.9;margin-left:1px}
+.ltag.on{background:rgba(91,157,255,.38);border-color:rgba(91,157,255,.7)}
+.ltvote{border:none;background:rgba(255,255,255,.14);color:#fff;border-radius:50%;width:18px;height:18px;font-size:12px;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center}
+.ltvote:hover{background:rgba(255,255,255,.32)}
+.ltagadd{background:rgba(255,255,255,.08);font-size:14px}
+.lb-taginput{position:fixed;bottom:58px;left:50%;transform:translateX(-50%);z-index:53;background:rgba(20,24,36,.94);border:1px solid var(--acc);color:#fff;border-radius:999px;padding:8px 16px;font-size:13px;outline:none;width:min(320px,60vw);box-shadow:0 12px 32px -6px rgba(0,0,0,.6)}
+.lb-taginput::placeholder{color:var(--faint)}
+.lb-taginput[hidden]{display:none}
 
 /* ---- reduced motion ---- */
 @media(prefers-reduced-motion:reduce){

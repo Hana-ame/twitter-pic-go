@@ -101,6 +101,7 @@ type accountPage struct {
 	PrevHref  string
 	NextHref  string
 	RawJSON   template.JS
+	TagsJSON  template.JS
 	LegacyURL string
 }
 
@@ -159,7 +160,9 @@ type config struct {
 	legacyBase    string
 	pageSize      int
 	reactionsFile string
+	mediaTagsFile string
 	tags          *tagStore
+	mediaTags     *mediaTagStore
 }
 
 func Run(addr string) {
@@ -173,6 +176,7 @@ func Run(addr string) {
 		legacyBase:    legacyBase(),
 		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
 		reactionsFile: envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
+		mediaTagsFile: envOr("GALLERY_MEDIA_TAGS_FILE", "./media_tags.json"),
 	}
 	if cfg.pageSize <= 0 {
 		cfg.pageSize = defaultPageSize
@@ -180,6 +184,7 @@ func Run(addr string) {
 	cfg.tags = openTagStore(envOr("GALLERY_TAGS_DB", "./tags.db"))
 
 	reactions := newReactionStore(cfg.reactionsFile)
+	cfg.mediaTags = newMediaTagStore(cfg.mediaTagsFile)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
@@ -197,6 +202,8 @@ func Run(addr string) {
 	mux.HandleFunc("GET /api/reactions", func(w http.ResponseWriter, r *http.Request) { handleGetReactions(w, r, reactions) })
 	mux.HandleFunc("GET /api/tag/{tag}", func(w http.ResponseWriter, r *http.Request) { handleTagUsers(w, r, cfg) })
 	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions) })
+	mux.HandleFunc("GET /api/tags", func(w http.ResponseWriter, r *http.Request) { handleGetTags(w, r, cfg.mediaTags) })
+	mux.HandleFunc("POST /api/tag", func(w http.ResponseWriter, r *http.Request) { handlePostTag(w, r, cfg.mediaTags) })
 
 	if sub, err := fs.Sub(staticFS, "static"); err == nil {
 		mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
@@ -332,6 +339,14 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		raw = []byte("{}")
 	}
 
+	var tagJSON []byte
+	if cfg.mediaTags != nil {
+		urls := make([]string, 0, len(list))
+		for _, m := range list { urls = append(urls, m.URL) }
+		if b, err := json.Marshal(cfg.mediaTags.snapshot(urls)); err == nil { tagJSON = b }
+	}
+	if tagJSON == nil { tagJSON = []byte("{}") }
+
 	acc := &accountPage{
 		Slug:      slug,
 		Name:      firstNonEmpty(strings.TrimSpace(doc.AccountInfo.Name), slug),
@@ -350,6 +365,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		PrevHref:  buildHref(slug, filter, prevCursor),
 		NextHref:  buildHref(slug, filter, nextCursor),
 		RawJSON:   template.JS(raw),
+		TagsJSON:  template.JS(tagJSON),
 		LegacyURL: legacyURL(cfg.legacyBase, slug),
 	}
 	render(w, "account.html", pageData{Title: acc.Name, Account: acc, AppJS: appJS, LegacyBase: cfg.legacyBase})
@@ -816,4 +832,138 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+
+// ---- media tags（媒体级标签：投票计数，JSON 文件持久化） ----
+
+type mediaTagStore struct {
+	mu   sync.Mutex
+	path string
+	m    map[string]map[string]int // mediaURL -> tag -> 净票数
+}
+
+func newMediaTagStore(path string) *mediaTagStore {
+	s := &mediaTagStore{path: path, m: map[string]map[string]int{}}
+	if path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			_ = json.Unmarshal(b, &s.m)
+		}
+	}
+	return s
+}
+
+func sanitizeTag(t string) string {
+	t = strings.TrimSpace(t)
+	var b strings.Builder
+	for _, r := range t {
+		if r == '#' || r == ' ' || r < 32 {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	rs := []rune(b.String())
+	if len(rs) > 24 {
+		rs = rs[:24]
+	}
+	return string(rs)
+}
+
+func (s *mediaTagStore) snapshot(keys []string) map[string]map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]map[string]int)
+	for _, k := range keys {
+		if tags := s.m[k]; len(tags) > 0 {
+			cp := make(map[string]int, len(tags))
+			for t, c := range tags {
+				cp[t] = c
+			}
+			out[k] = cp
+		}
+	}
+	return out
+}
+
+func (s *mediaTagStore) apply(key, tag string, d int) map[string]int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tags := s.m[key]
+	if tags == nil {
+		tags = map[string]int{}
+		s.m[key] = tags
+	}
+	if d > 1 {
+		d = 1
+	} else if d < -1 {
+		d = -1
+	}
+	c := tags[tag] + d
+	if c < 0 {
+		c = 0
+	}
+	if c == 0 {
+		delete(tags, tag)
+	} else {
+		tags[tag] = c
+	}
+	s.saveLocked()
+	cp := make(map[string]int, len(tags))
+	for t, c2 := range tags {
+		cp[t] = c2
+	}
+	return cp
+}
+
+func (s *mediaTagStore) saveLocked() {
+	if s.path == "" {
+		return
+	}
+	b, err := json.MarshalIndent(s.m, "", "  ")
+	if err != nil {
+		return
+	}
+	tmp := s.path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, s.path)
+}
+
+func handleGetTags(w http.ResponseWriter, r *http.Request, s *mediaTagStore) {
+	if s == nil {
+		writeJSON(w, map[string]any{})
+		return
+	}
+	var keys []string
+	for _, k := range strings.Split(r.URL.Query().Get("keys"), ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			keys = append(keys, k)
+		}
+	}
+	writeJSON(w, s.snapshot(keys))
+}
+
+func handlePostTag(w http.ResponseWriter, r *http.Request, s *mediaTagStore) {
+	if s == nil {
+		http.Error(w, "tags disabled", http.StatusNotFound)
+		return
+	}
+	var req struct {
+		Key string `json:"key"`
+		Tag string `json:"tag"`
+		D   int    `json:"d"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&req); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	key := strings.TrimSpace(req.Key)
+	tag := sanitizeTag(req.Tag)
+	if key == "" || tag == "" {
+		http.Error(w, "key and tag required", http.StatusBadRequest)
+		return
+	}
+	tags := s.apply(key, tag, req.D)
+	writeJSON(w, map[string]any{"key": key, "tags": tags})
 }

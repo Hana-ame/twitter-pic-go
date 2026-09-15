@@ -55,9 +55,12 @@
     <button class="lb-act" id="lb-fav" title="喜欢">♥</button>
   </div>
   <div class="lb-info" id="lb-info"></div>
+  <div class="lb-tags" id="lb-tags"></div>
+  <input class="lb-taginput" id="lb-taginput" maxlength="24" autocomplete="off" placeholder="添加标签后回车" hidden>
 </div>
 
 <script id="g-data" type="application/json">{{.Account.RawJSON}}</script>
+<script id="g-tags" type="application/json">{{.Account.TagsJSON}}</script>
 <script>{{.AppJS}}</script>
 </body>
 </html>

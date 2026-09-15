@@ -17,19 +17,21 @@
   </section>
 
   {{with .Home}}
-  <div class="agrid" id="a-grid">
+  <div class="agrid" id="a-grid" data-base="{{.MediaBase}}">
     {{range .Preview}}
-    <a class="acct" href="/u/{{.Name}}"><span class="av" style="--h:{{.Hue}}">{{.Initial}}</span><span class="at">@{{.Name}}</span></a>
+    <a class="acct" href="/u/{{.Name}}" data-n="{{.Name}}"><span class="bnr-ph" style="--h:{{.Hue}}">{{.Initial}}</span><span class="arow"><span class="av" style="--h:{{.Hue}}">{{.Initial}}</span><span class="col"><span class="at">@{{.Name}}</span><span class="nk"></span></span></span></a>
     {{end}}
   </div>
   <script id="a-data" type="application/json">{{.NamesJSON}}</script>
   {{end}}
+  <!-- a-meta：前端缓存预热器。服务端恒为 {}；离线单文件导出时可烘焙入元数据。 -->
+  <script id="a-meta" type="application/json">{}</script>
 
   <div class="pager">
     <button id="a-more" class="btn" type="button">加载更多 ↓</button>
   </div>
   <p id="a-empty" class="muted center" hidden>没有匹配的账号。</p>
-  <noscript><p class="muted center">已显示前 {{with .Home}}{{len .Preview}}{{end}} 个账号；启用 JS 可搜索全部。</p></noscript>
+  <noscript><p class="muted center">启用 JS 后可预览各账号的头像与首图。</p></noscript>
 </main>
 {{template "footer" .}}
 <script>{{.HomeJS}}</script>

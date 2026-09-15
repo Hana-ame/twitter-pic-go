@@ -107,6 +107,7 @@ type homeData struct {
 	Total     int
 	Preview   []acctItem
 	NamesJSON template.JS
+	MediaBase string // 前端据此重写 pbs.twimg.com 图片域名（同 mediaURL 规则）
 }
 
 type pageData struct {
@@ -155,6 +156,15 @@ func Run(addr string) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { handleHome(w, r, cfg) })
 	mux.HandleFunc("GET /u/{account}", func(w http.ResponseWriter, r *http.Request) { handleAccount(w, r, cfg) })
+	// /raw/{account} 原样吐 json.gz（不解析）；首页卡片的头像/昵称/首图由前端流式自取。
+	mux.HandleFunc("GET /raw/{account}", func(w http.ResponseWriter, r *http.Request) {
+		acc := r.PathValue("account")
+		if !safeName(acc) {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, filepath.Join(cfg.jsonDir, acc+".json.gz"))
+	})
 	mux.HandleFunc("GET /api/reactions", func(w http.ResponseWriter, r *http.Request) { handleGetReactions(w, r, reactions) })
 	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions) })
 
@@ -197,7 +207,7 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 	}
 	render(w, "home.html", pageData{
 		Title:  "首页",
-		Home:   &homeData{Total: len(names), Preview: preview, NamesJSON: template.JS(namesJSON)},
+		Home:   &homeData{Total: len(names), Preview: preview, NamesJSON: template.JS(namesJSON), MediaBase: cfg.mediaBase},
 		HomeJS: homeJS,
 	})
 }

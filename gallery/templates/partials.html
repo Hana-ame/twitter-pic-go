@@ -60,6 +60,17 @@ footer{padding:24px;text-align:center;color:var(--muted)}
 .at{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13.5px;font-weight:600}
 .nk{color:var(--muted);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nk:empty{display:none}
+.tagbar{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:0 0 20px}
+.tag{display:inline-flex;align-items:center;gap:6px;background:var(--card);border:1px solid #2b3244;color:var(--muted);
+     border-radius:999px;padding:5px 12px;font-size:13px;cursor:pointer}
+.tag span{font-size:11px;color:#5c6578}
+.tag:hover{color:var(--fg);border-color:var(--acc)}
+.tag.active{background:linear-gradient(90deg,#2b3f66,#41305c);color:#fff;border-color:var(--acc)}
+.tgs{display:flex;flex-wrap:wrap;gap:4px;padding:0 11px 10px}
+.tgs:empty{display:none;padding:0}
+.tg{font-size:11px;color:var(--acc);background:#1b2536;border-radius:6px;padding:1px 7px;max-width:100%;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tg.more{color:var(--muted)}
 
 /* 全屏竖滑查看器 */
 .lb{position:fixed;inset:0;z-index:50;background:#000}
@@ -80,6 +91,20 @@ footer{padding:24px;text-align:center;color:var(--muted)}
 .lb-act span{font-size:12px;color:#cfd6e4}
 .lb-act.on{background:rgba(255,64,96,.85);border-color:rgba(255,64,96,.9)}
 .lb-info{position:fixed;left:16px;bottom:20px;z-index:52;color:#fff;text-shadow:0 1px 3px #000;font-size:14px}
+
+/* 左右翻页条：仅鼠标设备显示（hover 出半透明箭头），height 100vh */
+.lb-nav{display:none;position:fixed;top:0;height:100vh;height:100dvh;width:min(16vw,150px);z-index:51;
+        align-items:center;justify-content:center;cursor:pointer;user-select:none;-webkit-user-select:none}
+.lb-prev{left:0;background:linear-gradient(90deg,rgba(255,255,255,.07),transparent)}
+.lb-next{right:0;background:linear-gradient(270deg,rgba(255,255,255,.07),transparent)}
+.lb-nav span{opacity:0;font-size:44px;line-height:1;color:#fff;background:rgba(255,255,255,.14);border-radius:50%;
+             width:58px;height:58px;display:flex;align-items:center;justify-content:center;
+             transition:opacity .15s;pointer-events:none;text-shadow:0 1px 4px rgba(0,0,0,.6)}
+.lb-nav:hover span{opacity:.9}
+.lb-nav:hover{background:linear-gradient(var(--lbdir,90deg),rgba(255,255,255,.14),transparent)}
+.lb-next:hover{--lbdir:270deg}
+@media (hover:hover) and (pointer:fine){.lb-nav{display:flex}}
+.lb-nav.off{display:none!important}
 </style>
 </head>
 {{end}}

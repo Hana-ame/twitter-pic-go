@@ -134,8 +134,23 @@
     if (dislikeBtn) dislikeBtn.classList.toggle('on', v === -1);
     if (favBtn) favBtn.classList.toggle('on', isFav(key));
     if (lbInfo) lbInfo.textContent = '@' + slug + ' · ' + (cur + 1) + '/' + slides.length + (m.id ? ' · ' + m.id : '');
+    if (prevNav) prevNav.classList.toggle('off', cur <= 0);
+    if (nextNav) nextNav.classList.toggle('off', cur >= slides.length - 1);
     loadCounts(key);
   }
+
+  // 左右翻页条（仅鼠标设备有 CSS 显示；到界用 .off 落空给中间点击播放）
+  var prevNav = document.getElementById('lb-prev');
+  var nextNav = document.getElementById('lb-next');
+  function navTo(delta) {
+    // 用实时滚动位置而非防抖后的 cur，连点不丢帧
+    var h = track.clientHeight || 1;
+    var t = Math.round(track.scrollTop / h) + delta;
+    if (t < 0 || t >= slides.length) return;
+    track.scrollTo({ top: t * h, behavior: 'smooth' });
+  }
+  if (prevNav) prevNav.addEventListener('click', function () { navTo(-1); });
+  if (nextNav) nextNav.addEventListener('click', function () { navTo(1); });
 
   // 全屏媒体不用原生 controls：CSS 里 pointer-events:none 让触摸落到滑面上，
   // 竖滑才能滚 track（原生视频控件会吞掉滑动手势）。点击滑面自行切换播放/暂停。
@@ -238,6 +253,8 @@
     if (e.key === 'Escape') closeLightbox();
     else if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); track.scrollBy({ top: track.clientHeight, behavior: 'smooth' }); }
     else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); track.scrollBy({ top: -track.clientHeight, behavior: 'smooth' }); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); navTo(1); }
+    else if (e.key === 'ArrowLeft') { e.preventDefault(); navTo(-1); }
   });
 
   renderGrid();

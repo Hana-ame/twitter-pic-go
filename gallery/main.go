@@ -112,10 +112,12 @@ type acctItem struct {
 	Tags    []string
 }
 
-// acctEntry 是嵌入 #a-data 给前端的条目：账号名 + 标签（标签由后端从 tags.db 读出）。
+// acctEntry 是嵌入 #a-data 给前端的条目：账号名 + 标签 + 更新时间（均从 tags.db 读出）。
+// U 为 "YYYY-MM-DD HH:MM:SS"（UTC，定宽格式，字典序即时间序）；缺失为空串排最后。
 type acctEntry struct {
 	Name string   `json:"n"`
 	Tags []string `json:"t,omitempty"`
+	U    string   `json:"u,omitempty"`
 }
 
 type tagCount struct {
@@ -250,15 +252,24 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 	const previewN = 120
 	// 账号级 tags 按 username 现查（PK 前缀索引，分块 IN）；标签云用启动时聚合一次的缓存。
 	tagged := cfg.tags.tagsFor(names)
+	lm := cfg.tags.lastModFor(names)
 	entries := make([]acctEntry, 0, len(names))
 	untagged := 0
 	for _, n := range names {
 		t := tagged[n]
-		entries = append(entries, acctEntry{Name: n, Tags: t})
+		entries = append(entries, acctEntry{Name: n, Tags: t, U: lm[n]})
 		if len(t) == 0 {
 			untagged++
 		}
 	}
+	// 首页列表与标签筛选结果统一按 update 从新到旧；同刻/缺失按名字字典序兜底。
+	// 前端从 #a-data 顺序继承该排序，筛选与"加载更多"分块不再重排。
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].U != entries[j].U {
+			return entries[i].U > entries[j].U
+		}
+		return entries[i].Name < entries[j].Name
+	})
 	var top []tagCount
 	if cfg.tags != nil {
 		top = cfg.tags.cloud // 全局标签云：启动时聚合一次的缓存；db 不可用时为 nil（前端自行从 a-data 重算）
@@ -656,6 +667,38 @@ func (st *tagStore) usersForTag(tag string, exist map[string]struct{}, limit int
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("gallery: usersForTag scan: %v", err)
+	}
+	return out
+}
+
+// lastModFor 按 username 分块查 accounts.last_modify（PK 点查）。
+// accounts 表不存在（旧 tags.db）时降级为空 map 并只记一次日志，不影响首页。
+func (st *tagStore) lastModFor(names []string) map[string]string {
+	out := map[string]string{}
+	if st == nil || len(names) == 0 {
+		return out
+	}
+	const chunk = 400
+	for i := 0; i < len(names); i += chunk {
+		batch := names[i:min(i+chunk, len(names))]
+		ph := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
+		args := make([]any, len(batch))
+		for k, n := range batch {
+			args[k] = n
+		}
+		rows, err := st.db.Query("SELECT username, last_modify FROM accounts WHERE username IN (" + ph + ")", args...)
+		if err != nil {
+			log.Printf("gallery: lastModFor: %v (旧 tags.db？跑一遍 build_tags_db.py 重建)", err)
+			return out
+		}
+		for rows.Next() {
+			var u, lm string
+			if err := rows.Scan(&u, &lm); err != nil {
+				continue
+			}
+			out[u] = lm
+		}
+		rows.Close()
 	}
 	return out
 }

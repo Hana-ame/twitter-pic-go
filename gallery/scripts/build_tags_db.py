@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""从 bwh 拉回的 twitter.db 快照构建 gallery 用的 tags.db（新表 account_tags）。
+"""从 bwh 拉回的 twitter.db 快照构建 gallery 用的 tags.db。
+
+产出两张表：
+  account_tags(username, tag, weight)  —— user_tags 的 JSON 拍平（按账号查标签 / 按标签反查账号）
+  accounts(username, last_modify)      —— users 的更新时间（首页按 update 从新到旧排序）
 
 用法：
   # bwh 快照（含 WAL 一致性）：
@@ -11,11 +15,14 @@ twitter.db.user_tags.tags 是 JSON 对象 {"tag": weight, ...}，拍平成
 account_tags(username, tag, weight) 规范表，按 (username, weight DESC, tag) 有序。
 """
 import json
+import os
 import sqlite3
 import sys
 
-src = sys.argv[1] if len(sys.argv) > 1 else "../../data/twitter.db"
-dst = sys.argv[2] if len(sys.argv) > 2 else "../../data/tags.db"
+_here = os.path.dirname(os.path.abspath(__file__))
+# 默认路径按脚本位置解析（twitter-pic/data/），dst 建议先指 /tmp 再 cp 到 Windows 目录（见上）
+src = sys.argv[1] if len(sys.argv) > 1 else os.path.join(_here, "..", "..", "..", "data", "twitter.db")
+dst = sys.argv[2] if len(sys.argv) > 2 else os.path.join(_here, "..", "..", "..", "data", "tags.db")
 
 s = sqlite3.connect(src)
 try:
@@ -34,8 +41,14 @@ CREATE TABLE IF NOT EXISTS account_tags (
     PRIMARY KEY (username, tag)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_account_tags_tag ON account_tags(tag);
+CREATE TABLE IF NOT EXISTS accounts (
+    username    TEXT PRIMARY KEY,
+    last_modify TEXT NOT NULL
+) WITHOUT ROWID;
 DELETE FROM account_tags;
+DELETE FROM accounts;
 """)
+
 
 # 批插 + 单次 commit：/mnt/d (drvfs) 上逐条 autocommit 会被 fsync 拖死。
 # 建议 dst 先建在 Linux 本地 fs（/tmp），完成后 cp 到 Windows 目录。
@@ -66,9 +79,19 @@ out.executemany("INSERT OR REPLACE INTO account_tags VALUES (?,?,?)", pairs)
 out.commit()
 n = len(pairs)
 
+# accounts：全部账号的更新时间（含未打标签的），首页排序用
+s = sqlite3.connect(src)
+try:
+    accts = [(u, lm or "") for u, lm in s.execute("SELECT username, last_modify FROM users")]
+finally:
+    s.close()
+out.executemany("INSERT OR REPLACE INTO accounts VALUES (?,?)", accts)
+out.commit()
+
 out.execute("VACUUM")
 out.commit()
 users = out.execute("SELECT COUNT(DISTINCT username) FROM account_tags").fetchone()[0]
 tags = out.execute("SELECT COUNT(DISTINCT tag) FROM account_tags").fetchone()[0]
+ac = out.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
 out.close()
-print(f"tags.db: {n} rows, {users} accounts, {tags} distinct tags, {bad} bad json")
+print(f"tags.db: {n} tag rows, {users} tagged accounts, {tags} distinct tags, {bad} bad json, {ac} accounts w/ last_modify")

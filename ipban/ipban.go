@@ -355,11 +355,21 @@ func (m *Manager) IsBannedAddr(a netip.Addr) bool {
 	return t.Contains(a)
 }
 
-// Chain 返回这个请求涉及的所有 IP：RemoteAddr 的 host + XFF 全部条目（左→右）。
+// Chain 返回这个请求涉及的所有 IP：RemoteAddr 的 host + XFF 全部条目（左→右）
+// + CF-Connecting-IP（合法才收，值与 Principal 同样规到 netip 规范化形态）。
 //
 // 统一口径的意义：封禁必须看整条链。只看 XFF 首项会被
 // `X-Forwarded-For: <好人IP>, <被封IP>` 直接绕过——原先 gallery 就是这个只看首项的写法。
 // 注意 IPv6 的 `fe80::1%eth0` 这类 zone 会被去掉，`[::1]:8080` 会剥掉端口。
+//
+// 为什么 CF 头也要进链（2026-09-16 实测补）：Principal 已改成优先读 CF-Connecting-IP，
+// 如果封禁还只看 XFF+RemoteAddr，就会出现「同一个 IP，当身份用时被记住、当封禁对象
+// 查时看不见」。真实缺口是**只设 CF 头不设 XFF** 的上游（CF Tunnel / 别的边缘改写掉
+// XFF），那时被封 IP 只出现在 CF 头里。
+// 与 Principal 不同，这里**不受 CF_CONNECTING_IP 开关影响**：两条口径的哲学本就不同——
+// 封禁是「链上任何一处报到被封 IP 就挡」，XFF 同样是不可信头也照样查；身份是
+// 「只取我信任的那个值」。加它也不会给攻击者新增陷害手段：往 CF 头里塞别人的被封 IP
+// 只会让**自己**这个请求被挡（封禁是逐请求判定，不会因此把那人加进名单）。
 func Chain(r *http.Request) []string {
 	if r == nil {
 		return nil
@@ -374,6 +384,13 @@ func Chain(r *http.Request) []string {
 		if s := strings.TrimSpace(part); s != "" {
 			out = append(out, s)
 		}
+	}
+	// CF 头放最后：XFF 里也能查到同一个值，命中时报告的字符串不变（保持既有响应形态）。
+	if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
+		if a, err := netip.ParseAddr(v); err == nil {
+			out = append(out, a.String())
+		}
+		// 非法值不进链（也不像 Principal 那样计数：这里不是身份判定，脏值当没看见即可）
 	}
 	return out
 }

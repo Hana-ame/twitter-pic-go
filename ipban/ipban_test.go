@@ -142,6 +142,36 @@ func TestPrincipalHopMath(t *testing.T) {
 	}
 }
 
+// TestChainIncludesCFHeader 钉住：被封 IP 只出现在 CF-Connecting-IP 里也必须被挡，
+// 且非法 CF 头值不进链（不因为脏值把整条链判废）。
+func TestChainIncludesCFHeader(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "198.51.100.9:4321"
+	r.Header.Set("CF-Connecting-IP", "203.0.113.7") // 只有 CF 头是被封 IP
+	if got := Chain(r); len(got) != 2 || got[1] != "203.0.113.7" {
+		t.Fatalf("CF 头必须进链: %v", got)
+	}
+	m := New(writeBans(t, "203.0.113.7\n"))
+	if _, banned := m.Decide(r); !banned {
+		t.Fatal("被封 IP 只出现在 CF-Connecting-IP 里也必须被挡（与 Principal 的取值口径对齐）")
+	}
+	// 脏值：带端口/非 IP 都不进链，也不该影响 XFF 那部分的判定
+	r2 := httptest.NewRequest("GET", "/", nil)
+	r2.RemoteAddr = "198.51.100.9:4321"
+	r2.Header.Set("CF-Connecting-IP", "203.0.113.7:5678")
+	r2.Header.Set("X-Forwarded-For", "2001:db8::42")
+	if got := Chain(r2); len(got) != 2 || got[1] != "2001:db8::42" {
+		t.Fatalf("非法 CF 头值不该进链，也不该带走 XFF: %v", got)
+	}
+	// 规范化：IPv6 缩写形态与 Principal 保持一致，避免同一个地址两种字符串
+	r3 := httptest.NewRequest("GET", "/", nil)
+	r3.RemoteAddr = "127.0.0.1:1"
+	r3.Header.Set("CF-Connecting-IP", "2001:0db8:0000::0042")
+	if got := Chain(r3); got[len(got)-1] != "2001:db8::42" {
+		t.Fatalf("CF 头值必须规范化，实际 %v", got)
+	}
+}
+
 // TestPrincipalPrefersCFHeader 钉住一级优先：经 Cloudflare 时读 CF-Connecting-IP。
 // CF 覆写该头，所以经 CF 的请求伪造不了它——比数 XFF 跳数可靠。
 func TestPrincipalPrefersCFHeader(t *testing.T) {

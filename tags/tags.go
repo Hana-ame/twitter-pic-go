@@ -71,6 +71,12 @@ func EnsureSchema(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_account_tags_tag ON account_tags(tag);`); err != nil {
 		return fmt.Errorf("创建 account_tags 标签索引失败: %v", err)
 	}
+	// 票务三表（tag_votes / tag_weight_base + ip 索引）。DDL 同样只此一份。
+	// 注意：历史底数的**快照**不在这里做，必须由调用方在自己的回填之后显式调
+	// BackfillVoteBase —— 见 votes.go 里那段"调用时机"的注释。
+	if err := EnsureVoteSchema(db); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS request_logs (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
 		username TEXT,

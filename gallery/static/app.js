@@ -178,20 +178,19 @@
   function escT(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   // 与 twitter API 同口径：单次写请求对单标签最多贡献 ±1（服务端同幅限幅）。
   // 反向切换（本地票 +1 到 -1，净差 ±2）拆成两笔同向 ±1；同向增量可交换，到达顺序无关。
-  function postATag(tag, d) {
-    var steps = d >= 2 ? [1, 1] : d <= -2 ? [-1, -1] : (d ? [d] : []);
-    var i = 0;
-    (function step() {
-      if (i >= steps.length) return;
-      var dd = steps[i++];
-      fetch('/api/account-tag', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user: slug, tag: tag, d: dd })
-      }).then(function (r) { return r.json(); })
-        // 串行：等上一笔返回再发下一笔，保证末次渲染用的是最新权重
-        .then(function (j) { if (j && j.tags) { aTags = j.tags; renderATags(); } step(); })
-        .catch(function () { step(); });
-    })();
+  // 发的是**本访客对该标签的目标值**（-1 | 0 | +1，0=撤票），不是差值。
+  // 服务端按 (账号,标签,IP) 记票并对同值幂等，所以：
+  //   - 不需要再"拆两笔同向 ±1"去绕开每请求 ±1 限幅——那是旧累加语义下的补丁，
+  //     目标值语义下反向改票（+1 → -1）本就该是一笔请求（净变化 ±2）；
+  //   - 重复点击/重发都是幂等的，服务端不依赖这里的 localStorage。
+  // 本地的乐观更新只管即时反馈，最终权重一律以响应里的 tags 为权威（整份覆盖）。
+  function postATag(tag, target) {
+    fetch('/api/account-tag', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: slug, tag: tag, d: target })
+    }).then(function (r) { return r.json(); })
+      .then(function (j) { if (j && j.tags) { aTags = j.tags; renderATags(); } })
+      .catch(function () {});
   }
   function keyOf(i) { return slides[i] ? slides[i].url : ''; }
 
@@ -253,14 +252,13 @@
           var t = btn.getAttribute('data-t');
           var dir = parseInt(btn.getAttribute('data-d'), 10) || 1;
           var cur = myATagVote(t);
-          // 该方向已投 -> 取消（0）；否则投到该方向。反向切换净差 ±2，由 postATag拆两笔同向 ±1。
+          // 该方向已投 -> 目标值 0（撤票）；否则目标值就是该方向本身（含反向改票）。
           var next = (dir === 1) ? (cur === 1 ? 0 : 1) : (cur === -1 ? 0 : -1);
-          var delta = next - cur;
-          if (!delta) return;
+          if (next === cur) return;
           setMyATagVote(t, next);
-          applyATagLocal(t, delta);
+          applyATagLocal(t, next - cur); // 只为即时反馈，真实值看响应
           renderATags();
-          postATag(t, delta);
+          postATag(t, next);
         });
       })(votes[k]);
     }
@@ -274,12 +272,11 @@
       if (!t) return;
       inp.value = '';
       var cur = myATagVote(t);
-      if (cur === 1) return;
-      var delta = 1 - cur;
+      if (cur === 1) return; // 已经是 +1：目标值没变，服务端会幂等，但省一趟请求
       setMyATagVote(t, 1);
-      applyATagLocal(t, delta);
+      applyATagLocal(t, 1 - cur);
       renderATags();
-      postATag(t, delta);
+      postATag(t, 1); // 目标值：从 -1 直接改成 +1 也是一笔（旧累加语义要拆两笔）
     });
     inp.addEventListener('blur', function () { inp.hidden = true; });
   }

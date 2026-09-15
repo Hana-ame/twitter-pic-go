@@ -34,6 +34,9 @@ var templates = template.Must(template.New("").ParseFS(tmplFS, "templates/*.html
 // appJS 内联进页面，保证导出的 HTML 单文件可用（不依赖 /static/app.js）。
 var appJS = template.JS(mustReadStatic("app.js"))
 
+// homeJS 主页脚本（搜索 / 增量加载 / 随机），内联进首页。
+var homeJS = template.JS(mustReadStatic("home.js"))
+
 const defaultPageSize = 12
 
 func mustReadStatic(name string) string {
@@ -93,8 +96,17 @@ type accountPage struct {
 	RawJSON   template.JS
 }
 
+// acctItem 主页账号卡片（首字母头像色相与服务端/前端同算法）。
+type acctItem struct {
+	Name    string
+	Initial string
+	Hue     int
+}
+
 type homeData struct {
-	Accounts []string
+	Total     int
+	Preview   []acctItem
+	NamesJSON template.JS
 }
 
 type pageData struct {
@@ -102,6 +114,16 @@ type pageData struct {
 	Home    *homeData
 	Account *accountPage
 	AppJS   template.JS
+	HomeJS  template.JS
+}
+
+// hueOf 与 static/home.js 中的 hueOf 保持一致（账号名为 ASCII）。
+func hueOf(s string) int {
+	h := 0
+	for i := 0; i < len(s); i++ {
+		h = (h*31 + int(s[i])) % 360
+	}
+	return h
 }
 
 type config struct {
@@ -159,7 +181,25 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.Error(w, "read json dir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	render(w, "home.html", pageData{Title: "Home", Home: &homeData{Accounts: names}})
+	const previewN = 120
+	preview := make([]acctItem, 0, previewN)
+	for _, n := range names[:min(len(names), previewN)] {
+		initial := "?"
+		if n != "" {
+			initial = strings.ToUpper(n[:1])
+		}
+		preview = append(preview, acctItem{Name: n, Initial: initial, Hue: hueOf(n)})
+	}
+	namesJSON, err := json.Marshal(names)
+	if err != nil {
+		http.Error(w, "marshal names: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	render(w, "home.html", pageData{
+		Title:  "首页",
+		Home:   &homeData{Total: len(names), Preview: preview, NamesJSON: template.JS(namesJSON)},
+		HomeJS: homeJS,
+	})
 }
 
 func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {

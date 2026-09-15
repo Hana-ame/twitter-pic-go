@@ -3,16 +3,35 @@
 {{template "head" .}}
 <body>
 {{template "header" .}}
-<main>
-  <p class="muted">{{len .Home.Accounts}} accounts</p>
-  <div class="grid">
-    {{range .Home.Accounts}}
-      <a class="card" href="/u/{{.}}"><span class="pill">@{{.}}</span></a>
-    {{else}}
-      <p class="muted">没有找到 *.json.gz（设 GALLERY_JSON_DIR 指向数据目录）。</p>
+<main class="home">
+  <section class="hero">
+    <h1 class="big">Twitter&nbsp;Pic <span class="grad">Gallery</span></h1>
+    <p class="tagline">已归档 {{with .Home}}{{.Total}}{{end}} 个账号的公开时间线媒体 · 图片 / 视频 · 全屏竖滑浏览</p>
+    {{with .Home}}
+    <div class="tools">
+      <input id="a-search" class="search" type="search" placeholder="搜索账号名…（按 / 聚焦）" autocomplete="off" spellcheck="false">
+      <button id="a-rand" class="tbtn" type="button">🎲 随机逛逛</button>
+    </div>
+    <p class="muted a-meta"><span id="a-shown">显示 {{len .Preview}} / {{.Total}} 个账号</span></p>
+    {{end}}
+  </section>
+
+  {{with .Home}}
+  <div class="agrid" id="a-grid">
+    {{range .Preview}}
+    <a class="acct" href="/u/{{.Name}}"><span class="av" style="--h:{{.Hue}}">{{.Initial}}</span><span class="at">@{{.Name}}</span></a>
     {{end}}
   </div>
+  <script id="a-data" type="application/json">{{.NamesJSON}}</script>
+  {{end}}
+
+  <div class="pager">
+    <button id="a-more" class="btn" type="button">加载更多 ↓</button>
+  </div>
+  <p id="a-empty" class="muted center" hidden>没有匹配的账号。</p>
+  <noscript><p class="muted center">已显示前 {{with .Home}}{{len .Preview}}{{end}} 个账号；启用 JS 可搜索全部。</p></noscript>
 </main>
 {{template "footer" .}}
+<script>{{.HomeJS}}</script>
 </body>
 </html>

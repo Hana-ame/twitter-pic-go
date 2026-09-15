@@ -24,6 +24,28 @@ h1{font-size:22px;margin:0 0 6px}
 .pager .btn{background:#222838;color:var(--fg);border:1px solid #2b3244;border-radius:8px;padding:9px 16px;text-decoration:none;cursor:pointer}
 .pager .btn[hidden]{display:none}
 footer{padding:24px;text-align:center;color:var(--muted)}
+.center{text-align:center}
+
+/* 主页 */
+.home{max-width:1200px}
+.hero{padding:44px 4px 18px;text-align:center}
+.big{font-size:clamp(28px,6vw,42px);margin:0 0 10px;letter-spacing:.5px}
+.grad{background:linear-gradient(90deg,#7aa2f7,#bb9af7,#f7768e);-webkit-background-clip:text;background-clip:text;color:transparent}
+.tagline{color:var(--muted);margin:0 auto 22px;max-width:640px}
+.tools{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.search{flex:1;min-width:240px;max-width:480px;background:var(--card);border:1px solid #2b3244;border-radius:999px;
+        color:var(--fg);padding:11px 18px;font-size:15px;outline:none}
+.search:focus{border-color:var(--acc)}
+.tbtn{background:var(--card);border:1px solid #2b3244;color:var(--fg);border-radius:999px;padding:11px 18px;font-size:15px;cursor:pointer}
+.tbtn:hover{border-color:var(--acc)}
+.a-meta{margin:14px 0 18px;font-size:13px}
+.agrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px}
+.acct{display:flex;align-items:center;gap:10px;background:var(--card);border:1px solid #232838;border-radius:12px;
+      padding:10px 12px;text-decoration:none;color:var(--fg);min-width:0;transition:border-color .15s,transform .15s}
+.acct:hover{border-color:var(--acc);transform:translateY(-2px)}
+.av{flex:none;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+    font-weight:700;color:#fff;background:hsl(var(--h,220) 60% 45%)}
+.at{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:14px}
 
 /* 全屏竖滑查看器 */
 .lb{position:fixed;inset:0;z-index:50;background:#000}
@@ -46,7 +68,7 @@ footer{padding:24px;text-align:center;color:var(--muted)}
 {{end}}
 
 {{define "header"}}
-<header><a href="/">← Twitter Pic Gallery</a></header>
+<header><a href="/">Twitter&nbsp;Pic <span class="muted">·</span> Gallery</a></header>
 {{end}}
 
 {{define "footer"}}

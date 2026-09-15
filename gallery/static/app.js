@@ -24,7 +24,6 @@
     if (!t) return all;
     return all.filter(function (m) { return t === 'video' ? m.video : !m.video; });
   }
-  function indexOf(arr, id) { if (!id) return 0; for (var i = 0; i < arr.length; i++) { if (arr[i].id === id) return i; } return 0; }
   function clampStart(arr, s) { if (!arr.length) return 0; var last = ((arr.length - 1) / PER | 0) * PER; return Math.min(Math.max(0, s), last); }
   function href(t, c) {
     var u = '/u/' + encodeURIComponent(slug), p = [];
@@ -58,15 +57,15 @@
   }
   function renderGrid() {
     var arr = list();
-    var start = clampStart(arr, indexOf(arr, cursorID()));
+    var start = clampStart(arr, cursorID());
     var end = Math.min(start + PER, arr.length);
     var frag = document.createDocumentFragment();
     for (var i = start; i < end; i++) frag.appendChild(gridCard(arr[i], i));
     grid.replaceChildren(frag);
     if (countEl) countEl.textContent = arr.length + ' media';
     if (info) info.textContent = arr.length ? (start + 1) + '–' + end + ' / ' + arr.length : '0';
-    if (prevA) { prevA.href = href(typeFilter(), start > 0 ? arr[Math.max(0, start - PER)].id : 0); prevA.hidden = !(start > 0); }
-    if (nextA) { nextA.href = href(typeFilter(), end < arr.length ? arr[end].id : 0); nextA.hidden = !(end < arr.length); }
+    if (prevA) { prevA.href = href(typeFilter(), start > 0 ? Math.max(0, start - PER) : 0); prevA.hidden = !(start > 0); }
+    if (nextA) { nextA.href = href(typeFilter(), end < arr.length ? end : 0); nextA.hidden = !(end < arr.length); }
     modes.forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-mode') === typeFilter()); });
   }
   function go(t, c) { setURL(t, c); renderGrid(); }
@@ -75,12 +74,12 @@
     a.addEventListener('click', function (e) { e.preventDefault(); go(a.getAttribute('data-mode') || '', 0); });
   });
   if (prevA) prevA.addEventListener('click', function (e) {
-    e.preventDefault(); var arr = list(), start = indexOf(arr, cursorID());
-    go(typeFilter(), start > 0 ? arr[Math.max(0, start - PER)].id : 0);
+    e.preventDefault(); var arr = list(), start = clampStart(arr, cursorID());
+    go(typeFilter(), start > 0 ? Math.max(0, start - PER) : 0);
   });
   if (nextA) nextA.addEventListener('click', function (e) {
-    e.preventDefault(); var arr = list(), start = indexOf(arr, cursorID()), end = Math.min(start + PER, arr.length);
-    go(typeFilter(), end < arr.length ? arr[end].id : 0);
+    e.preventDefault(); var arr = list(), start = clampStart(arr, cursorID()), end = Math.min(start + PER, arr.length);
+    go(typeFilter(), end < arr.length ? end : 0);
   });
 
   /* ---------- 手机式全屏查看器 ----------
@@ -377,7 +376,7 @@
       scrollTimer = null;
       var w = track.clientWidth || 1;
       var i = Math.round(track.scrollLeft / w);
-      if (i !== cur && slides[i]) { cur = i; setURL(typeFilter(), slides[cur].id); paintRail(); activate(cur); }
+      if (i !== cur && slides[i]) { cur = i; setURL(typeFilter(), cur); paintRail(); activate(cur); }
     }, 90);
   }, { passive: true });
 

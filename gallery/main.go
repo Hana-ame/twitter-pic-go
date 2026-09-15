@@ -313,7 +313,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 	filter := normalizeFilter(r.URL.Query().Get("type"))
 	list := filterMedia(buildAll(doc, cfg.mediaBase), filter)
 
-	start := clampStart(list, indexOfTweet(list, parseCursorID(r.URL.Query().Get("cursor"))), cfg.pageSize)
+	start := clampStart(list, int(parseCursorID(r.URL.Query().Get("cursor"))), cfg.pageSize)
 	end := start + cfg.pageSize
 	if end > len(list) {
 		end = len(list)
@@ -321,10 +321,10 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 
 	var prevCursor, nextCursor int64
 	if start > 0 {
-		prevCursor = cursorOf(list, clampStart(list, start-cfg.pageSize, cfg.pageSize))
+		prevCursor = int64(clampStart(list, start-cfg.pageSize, cfg.pageSize))
 	}
 	if end < len(list) {
-		nextCursor = list[end].TweetID
+		nextCursor = int64(end)
 	}
 
 	raw, err := json.Marshal(doc)
@@ -340,7 +340,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		Media:     list[start:end],
 		Total:     len(list),
 		Filter:    filter,
-		Cursor:    cursorOf(list, start),
+		Cursor:    int64(start),
 		PageSize:  cfg.pageSize,
 		HasPrev:   start > 0,
 		HasNext:   end < len(list),
@@ -517,17 +517,6 @@ func parseCursorID(s string) int64 {
 	return n
 }
 
-func indexOfTweet(items []mediaItem, id int64) int {
-	if id == 0 {
-		return 0
-	}
-	for i := range items {
-		if items[i].TweetID == id {
-			return i
-		}
-	}
-	return 0
-}
 
 func clampStart(items []mediaItem, start, pageSize int) int {
 	if len(items) == 0 {
@@ -546,12 +535,6 @@ func clampStart(items []mediaItem, start, pageSize int) int {
 	return start
 }
 
-func cursorOf(items []mediaItem, i int) int64 {
-	if i < 0 || i >= len(items) {
-		return 0
-	}
-	return items[i].TweetID
-}
 
 func buildHref(slug, filter string, cursor int64) string {
 	q := url.Values{}

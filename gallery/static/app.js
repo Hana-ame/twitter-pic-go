@@ -166,8 +166,15 @@
   function setMyVote(key, v) { ls('gallery:vote:' + key, String(v)); }
   function isFav(key) { return lg('gallery:fav:' + key, '0') === '1'; }
   function setFav(key, on) { ls('gallery:fav:' + key, on ? '1' : '0'); }
-  function myATagVote(tag) { return lg('gallery:atagvote:' + slug + ':' + tag, '0') === '1' ? 1 : 0; }
-  function setMyATagVote(tag, v) { ls('gallery:atagvote:' + slug + ':' + tag, v ? '1' : '0'); }
+  function myATagVote(tag) { return parseInt(lg('gallery:atagvote:' + slug + ':' + tag, '0'), 10) || 0; }
+  function setMyATagVote(tag, v) { ls('gallery:atagvote:' + slug + ':' + tag, String(v || 0)); }
+  function voteUIShown() { return lg('gallery:atagvote-ui', '1') === '1'; }
+  function setVoteUIShown(on) { ls('gallery:atagvote-ui', on ? '1' : '0'); }
+  // 乐观更新：静态示例（无后端，POST 404）时也能看到计数变化；真机随后被服务端返回覆盖。
+  function applyATagLocal(tag, delta) {
+    var n = (aTags[tag] || 0) + delta;
+    if (n > 0) { aTags[tag] = n; } else { delete aTags[tag]; }
+  }
   function escT(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
   function postATag(tag, d) {
     fetch('/api/account-tag', {
@@ -202,16 +209,25 @@
   }
   function renderATags() {
     if (!aTagsEl) return;
+    var show = voteUIShown();
     var names = Object.keys(aTags);
     names.sort(function (a, b) { return aTags[b] - aTags[a] || (a < b ? -1 : 1); });
     var html = '';
     for (var i = 0; i < names.length; i++) {
-      var t = names[i], voted = myATagVote(t);
-      html += '<span class="atag' + (voted ? ' on' : '') + '"><span>#' + escT(t) + '</span> <b>' + aTags[t] + '</b>' +
-        '<button class="atag-vote" data-t="' + escT(t) + '" title="' + (voted ? '取消投票' : '投一票') + '">' + (voted ? '\u2212' : '+') + '</button></span>';
+      var t = names[i], v = myATagVote(t);
+      var cls = 'atag' + (v === 1 ? ' up' : v === -1 ? ' down' : '');
+      html += '<span class="' + cls + '"><span>#' + escT(t) + '</span> <b>' + aTags[t] + '</b>';
+      if (show) {
+        html += '<button class="atag-vote up' + (v === 1 ? ' on' : '') + '" data-t="' + escT(t) + '" data-d="1" title="' + (v === 1 ? '取消投票' : '投一票') + '">+</button>' +
+          '<button class="atag-vote down' + (v === -1 ? ' on' : '') + '" data-t="' + escT(t) + '" data-d="-1" title="' + (v === -1 ? '取消投票' : '减一票') + '">\u2212</button>';
+      }
+      html += '</span>';
     }
+    html += '<button class="atag atag-toggle' + (show ? ' on' : '') + '" id="g-atagtoggle" type="button" title="显示/隐藏投票按钮">\u00B1 ' + (show ? '收起投票' : '投票') + '</button>';
     html += '<button class="atag atag-add" id="g-atagadd" type="button" title="添加标签">\uFF0B 标签</button>';
     aTagsEl.innerHTML = html;
+    var tg = document.getElementById('g-atagtoggle');
+    if (tg) tg.addEventListener('click', function () { setVoteUIShown(!voteUIShown()); renderATags(); });
     var add = document.getElementById('g-atagadd');
     if (add) add.addEventListener('click', function () {
       var inp = document.getElementById('g-ataginput');
@@ -220,16 +236,22 @@
       if (!inp.hidden) inp.focus();
     });
     var votes = aTagsEl.querySelectorAll('.atag-vote');
-    for (var v = 0; v < votes.length; v++) {
+    for (var k = 0; k < votes.length; k++) {
       (function (btn) {
         btn.addEventListener('click', function () {
           var t = btn.getAttribute('data-t');
-          var voted = myATagVote(t);
-          setMyATagVote(t, !voted);
+          var dir = parseInt(btn.getAttribute('data-d'), 10) || 1;
+          var cur = myATagVote(t);
+          // 该方向已投 -> 取消（0）；否则投到该方向（0/-1 转 +1，0/+1 转 -1）
+          var next = (dir === 1) ? (cur === 1 ? 0 : 1) : (cur === -1 ? 0 : -1);
+          var delta = next - cur;
+          if (!delta) return;
+          setMyATagVote(t, next);
+          applyATagLocal(t, delta);
           renderATags();
-          postATag(t, voted ? -1 : 1);
+          postATag(t, delta);
         });
-      })(votes[v]);
+      })(votes[k]);
     }
   }
   function initAccountTags() {
@@ -240,9 +262,13 @@
       var t = inp.value.trim().replace(/^#/, '');
       if (!t) return;
       inp.value = '';
+      var cur = myATagVote(t);
+      if (cur === 1) return;
+      var delta = 1 - cur;
       setMyATagVote(t, 1);
+      applyATagLocal(t, delta);
       renderATags();
-      postATag(t, 1);
+      postATag(t, delta);
     });
     inp.addEventListener('blur', function () { inp.hidden = true; });
   }

@@ -178,10 +178,16 @@ h1{font-size:22px;margin:0 0 6px;font-weight:700;letter-spacing:-.02em}
 .atags{display:flex;flex-wrap:wrap;gap:6px;margin:-6px 0 16px;align-items:center}
 .atag{display:inline-flex;align-items:center;gap:5px;background:var(--card-2);border:1px solid var(--border-2);color:var(--fg);border-radius:var(--radius-pill);padding:3px 10px;font-size:12.5px;box-shadow:var(--shadow-sm)}
 .atag b{font-weight:600;color:var(--acc);font-size:12px}
-.atag.on{border-color:var(--acc);background:rgba(91,157,255,.12)}
-.atag-vote{border:none;background:rgba(91,157,255,.18);color:var(--acc);border-radius:50%;width:18px;height:18px;font-size:13px;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;transition:background .15s,transform .1s}
-.atag-vote:hover{background:rgba(91,157,255,.35)}
+.atag.up{border-color:var(--acc);background:rgba(91,157,255,.12)}
+.atag.down{border-color:var(--acc-3);background:rgba(247,118,142,.12)}
+.atag-vote{border:none;background:rgba(122,131,153,.18);color:var(--muted);border-radius:50%;width:18px;height:18px;font-size:13px;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s,transform .1s}
+.atag-vote:hover{background:rgba(122,131,153,.32);color:var(--fg)}
 .atag-vote:active{transform:scale(.9)}
+.atag-vote.up.on{background:var(--acc);color:#fff}
+.atag-vote.down.on{background:var(--acc-3);color:#fff}
+.atag-toggle{cursor:pointer;color:var(--muted);background:transparent;border-style:dashed}
+.atag-toggle:hover{color:var(--acc);border-color:var(--acc)}
+.atag-toggle.on{color:var(--acc);border-color:var(--acc);border-style:solid;background:rgba(91,157,255,.08)}
 .atag-add{cursor:pointer;color:var(--muted);background:transparent;border-style:dashed}
 .atag-add:hover{color:var(--acc);border-color:var(--acc)}
 .atag-input{display:block;margin:0 0 16px;background:var(--card-2);border:1px solid var(--acc);color:var(--fg);border-radius:var(--radius-pill);padding:7px 14px;font-size:13px;outline:none;width:min(280px,70vw);box-shadow:var(--glow)}

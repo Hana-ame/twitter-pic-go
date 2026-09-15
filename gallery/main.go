@@ -15,6 +15,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -23,6 +24,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Hana-ame/twitter-pic-go/tags"
 	_ "modernc.org/sqlite" // 纯 Go 驱动，CGO_ENABLED=0 可用
 )
 
@@ -113,7 +115,7 @@ type acctItem struct {
 	Tags    []string
 }
 
-// acctEntry 是嵌入 #a-data 给前端的条目：账号名 + 标签 + 更新时间（均从 tags.db 读出）。
+// acctEntry 是嵌入 #a-data 给前端的条目：账号名 + 标签 + 更新时间（均从 account_tags/users 读出）。
 // U 为 "YYYY-MM-DD HH:MM:SS"（UTC，定宽格式，字典序即时间序）；缺失为空串排最后。
 type acctEntry struct {
 	Name string   `json:"n"`
@@ -121,15 +123,10 @@ type acctEntry struct {
 	U    string   `json:"u,omitempty"`
 }
 
-type tagCount struct {
-	Tag   string
-	Count int
-}
-
 type homeData struct {
 	Total     int
 	Preview   []acctItem
-	Cloud     []tagCount // 标签云（SSR 前 36 个；前端拿全量数据重绘）
+	Cloud     []tags.Count // 标签云（SSR 前 36 个；前端拿全量数据重绘）
 	Untagged  int
 	NamesJSON template.JS // 实际是 []acctEntry 的 JSON
 	MediaBase string      // 前端据此重写 pbs.twimg.com 图片域名（同 mediaURL 规则）
@@ -154,15 +151,16 @@ func hueOf(s string) int {
 }
 
 type config struct {
-	addr             string
-	jsonDir          string
-	mediaBase        string
-	legacyBase       string
-	pageSize         int
-	reactionsFile    string
-	accountVotesFile string
-	tags             *tagStore
-	accountVotes     *accountVoteStore
+	addr          string
+	jsonDir       string
+	mediaBase     string
+	legacyBase    string
+	pageSize      int
+	reactionsFile string
+	db            *sql.DB    // 单一 twitter.db：标签唯一真源（与 twitter API 同一个库同一张表）
+	tags          *tags.Store
+	cloud         []tags.Count // 全局标签云：启动时聚合一次的缓存
+	writable      bool         // 标签库可写（POST 落 account_tags + request_logs）
 }
 
 func Run(addr string) {
@@ -170,21 +168,28 @@ func Run(addr string) {
 		addr = envOr("GALLERY_ADDR", ":8090")
 	}
 	cfg := config{
-		addr:             addr,
-		jsonDir:          envOr("GALLERY_JSON_DIR", "."),
-		mediaBase:        strings.TrimRight(envOr("GALLERY_MEDIA_BASE", ""), "/"),
-		legacyBase:       legacyBase(),
-		pageSize:         envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
-		reactionsFile:    envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
-		accountVotesFile: envOr("GALLERY_ACCOUNT_VOTES_FILE", "./account_votes.json"),
+		addr:          addr,
+		jsonDir:       envOr("GALLERY_JSON_DIR", "."),
+		mediaBase:     strings.TrimRight(envOr("GALLERY_MEDIA_BASE", ""), "/"),
+		legacyBase:    legacyBase(),
+		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
+		reactionsFile: envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
 	}
 	if cfg.pageSize <= 0 {
 		cfg.pageSize = defaultPageSize
 	}
-	cfg.tags = openTagStore(envOr("GALLERY_TAGS_DB", "./tags.db"))
 
 	reactions := newReactionStore(cfg.reactionsFile)
-	cfg.accountVotes = newAccountVoteStore(cfg.accountVotesFile)
+
+	// 标签唯一真源：与 twitter API 同一个 twitter.db 的 account_tags 表。
+	// 不再有独立的 tags.db 快照，也不再有 account_votes.json 投票文件。
+	if store, writable, err := openTagStore(envOr("GALLERY_DB", "./twitter.db")); err == nil {
+		cfg.db = store.DB()
+		cfg.tags = store
+		cfg.writable = writable
+		cfg.cloud = store.Cloud(cloudTopN)
+		defer cfg.db.Close()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
@@ -202,6 +207,9 @@ func Run(addr string) {
 	mux.HandleFunc("GET /api/reactions", func(w http.ResponseWriter, r *http.Request) { handleGetReactions(w, r, reactions) })
 	mux.HandleFunc("GET /api/tag/{tag}", func(w http.ResponseWriter, r *http.Request) { handleTagUsers(w, r, cfg) })
 	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions) })
+	mux.HandleFunc("GET /api/tags", func(w http.ResponseWriter, r *http.Request) { handleGetAccountTags(w, r, cfg) })
+	mux.HandleFunc("POST /api/tag", func(w http.ResponseWriter, r *http.Request) { handlePostAccountTag(w, r, cfg) })
+	// /api/account-tags 与 /api/account-tag 是同一套处理器的别名（账号级标签改名后的入口）。
 	mux.HandleFunc("GET /api/account-tags", func(w http.ResponseWriter, r *http.Request) { handleGetAccountTags(w, r, cfg) })
 	mux.HandleFunc("POST /api/account-tag", func(w http.ResponseWriter, r *http.Request) { handlePostAccountTag(w, r, cfg) })
 
@@ -245,7 +253,7 @@ func handleTagUsers(w http.ResponseWriter, r *http.Request, cfg config) {
 	for _, n := range names {
 		exist[n] = struct{}{}
 	}
-	users := cfg.tags.usersForTag(tag, exist, limit)
+	users := cfg.tags.UsersForTag(tag, exist, limit)
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	json.NewEncoder(w).Encode(map[string]any{"tag": tag, "count": len(users), "users": users})
 }
@@ -258,8 +266,8 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 	}
 	const previewN = 120
 	// 账号级 tags 按 username 现查（PK 前缀索引，分块 IN）；标签云用启动时聚合一次的缓存。
-	tagged := cfg.tags.tagsFor(names)
-	lm := cfg.tags.lastModFor(names)
+	tagged := cfg.tags.ForUsers(names)
+	lm := cfg.tags.LastModifyFor(names)
 	entries := make([]acctEntry, 0, len(names))
 	untagged := 0
 	for _, n := range names {
@@ -277,9 +285,9 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		}
 		return entries[i].Name < entries[j].Name
 	})
-	var top []tagCount
+	var top []tags.Count
 	if cfg.tags != nil {
-		top = cfg.tags.cloud // 全局标签云：启动时聚合一次的缓存；db 不可用时为 nil（前端自行从 a-data 重算）
+		top = cfg.cloud // 全局标签云：启动时聚合一次的缓存；db 不可用时为 nil（前端自行从 a-data 重算）
 	}
 	preview := make([]acctItem, 0, previewN)
 	for _, e := range entries[:min(len(entries), previewN)] {
@@ -340,7 +348,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 	}
 
 	var atagJSON []byte
-	if b, err := json.Marshal(accountTagDisplay(cfg, slug)); err == nil {
+	if b, err := json.Marshal(cfg.tags.Weights(slug)); err == nil {
 		atagJSON = b
 	}
 	if atagJSON == nil {
@@ -588,248 +596,36 @@ func listAccounts(dir string) ([]string, error) {
 	return names, nil
 }
 
-// tagStore 是 tags.db（account_tags 表，见 scripts/build_tags_db.py）的只读访问器。
-// 设计：不把全表常驻内存——账号级标签按 username 现查（WITHOUT ROWID 主键
-// (username,tag) 前缀命中，分块 IN 减少往返）；唯一的缓存是全局标签云，
-// 启动时 GROUP BY 聚合一次，之后不再算。文件缺失/损坏只降级为「无标签」。
-type tagStore struct {
-	db    *sql.DB
-	cloud []tagCount // 全局 top36，仅启动时算一次
-	mode  string     // "account_tags"（归一化）或 "user_tags"（JSON {tag:weight}）
-}
+// cloudTopN 是全局标签云的条目上限（首页 SSR 用）。
+const cloudTopN = 36
 
-func tableExists(db *sql.DB, name string) bool {
-	var one int
-	return db.QueryRow("SELECT 1 FROM "+name+" LIMIT 1").Scan(&one) == nil
-}
-
-func openTagStore(path string) *tagStore {
+// openTagStore 打开**与 twitter API 同一个** twitter.db，返回 account_tags 的
+// 读写访问器。读写语义全部在 tags 包里，两层共用一份实现。
+//
+// 同一个 sqlite 文件由 API 侧连接与本连接共同读写：busy_timeout + WAL 兜底并发。
+// 文件缺失/打不开只降级为「无标签」（图站照常跑）；建表失败降级为只读（POST 503）。
+func openTagStore(path string) (*tags.Store, bool, error) {
 	if path == "" {
-		return nil
+		return nil, false, fmt.Errorf("GALLERY_DB 未配置")
 	}
 	if _, err := os.Stat(path); err != nil {
-		log.Printf("gallery: tags db %s not used: %v", path, err)
-		return nil
+		return nil, false, err
 	}
-	db, err := sql.Open("sqlite", "file:"+filepath.Clean(path)+"?mode=ro&_pragma=busy_timeout(3000)")
+	db, err := sql.Open("sqlite", "file:"+filepath.Clean(path)+
+		"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)")
 	if err != nil {
-		log.Printf("gallery: open tags db: %v", err)
-		return nil
+		return nil, false, err
 	}
-	st := &tagStore{db: db}
-	if tableExists(db, "account_tags") {
-		st.mode = "account_tags"
-		rows, err := db.Query("SELECT tag, COUNT(DISTINCT username) FROM account_tags GROUP BY tag ORDER BY 2 DESC, tag LIMIT 36")
-		if err != nil {
-			log.Printf("gallery: tags cloud query failed (degraded to no tags): %v", err)
-			db.Close()
-			return nil
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var tag string
-			var cnt int
-			if err := rows.Scan(&tag, &cnt); err != nil {
-				continue
-			}
-			st.cloud = append(st.cloud, tagCount{Tag: tag, Count: cnt})
-		}
-		if err := rows.Err(); err != nil {
-			log.Printf("gallery: tags cloud scan: %v", err)
-		}
-	} else if tableExists(db, "user_tags") {
-		st.mode = "user_tags"
-		st.cloud = cloudFromUserTags(db)
-	} else {
-		log.Printf("gallery: tags db %s has neither account_tags nor user_tags", path)
+	if err := db.Ping(); err != nil {
 		db.Close()
-		return nil
+		return nil, false, err
 	}
-	log.Printf("gallery: tags db ready (mode=%s, cloud cached: %d tags)", st.mode, len(st.cloud))
-	return st
-}
-
-// cloudFromUserTags 扫 user_tags.tags JSON（{tag:weight}），统计每标签覆盖账号数（仅 weight>0）。
-func cloudFromUserTags(db *sql.DB) []tagCount {
-	rows, err := db.Query("SELECT tags FROM user_tags")
-	if err != nil {
-		log.Printf("gallery: user_tags cloud query failed: %v", err)
-		return nil
+	writable := true
+	if err := tags.EnsureSchema(db); err != nil {
+		log.Printf("gallery: account_tags 建表失败（标签降为只读）: %v", err)
+		writable = false
 	}
-	defer rows.Close()
-	cnt := map[string]int{}
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			continue
-		}
-		var m map[string]float64
-		if json.Unmarshal([]byte(raw), &m) != nil {
-			continue
-		}
-		for t, w := range m {
-			if w > 0 {
-				cnt[t]++
-			}
-		}
-	}
-	names := make([]string, 0, len(cnt))
-	for t := range cnt {
-		names = append(names, t)
-	}
-	sort.Slice(names, func(i, j int) bool {
-		if cnt[names[i]] != cnt[names[j]] {
-			return cnt[names[i]] > cnt[names[j]]
-		}
-		return names[i] < names[j]
-	})
-	out := make([]tagCount, 0, min(36, len(names)))
-	for _, t := range names {
-		out = append(out, tagCount{Tag: t, Count: cnt[t]})
-		if len(out) >= 36 {
-			break
-		}
-	}
-	return out
-}
-
-// usersForTag 反查：tag -> usernames（权重降序，走 idx_account_tags_tag 索引）。
-// exist 非 nil 时只保留其中存在的账号。注意是**边扫边滤**：不能先 LIMIT 再过滤，
-// 否则磁盘上存在但权重排名靠后的账号会被截断丢掉。攒满 limit 即提前停。
-func (st *tagStore) usersForTag(tag string, exist map[string]struct{}, limit int) []string {
-	if st == nil || tag == "" || limit <= 0 {
-		return nil
-	}
-	if st.mode == "user_tags" {
-		return st.usersForTagJSON(tag, exist, limit)
-	}
-	rows, err := st.db.Query("SELECT username FROM account_tags WHERE tag = ? ORDER BY weight DESC, username", tag)
-	if err != nil {
-		log.Printf("gallery: usersForTag %q: %v", tag, err)
-		return nil
-	}
-	defer rows.Close()
-	out := make([]string, 0, min(limit, 512))
-	for rows.Next() {
-		var u string
-		if err := rows.Scan(&u); err != nil {
-			continue
-		}
-		if exist != nil {
-			if _, ok := exist[u]; !ok {
-				continue
-			}
-		}
-		out = append(out, u)
-		if len(out) >= limit {
-			break
-		}
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("gallery: usersForTag scan: %v", err)
-	}
-	return out
-}
-
-// lastModFor 按 username 分块查 accounts.last_modify（PK 点查）。
-// accounts 表不存在（旧 tags.db）时降级为空 map 并只记一次日志，不影响首页。
-func (st *tagStore) lastModFor(names []string) map[string]string {
-	out := map[string]string{}
-	if st == nil || len(names) == 0 {
-		return out
-	}
-	table := "accounts"
-	if !tableExists(st.db, "accounts") {
-		table = "users"
-	}
-	const chunk = 400
-	for i := 0; i < len(names); i += chunk {
-		batch := names[i:min(i+chunk, len(names))]
-		ph := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
-		args := make([]any, len(batch))
-		for k, n := range batch {
-			args[k] = n
-		}
-		rows, err := st.db.Query("SELECT username, last_modify FROM "+table+" WHERE username IN ("+ph+")", args...)
-		if err != nil {
-			log.Printf("gallery: lastModFor: %v", err)
-			return out
-		}
-		for rows.Next() {
-			var u, lm string
-			if err := rows.Scan(&u, &lm); err != nil {
-				continue
-			}
-			out[u] = lm
-		}
-		rows.Close()
-	}
-	return out
-}
-
-// tagsFor 按 username 分块查询标签，权重降序。db 不可用返回空 map（调用方按无标签处理）。
-func (st *tagStore) tagsFor(names []string) map[string][]string {
-	out := map[string][]string{}
-	if st == nil || len(names) == 0 {
-		return out
-	}
-	const chunk = 400 // 远低于 SQLite 变量数上限
-	for i := 0; i < len(names); i += chunk {
-		batch := names[i:min(i+chunk, len(names))]
-		ph := strings.TrimSuffix(strings.Repeat("?,", len(batch)), ",")
-		args := make([]any, len(batch))
-		for k, n := range batch {
-			args[k] = n
-		}
-		if st.mode == "user_tags" {
-			rows, err := st.db.Query("SELECT username, tags FROM user_tags WHERE username IN ("+ph+")", args...)
-			if err != nil {
-				log.Printf("gallery: tagsFor user_tags chunk@%d failed: %v", i, err)
-				return out
-			}
-			for rows.Next() {
-				var u, raw string
-				if err := rows.Scan(&u, &raw); err != nil {
-					continue
-				}
-				var m map[string]float64
-				if json.Unmarshal([]byte(raw), &m) != nil {
-					continue
-				}
-				tags := make([]string, 0, len(m))
-				for t, w := range m {
-					if w > 0 {
-						tags = append(tags, t)
-					}
-				}
-				sort.Slice(tags, func(a, b int) bool {
-					if m[tags[a]] != m[tags[b]] {
-						return m[tags[a]] > m[tags[b]]
-					}
-					return tags[a] < tags[b]
-				})
-				out[u] = tags
-			}
-			rows.Close()
-			continue
-		}
-		rows, err := st.db.Query(
-			"SELECT username, tag FROM account_tags WHERE username IN ("+ph+") ORDER BY username, weight DESC, tag",
-			args...)
-		if err != nil {
-			log.Printf("gallery: tagsFor chunk@%d failed: %v", i, err)
-			return out
-		}
-		for rows.Next() {
-			var u, t string
-			if err := rows.Scan(&u, &t); err != nil {
-				continue
-			}
-			out[u] = append(out[u], t)
-		}
-		rows.Close()
-	}
-	return out
+	return tags.New(db), writable, nil
 }
 
 func loadDocument(fp string) (document, error) {
@@ -931,170 +727,6 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-// ---- 账号级标签：user_tags 权重 + 用户投票（JSON 持久化） ----
-
-// tagsForUser 返回单个账号的 {tag: weight}（含负权重），用于账号页标签展示与投票合并。
-func (st *tagStore) tagsForUser(name string) map[string]int {
-	out := map[string]int{}
-	if st == nil || name == "" {
-		return out
-	}
-	if st.mode == "user_tags" {
-		var raw string
-		if err := st.db.QueryRow("SELECT tags FROM user_tags WHERE username = ?", name).Scan(&raw); err != nil {
-			return out
-		}
-		var m map[string]float64
-		if json.Unmarshal([]byte(raw), &m) != nil {
-			return out
-		}
-		for t, w := range m {
-			out[t] = int(w)
-		}
-		return out
-	}
-	rows, err := st.db.Query("SELECT tag, weight FROM account_tags WHERE username = ? ORDER BY weight DESC, tag", name)
-	if err != nil {
-		return out
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var t string
-		var w int
-		if rows.Scan(&t, &w) == nil {
-			out[t] = w
-		}
-	}
-	return out
-}
-
-// usersForTagJSON 是 user_tags（JSON {tag:weight}）模式下的反查：全表扫描 + 解析，按权重降序。
-func (st *tagStore) usersForTagJSON(tag string, exist map[string]struct{}, limit int) []string {
-	rows, err := st.db.Query("SELECT username, tags FROM user_tags")
-	if err != nil {
-		log.Printf("gallery: usersForTag user_tags scan: %v", err)
-		return nil
-	}
-	defer rows.Close()
-	type pair struct {
-		u string
-		w float64
-	}
-	var found []pair
-	for rows.Next() {
-		var u, raw string
-		if err := rows.Scan(&u, &raw); err != nil {
-			continue
-		}
-		var m map[string]float64
-		if json.Unmarshal([]byte(raw), &m) != nil {
-			continue
-		}
-		w, ok := m[tag]
-		if !ok || w <= 0 {
-			continue
-		}
-		if exist != nil {
-			if _, ok2 := exist[u]; !ok2 {
-				continue
-			}
-		}
-		found = append(found, pair{u, w})
-	}
-	sort.Slice(found, func(i, j int) bool {
-		if found[i].w != found[j].w {
-			return found[i].w > found[j].w
-		}
-		return found[i].u < found[j].u
-	})
-	out := make([]string, 0, min(limit, len(found)))
-	for _, x := range found {
-		out = append(out, x.u)
-		if len(out) >= limit {
-			break
-		}
-	}
-	return out
-}
-
-// accountVoteStore：username -> tag -> 净票数（用户投票，与 user_tags 权重合并展示）。
-type accountVoteStore struct {
-	mu   sync.Mutex
-	path string
-	m    map[string]map[string]int
-}
-
-func newAccountVoteStore(path string) *accountVoteStore {
-	s := &accountVoteStore{path: path, m: map[string]map[string]int{}}
-	if path != "" {
-		if b, err := os.ReadFile(path); err == nil {
-			_ = json.Unmarshal(b, &s.m)
-		}
-	}
-	return s
-}
-
-func (s *accountVoteStore) votesFor(users []string) map[string]map[string]int {
-	if s == nil {
-		return map[string]map[string]int{}
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string]map[string]int, len(users))
-	for _, u := range users {
-		if v := s.m[u]; v != nil {
-			cp := make(map[string]int, len(v))
-			for t, c := range v {
-				cp[t] = c
-			}
-			out[u] = cp
-		} else {
-			out[u] = map[string]int{}
-		}
-	}
-	return out
-}
-
-func (s *accountVoteStore) apply(user, tag string, d int) {
-	if d > 1 {
-		d = 1
-	} else if d < -1 {
-		d = -1
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	v := s.m[user]
-	if v == nil {
-		v = map[string]int{}
-		s.m[user] = v
-	}
-	c := v[tag] + d
-	if c < 0 {
-		c = 0
-	}
-	if c == 0 {
-		delete(v, tag)
-	} else {
-		v[tag] = c
-	}
-	s.saveLocked()
-}
-
-func (s *accountVoteStore) saveLocked() {
-	if s.path == "" {
-		return
-	}
-	b, err := json.MarshalIndent(s.m, "", "  ")
-	if err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, s.path)
-}
-
 func sanitizeTag(t string) string {
 	t = strings.TrimSpace(t)
 	var b strings.Builder
@@ -1111,56 +743,31 @@ func sanitizeTag(t string) string {
 	return string(rs)
 }
 
-// accountTagDisplay 合并账号标签权重与用户投票：显示分 = max(0,weight) + votes，仅保留 >0。
-func accountTagDisplay(cfg config, user string) map[string]int {
-	base := map[string]int{}
-	if cfg.tags != nil {
-		base = cfg.tags.tagsForUser(user)
-	}
-	votes := map[string]int{}
-	if cfg.accountVotes != nil {
-		votes = cfg.accountVotes.votesFor([]string{user})[user]
-	}
-	merged := map[string]int{}
-	for t, w := range base {
-		c := w
-		if c < 0 {
-			c = 0
-		}
-		c += votes[t]
-		if c > 0 {
-			merged[t] = c
-		}
-	}
-	for t, v := range votes {
-		if _, ok := base[t]; !ok && v > 0 {
-			merged[t] = v
-		}
-	}
-	return merged
-}
+// ---- 账号级标签：唯一真源 account_tags（与 twitter API 同表、同语义） ----
 
+// handleGetAccountTags GET /api/tags?keys=u1,u2 · GET /api/account-tags?keys=
+// 直接用新数据源：读 account_tags 的权重，不再读任何投票 JSON。
 func handleGetAccountTags(w http.ResponseWriter, r *http.Request, cfg config) {
-	var users []string
+	out := map[string]map[string]int{}
 	for _, u := range strings.Split(r.URL.Query().Get("keys"), ",") {
 		if u = strings.TrimSpace(u); u != "" {
-			users = append(users, u)
+			out[u] = cfg.tags.Weights(u)
 		}
-	}
-	out := map[string]map[string]int{}
-	for _, u := range users {
-		out[u] = accountTagDisplay(cfg, u)
 	}
 	writeJSON(w, out)
 }
 
+// handlePostAccountTag POST /api/tag · POST /api/account-tag
+// body {user|key, tag, d}：d 归一到 ±1（与根 API 的 POST 归一化一致），
+// 累加写进 account_tags，并照记一条 request_logs 流水。
 func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
-	if cfg.accountVotes == nil {
-		http.Error(w, "voting disabled", http.StatusNotFound)
+	if cfg.tags == nil || !cfg.writable {
+		http.Error(w, "tags disabled", http.StatusServiceUnavailable)
 		return
 	}
 	var req struct {
 		User string `json:"user"`
+		Key  string `json:"key"` // 旧字段名，兼容保留
 		Tag  string `json:"tag"`
 		D    int    `json:"d"`
 	}
@@ -1168,12 +775,38 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	user := strings.TrimSpace(req.User)
+	user := firstNonEmpty(strings.TrimSpace(req.User), strings.TrimSpace(req.Key))
 	tag := sanitizeTag(req.Tag)
-	if user == "" || tag == "" {
+	d := req.D
+	if d > 1 {
+		d = 1
+	} else if d < -1 {
+		d = -1
+	}
+	if user == "" || tag == "" || d == 0 || !safeName(user) {
 		http.Error(w, "user and tag required", http.StatusBadRequest)
 		return
 	}
-	cfg.accountVotes.apply(user, tag, req.D)
-	writeJSON(w, map[string]any{"user": user, "tags": accountTagDisplay(cfg, user)})
+	if err := cfg.tags.Add(user, map[string]int{tag: d}, clientIP(r), r.UserAgent()); err != nil {
+		log.Printf("gallery: POST tag %s %q=%d: %v", user, tag, d, err)
+		http.Error(w, "write failed", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"user": user, "tags": cfg.tags.Weights(user)})
+}
+
+// clientIP 取 XFF 首个地址（根 API 记 request_logs 用的是同一个头），退化到 RemoteAddr。
+func clientIP(r *http.Request) string {
+	if v := r.Header.Get("X-Forwarded-For"); v != "" {
+		if i := strings.IndexByte(v, ','); i >= 0 {
+			v = v[:i]
+		}
+		if ip := strings.TrimSpace(v); ip != "" {
+			return ip
+		}
+	}
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
+	}
+	return r.RemoteAddr
 }

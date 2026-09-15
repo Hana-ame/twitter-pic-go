@@ -5,8 +5,13 @@
 {{template "header" .}}
 <main>
   {{with .Account}}
-  <h1>{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}} <span class="muted">@{{.Name}}</span></h1>
-  <p class="muted"><span id="g-count">{{.Total}} media</span> · <span id="g-range"></span></p>
+  <div class="uhead">
+    {{with .Avatar}}<div class="uav"><img src="{{.}}" alt=""></div>{{else}}<div class="uav">@</div>{{end}}
+    <div class="umeta">
+      <h1>{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}}</h1>
+      <p class="muted">@{{.Name}} · <span id="g-count">{{.Total}} media</span> · <span id="g-range"></span></p>
+    </div>
+  </div>
 
   <div class="modes">
     <a data-mode="" href="{{.HrefAll}}" class="{{if eq .Filter ""}}active{{end}}">全部</a>
@@ -17,7 +22,7 @@
 
   <div class="grid" id="g-grid" data-slug="{{.Slug}}" data-per="{{.PageSize}}">
     {{range .Media}}
-      <div class="card">
+      <div class="card{{if .IsVideo}} has-video{{end}}">
         {{if .IsVideo}}
           <video preload="metadata" src="{{.URL}}"></video>
         {{else}}
@@ -38,6 +43,8 @@
 <!-- 全屏查看器：手机式（横向翻页 / 捏合与双击缩放 / 下滑关闭） -->
 <div class="lb" id="lb" hidden>
   <div class="lb-track" id="lb-track" tabindex="-1"></div>
+  <div class="lb-topfade"></div>
+  <div class="lb-bottomfade"></div>
   <button class="lb-nav lb-prev" id="lb-prev" aria-label="上一张"><b>‹</b></button>
   <button class="lb-nav lb-next" id="lb-next" aria-label="下一张"><b>›</b></button>
   <div class="lb-ind" id="lb-ind"></div>

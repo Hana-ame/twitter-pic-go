@@ -18,3 +18,6 @@ __pycache__/
 .gomodcache/
 .testdata/
 
+
+# 本地参考代码（flutter/wintools 等，不参与构建，含会破坏 go build ./... 的 cgo 文件）
+reference/

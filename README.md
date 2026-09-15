@@ -48,19 +48,36 @@ Twitter 媒体抓取与图库浏览。
   - `ipban.Chain(r)` / `Manager.Decide`：**封禁判定**。RemoteAddr host + XFF **全部**条目，
     **任一命中即封**。只看 XFF 首项会被 `X-Forwarded-For: <好人IP>, <被封IP>` 绕过。
   - `ipban.Principal(r)`：**「这个请求是谁」**，用于限流分桶与 `request_logs.ip`。
-    按 `TRUSTED_PROXY_HOPS`（默认 1）从 XFF 右往左数；无 XFF 退化 RemoteAddr。
+    退化顺序 **`CF-Connecting-IP` → XFF 从右往左第 `TRUSTED_PROXY_HOPS` 个 → RemoteAddr**。
     原先根 API 记整个 XFF 头串、gallery 记首项，两层流水根本对不上，现统一。
+- **`CF-Connecting-IP` 优先**（`CF_CONNECTING_IP` 可关，默认开）：Cloudflare 总是**覆写**
+  这个头，所以经 CF 进来的请求伪造不了它，比数 XFF 跳数可靠。
+  ⚠️ 它可信的**前提**是「源站只允许 CF 回源」。只要存在绕过 CF 直连源站的通路
+  （源站 IP 泄露、别的域名/端口直回源、IPv6 没纳入限制），这个头和 XFF 一样可被任意伪造，
+  那时唯一可靠做法是**防火墙只放行 CF 网段**。bwh 的 ufw 是否已经这么做：**未验证**，
+  所以这里是「写明依赖」，不是「已经安全」。
+- **`TRUSTED_PROXY_HOPS` 默认 2**（CF + nginx 两跳）。判据——**两种配错都会错一格**：
+
+  | nginx 行为 | 到达源站的 XFF | 真实客户端位置 | 该配 |
+  |---|---|---|---|
+  | `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`（**追加**） | `<自报…>, <真实客户端>, <CF 边缘>` | 右数第 **2** | `2` |
+  | 原样**透传**（没有那一行） | `<自报…>, <真实客户端>` | 右数第 **1** | `1` |
+
+  本站实测为**追加**：线上 `request_logs.ip` 的形态是 `183.34.64.0, 104.22.109.48`
+  （左为真实客户端、右为 CF 边缘段），故默认 2。
+- **配错要能看见，不静默假绿**：启动时 `ipban.LogEffectiveConfig()` 打印实际生效口径与
+  封禁表加载条数；链长撑不起配置跳数时归属会退化到「客户端可自报的最左项」，该退化按次
+  计入 `xff-clamped`，并在每次热重载时由 `warnPrincipalAnomaly` 打日志（含来源分布）。
 - **同一份实例**：`Shared()` 用 `sync.Once` 给出进程级单例，热重载协程（`BAN_RELOAD_MINUTES`
   默认 10 分钟）也只挂这一个。两份内存副本各自 reload 会出现「API 侧已封、gallery 侧没封」。
 - 清单路径 `BANS_FILE`（默认 `bans.txt`）；文件缺失=空表放行（封禁清单丢了不该变成全站 403）；
   非法行跳过并告警，不因一行脏数据丢掉整张表。
 - 403 响应体统一为 `ipban.Denied{error, reason, ip}`，两层逐字相同。
 
-⚠️ **部署前提（待验证）**：`Principal` 的正确性要求前置 nginx **追加**而非覆写
-`X-Forwarded-For`；gin 侧从未调用 `SetTrustedProxies`（全仓无命中，默认信任所有代理），
-所以 `TRUSTED_PROXY_HOPS` 配错时 25/IP/h 配额仍可被伪造 XFF 换桶绕过——封禁不受影响
-（它看整条链）。见 `ipban.Principal` 的 TODO。反向的代价是「链上任一命中」允许攻击者
-把别人的 IP 塞进 XFF 来陷害其被封，这是既有严格策略的固有权衡。
+⚠️ 两个已知权衡：① `TRUSTED_PROXY_HOPS` 配错时 25/IP/h 配额仍可被伪造 XFF 换桶绕过
+（封禁不受影响，它看整条链）；② 「链上任一命中」允许攻击者把别人的 IP 塞进 XFF
+来陷害其被封——这是既有严格策略的固有权衡，收紧就得只查右数 N 项，代价是
+真实 IP 不在链上时漏封。
 
 ## 媒体来源
 

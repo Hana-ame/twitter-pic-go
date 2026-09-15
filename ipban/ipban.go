@@ -10,17 +10,21 @@
 //
 //   - Chain / Manager.Decide：**封禁判定**用。取 RemoteAddr + X-Forwarded-For 的
 //     全部条目，任一命中即封。伪造左侧条目不会漏封（真实连接 IP 仍在链上）。
-//   - Principal：**「这个请求是谁」用于限流分桶与 request_logs.ip** 用。按可信代理
-//     跳数（env TRUSTED_PROXY_HOPS，默认 1）从右往左数，避免客户端自带 XFF 就能换桶。
+//   - Principal：**「这个请求是谁」用于限流分桶与 request_logs.ip** 用。
+//     优先 CF-Connecting-IP（CF 覆写、经 CF 的请求伪造不了），退化 XFF 右往左第 N 个
+//     （env TRUSTED_PROXY_HOPS，默认 2 = CF + nginx 两跳），再退化 RemoteAddr。
 //
-// ⚠️ 依赖部署前提：Principal 的正确性要求前置代理**追加** XFF（nginx 的
-// $proxy_add_x_forwarded_for）。gin 侧从未调用 SetTrustedProxies（默认信任所有代理），
-// 所以限流至今仍可被伪造 XFF 绕过；封禁用「链上任一」不受此影响。见 TODO。
+// ⚠️ 依赖部署前提（两条，代码自证不了）：① 优先信 CF-Connecting-IP 的前提是
+// 「源站只允许 CF 回源」，否则它同样可伪造，唯一可靠做法是防火墙只放行 CF 网段；
+// ② 退化到数 XFF 跳数时，TRUSTED_PROXY_HOPS 必须等于真实层数（追加=2、透传=1）。
+// 配错的表现是限流可被换桶绕过；封禁用「链上任一」不受影响。
+// 启动时 LogEffectiveConfig 会打印生效口径，归属退化由 warnPrincipalAnomaly 告警。
 package ipban
 
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -97,16 +101,152 @@ func EnvReloadEvery() time.Duration {
 }
 
 // TrustedHops 是可信反向代理的跳数：Principal 从 XFF 右往左数第 N 个才是真实客户端。
-// 默认 1（本站只有一层 nginx）。⚠️ 待验证：Cloudflare 在 nginx 之前时必须改成 2
-// （或者改读 CF-Connecting-IP），配错了限流就等于没配。
+//
+// 本站默认 2（Cloudflare 在 nginx 之前、nginx 追加 XFF）。依据是线上 request_logs
+// 里的 XFF 形态 "183.34.64.0, 104.22.109.48"——左为真实客户端、右为 CF 边缘 IP
+// （104.22 / 104.23 都是 CF 段），说明 nginx 用的是 $proxy_add_x_forwarded_for（追加）。
+//
+// 判据（追加还是透传，配错都会错一格）：
+//   - nginx 设了 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for（追加）
+//     → CF 边缘 IP 落在链尾，真实客户端是右数第 2 个 → N=2
+//   - nginx 原样透传（没有那一行）
+//     → 链尾就是 CF 给的最后一项，真实客户端右数第 1 个 → N=1
+//
+// 有 CF-Connecting-IP 时轮不到这里（优先读它，见 EnvTrustCFHeader）。
+// 注意：不经 CF 的入口（直连源站、别的域名）要按其真实层数单独配。
 func TrustedHops() int {
 	if v := strings.TrimSpace(os.Getenv("TRUSTED_PROXY_HOPS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}
 	}
-	return 1
+	return 2
 }
+
+// EnvTrustCFHeader 控制是否优先读 CF-Connecting-IP，默认开（设 0/false/off/no 可关）。
+//
+// CF 总是覆写这个头，所以经 Cloudflare 进来的请求伪造不了它，比数 XFF 跳数可靠。
+// 它可信的前提是「源站只允许 CF 回源」。只要存在绕过 CF 直连源站的通路（源站 IP
+// 泄露、别的域名或端口直回源、IPv6 没纳入限制），这个头和 XFF 一样可被任意伪造，
+// 那时唯一可靠做法是防火墙只放行 CF 网段。
+// bwh 的 ufw 是否已只放行 CF：未验证。所以这里是「写明依赖」，不是「已经安全」。
+func EnvTrustCFHeader() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("CF_CONNECTING_IP"))) {
+	case "0", "false", "off", "no":
+		return false
+	}
+	return true
+}
+
+// PrincipalSource 是 Principal 的取值来源，用于诊断输出。
+type PrincipalSource string
+
+const (
+	FromCFHeader   PrincipalSource = "cf-connecting-ip"
+	FromXFFHop     PrincipalSource = "xff-hop"
+	FromXFFClamped PrincipalSource = "xff-clamped" // 链比可信跳数短，退化到最左（客户端可自报段）
+	FromRemoteAddr PrincipalSource = "remote-addr"
+)
+
+// 来源计数：让「配错了」在日志里看得见，而不是默默假绿。
+var (
+	srcCF     atomic.Int64
+	srcXFF    atomic.Int64
+	srcClamp  atomic.Int64
+	srcRemote atomic.Int64
+	srcCFBad  atomic.Int64 // CF 头存在但不是合法 IP：不采信，继续退化
+)
+
+// Principal 返回「这个请求是谁」——用于限流分桶与 request_logs.ip。
+//
+// 退化顺序：CF-Connecting-IP → XFF 从右往左第 TrustedHops() 个 → RemoteAddr host。
+//
+// TODO(部署): 两个前提代码层面自证不了，见 TrustedHops / EnvTrustCFHeader 上方注释——
+//  1. TRUSTED_PROXY_HOPS 是否等于真实层数（有 srcClamp 计数 + 重载时的告警兜底）；
+//  2. 源站是否只能被 CF 回源（要靠防火墙白名单 CF 网段）。
+func Principal(r *http.Request) string {
+	ip, _ := PrincipalWithSource(r)
+	return ip
+}
+
+// PrincipalWithSource 同 Principal，并返回取值来源（来源计数也在此处做）。
+func PrincipalWithSource(r *http.Request) (string, PrincipalSource) {
+	if r == nil {
+		return "", FromRemoteAddr
+	}
+	if EnvTrustCFHeader() {
+		if v := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); v != "" {
+			if a, err := netip.ParseAddr(v); err == nil {
+				srcCF.Add(1)
+				return a.String(), FromCFHeader
+			}
+			srcCFBad.Add(1) // 值在但不是合法 IP：不采信，继续往下退化
+		}
+	}
+	var xff []string
+	for _, part := range strings.Split(r.Header.Get("X-Forwarded-For"), ",") {
+		if s := strings.TrimSpace(part); s != "" {
+			xff = append(xff, s)
+		}
+	}
+	if len(xff) > 0 {
+		i := len(xff) - TrustedHops()
+		if i < 0 {
+			// 链比可信跳数短：退化取最左（宁可多算，不放行到不可控值）并计数。
+			// 这个计数持续增长就说明拓扑与 TRUSTED_PROXY_HOPS 不符。
+			srcClamp.Add(1)
+			return xff[0], FromXFFClamped
+		}
+		srcXFF.Add(1)
+		return xff[i], FromXFFHop
+	}
+	srcRemote.Add(1)
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host, FromRemoteAddr
+	}
+	return r.RemoteAddr, FromRemoteAddr
+}
+
+// PrincipalStats 是各来源的累计命中数（诊断用）。
+type PrincipalStats struct {
+	CFHeader, XFFHop, XFFClamped, RemoteAddr, CFHeaderBad int64
+}
+
+// PrincipalStatsNow 返回当前计数快照。
+func PrincipalStatsNow() PrincipalStats {
+	return PrincipalStats{
+		CFHeader: srcCF.Load(), XFFHop: srcXFF.Load(), XFFClamped: srcClamp.Load(),
+		RemoteAddr: srcRemote.Load(), CFHeaderBad: srcCFBad.Load(),
+	}
+}
+
+// LogEffectiveConfig 在启动时打印实际生效的 IP 口径。只陈述、不校验——代码自证不了
+// 拓扑，但至少排查时第一眼就能看到「现在按什么取 IP」「封禁表加载了几条」，
+// 而不是猜。
+func LogEffectiveConfig() {
+	mode := "off"
+	if EnvTrustCFHeader() {
+		mode = fmt.Sprintf("on（优先，前提=源站只允许 CF 回源），退化=XFF 右数第 %d 个", TrustedHops())
+	}
+	log.Printf("ipban: IP 口径 -> CF-Connecting-IP %s | RemoteAddr 兜底 | bans=%s 已加载 %d 条，每 %v 重载",
+		mode, EnvBanFile(), Shared().Count(), EnvReloadEvery())
+}
+
+// warnPrincipalAnomaly 在每次热重载时检查归属退化是否增长：
+// xff-clamped 增长 = 有请求的 XFF 链撑不起配置的跳数，多半是拓扑与配置不符。
+func warnPrincipalAnomaly() {
+	st := PrincipalStatsNow()
+	if st.XFFClamped == lastClamp {
+		return
+	}
+	log.Printf("ipban: 注意 IP 归属退化 xff-clamped %d -> %d（链长 < TRUSTED_PROXY_HOPS=%d）："+
+		"该入口可能不经 CF 或 nginx 未追加 XFF，此时归属落在客户端可自报的最左项；"+
+		"来源分布 cf=%d xff-hop=%d remote=%d cf-bad=%d",
+		lastClamp, st.XFFClamped, TrustedHops(), st.CFHeader, st.XFFHop, st.RemoteAddr, st.CFHeaderBad)
+	lastClamp = st.XFFClamped
+}
+
+var lastClamp int64
 
 // StartAutoReload 启动本 Manager 的热重载协程；对同一实例重复调用不会起第二个。
 func (m *Manager) StartAutoReload(d time.Duration) {
@@ -124,6 +264,7 @@ func (m *Manager) StartAutoReload(d time.Duration) {
 						log.Printf("ipban: 热重载 %s 失败（沿用上一份）: %v", m.path, err)
 						continue
 					}
+					warnPrincipalAnomaly()
 				case <-m.stop:
 					return
 				}
@@ -253,36 +394,6 @@ func (m *Manager) Decide(r *http.Request) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-// Principal 返回「这个请求是谁」——用于限流分桶与 request_logs.ip。
-// 从 XFF 右往左数第 TrustedHops() 个；没有 XFF 或不够长则退化到 RemoteAddr。
-//
-// TODO(部署): 上线前必须确认 TRUSTED_PROXY_HOPS 与实际代理链层数一致，且
-// nginx 是**追加**而非覆写 X-Forwarded-For。gin 侧从未调用 SetTrustedProxies
-// （默认信任所有代理），所以 c.ClientIP() 与本函数在配置错误时都可能被伪造 XFF
-// 换桶。封禁不受影响（看整条链），受影响的是 25/IP/h 配额与流水里的归属 IP。
-func Principal(r *http.Request) string {
-	if r == nil {
-		return ""
-	}
-	var xff []string
-	for _, part := range strings.Split(r.Header.Get("X-Forwarded-For"), ",") {
-		if s := strings.TrimSpace(part); s != "" {
-			xff = append(xff, s)
-		}
-	}
-	if len(xff) > 0 {
-		i := len(xff) - TrustedHops()
-		if i < 0 {
-			i = 0 // 链比可信跳数还短：说明有伪造，退化取最左（宁可多算也别放行）
-		}
-		return xff[i]
-	}
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }
 
 // Denied 是被封禁时的响应体。两层共用同一个结构，字段与根 API 原有响应一致。

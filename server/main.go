@@ -13,6 +13,7 @@ import (
 	"github.com/Hana-ame/twitter-pic-go/Tools/ginkit/middleware"
 	"github.com/Hana-ame/twitter-pic-go/Tools/sqlite"
 	"github.com/Hana-ame/twitter-pic-go/gallery"
+	"github.com/Hana-ame/twitter-pic-go/ipban"
 	"github.com/Hana-ame/twitter-pic-go/twimg"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -55,6 +56,11 @@ func main() {
 	api := r.Group("/api/twitter")
 
 	twitter.AddToGroup(api)
+
+	// 打印实际生效的 IP 口径（CF 头优先与否 / TRUSTED_PROXY_HOPS / 封禁表加载条数）。
+	// AddToGroup 里已经初始化过 ipban.Shared()，这里的 Count 才是真值。
+	// 目的是「配错了要能看见」：跳数配错只会让限流和归属静默失效，不留日志就是假绿。
+	ipban.LogEffectiveConfig()
 
 	r.NoRoute(func(c *gin.Context) {
 		staticRoot := os.Getenv("STATIC_ROOT")

@@ -66,13 +66,15 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 | `GALLERY_TAG_RATE_MAX` | `25` | 标签写入的每 IP 每小时配额（与根 API 同量） |
 | `BANS_FILE` | `./bans.txt` | **进程级共用**（`ipban.Shared()`）：IP 封禁清单，单 IP + CIDR，`#` 注释；非法行跳过不丢整表；缺失=空表放行 |
 | `BAN_RELOAD_MINUTES` | `10` | **进程级共用**：bans.txt 热重载周期，全进程只有这一个协程 |
-| `TRUSTED_PROXY_HOPS` | `1` | **进程级共用**：`Principal` 从 XFF 右往左数第 N 个才是真实客户端（限流分桶与 `request_logs.ip` 用它） |
+| `CF_CONNECTING_IP` | `1` | **进程级共用**：`Principal` 是否优先读 `CF-Connecting-IP`（CF 覆写、经 CF 不可伪造）。设 `0/off` 可关 |
+| `TRUSTED_PROXY_HOPS` | `2` | **进程级共用**：退化时 `Principal` 从 XFF 右往左数第 N 个（N=真实代理层数：CF+nginx 追加=2、透传=1）。限流分桶与 `request_logs.ip` 用它 |
 
-⚠️ `TRUSTED_PROXY_HOPS` 上线前必须核对：本站只有一层 nginx 时是 1；若 Cloudflare 在 nginx
-之前要改成 2（或改读 `CF-Connecting-IP`）。配错了 25/IP/h 的配额就能靠伪造 XFF 换桶绕过。
-封禁本身不受这个影响（它看整条链）。**前提是所有入口的 nginx 都追加而非覆写
-`X-Forwarded-For`**；gin 侧从未调用 `SetTrustedProxies`（默认信任所有代理），所以这里
-按跳数自己取，见 `ipban.Principal` 的 TODO。
+⚠️ IP 口径的两条前提（代码自证不了，见根 `README.md` 的「IP 封禁」，含判据表）：
+① 优先信 `CF-Connecting-IP` 的前提是**源站只允许 CF 回源**，否则它同样可伪造，唯一可靠
+做法是防火墙只放行 CF 网段（**bwh 是否已这么做：未验证**）；② 退化数跳数时
+`TRUSTED_PROXY_HOPS` 必须等于真实层数（追加=2 / 透传=1，本站实测是追加）。
+配错的表现是限流可被换桶绕过，封禁不受影响（看整条链）。启动时会打印生效口径，
+归属退化按次计数并在热重载时告警——不静默假绿。
 
 已废弃（代码不再读取）：`GALLERY_TAGS_DB`、`GALLERY_ACCOUNT_VOTES_FILE`、`GALLERY_MEDIA_TAGS_FILE`。
 

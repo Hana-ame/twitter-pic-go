@@ -58,7 +58,11 @@ func TestTagPostWritesAccountTags(t *testing.T) {
 	post := func(body string) map[string]any {
 		t.Helper()
 		r := httptest.NewRequest("POST", "/api/tag", strings.NewReader(body))
-		r.Header.Set("X-Forwarded-For", "5.6.7.8, 10.0.0.1")
+		// 按线上真实形态造请求：CF 覆写 CF-Connecting-IP，nginx 追加后 XFF 长成
+		// "<真实客户端>, <CF 边缘 IP>"（线上 request_logs 实测形如
+		// "183.34.64.0, 104.22.109.48"）。两个头都给，验证优先走 CF 头。
+		r.Header.Set("CF-Connecting-IP", "5.6.7.8")
+		r.Header.Set("X-Forwarded-For", "5.6.7.8, 104.22.109.48")
 		r.Header.Set("User-Agent", "test-agent")
 		w := httptest.NewRecorder()
 		handlePostAccountTag(w, r, cfg)
@@ -88,7 +92,7 @@ func TestTagPostWritesAccountTags(t *testing.T) {
 		t.Fatalf("归零应删行: %+v", tagsMap)
 	}
 
-	// 流水：4 次写 = 4 行，且 ip 取 XFF 首个地址
+	// 流水：4 次写 = 4 行，且 ip 记的是 Principal（不是整个 XFF 头串）
 	var n int
 	var ip string
 	if err := cfg.db.QueryRow(`SELECT COUNT(*) FROM request_logs`).Scan(&n); err != nil {
@@ -100,11 +104,11 @@ func TestTagPostWritesAccountTags(t *testing.T) {
 	if err := cfg.db.QueryRow(`SELECT ip FROM request_logs LIMIT 1`).Scan(&ip); err != nil {
 		t.Fatal(err)
 	}
-	// 统一 IP 口径后取的是 Principal：XFF 从右往左第 TRUSTED_PROXY_HOPS(默认1) 个，
-	// 即「我们的 nginx 看到的那个真实客户端」= 10.0.0.1；左侧 5.6.7.8 是
-	// 客户端自带、不可信的部分。旧口径「取首项」既可被伪造，也让两层流水对不上。
-	if ip != "10.0.0.1" {
-		t.Fatalf("ip 应是 Principal（可信跳数）而不是 XFF 首项，实际 %q", ip)
+	// 统一 IP 口径后记的是 Principal：CF-Connecting-IP 优先（CF 覆写、经 CF 不可伪造），
+	// 退化才按 XFF 右往左第 TRUSTED_PROXY_HOPS 个。旧口径「整个 XFF 头串 / 首项」
+	// 让两层流水对不上，且首项是客户端可自报的。
+	if ip != "5.6.7.8" {
+		t.Fatalf("request_logs.ip 应是 Principal(5.6.7.8)，实际 %q", ip)
 	}
 }
 
@@ -140,7 +144,9 @@ func TestTagPostRateLimited(t *testing.T) {
 
 	code := func(ip string) int {
 		r := httptest.NewRequest("POST", "/api/tag", strings.NewReader(`{"user":"a","tag":"t","d":1}`))
-		r.Header.Set("X-Forwarded-For", ip)
+		// 用 CF-Connecting-IP 表达「不同访客」：Principal 优先读它，等价于线上
+		// 两个不同真实客户端。XFF 留给 ipban 自己的用例覆盖。
+		r.Header.Set("CF-Connecting-IP", ip)
 		w := httptest.NewRecorder()
 		handlePostAccountTag(w, r, cfg)
 		return w.Code

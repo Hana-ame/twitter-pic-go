@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -128,9 +129,9 @@ func TestPrincipalHopMath(t *testing.T) {
 	if got := Principal(r); got != "1.1.1.1" {
 		t.Fatalf("链比可信跳数短时应退化到最左（宁可多算不能放行），实际 %s", got)
 	}
-	t.Setenv("TRUSTED_PROXY_HOPS", "0") // 非法值回默认 1
-	if got := Principal(r); got != "3.3.3.3" {
-		t.Fatalf("非法跳数应回退默认 1，实际 %s", got)
+	t.Setenv("TRUSTED_PROXY_HOPS", "0") // 非法值回默认（本站真实拓扑 = 2）
+	if got := Principal(r); got != "2.2.2.2" {
+		t.Fatalf("非法跳数应回退默认 2，实际 %s", got)
 	}
 
 	// 无 XFF：直连场景取 RemoteAddr
@@ -139,6 +140,106 @@ func TestPrincipalHopMath(t *testing.T) {
 	if got := Principal(r2); got != "10.0.0.9" {
 		t.Fatalf("无 XFF 应取 RemoteAddr host，实际 %s", got)
 	}
+}
+
+// TestPrincipalPrefersCFHeader 钉住一级优先：经 Cloudflare 时读 CF-Connecting-IP。
+// CF 覆写该头，所以经 CF 的请求伪造不了它——比数 XFF 跳数可靠。
+func TestPrincipalPrefersCFHeader(t *testing.T) {
+	r := httptest.NewRequest("POST", "/", nil)
+	r.RemoteAddr = "10.0.0.9:1"
+	r.Header.Set("CF-Connecting-IP", "203.0.113.7")
+	// 故意给一条与 CF 头矛盾的 XFF（含客户端自报段），验证谁说话算
+	r.Header.Set("X-Forwarded-For", "1.2.3.4, 5.6.7.8, 104.22.109.48")
+
+	ip, src := PrincipalWithSource(r)
+	if ip != "203.0.113.7" || src != FromCFHeader {
+		t.Fatalf("应优先采信 CF 头，实际 ip=%s src=%s", ip, src)
+	}
+
+	// 可关：CF_CONNECTING_IP=0 时退回 XFF 跳数（用于排查或不经 CF 的入口）
+	t.Setenv("CF_CONNECTING_IP", "0")
+	t.Setenv("TRUSTED_PROXY_HOPS", "2")
+	ip, src = PrincipalWithSource(r)
+	if ip != "5.6.7.8" || src != FromXFFHop {
+		t.Fatalf("关掉 CF 头后应按 XFF 右数第 2 取，实际 ip=%s src=%s", ip, src)
+	}
+
+	// IPv6 也要能解析（CF 会回源 IPv6 客户端）
+	t.Setenv("CF_CONNECTING_IP", "1") // 上面为验证「可关」把它关了，这里显式恢复
+	r6 := httptest.NewRequest("POST", "/", nil)
+	r6.Header.Set("CF-Connecting-IP", "2001:db8::42")
+	if got := Principal(r6); got != "2001:db8::42" {
+		t.Fatalf("CF 头里的 IPv6 没被采信，实际 %s", got)
+	}
+
+	// 伪造的 CF 头值（不是合法 IP）不采信，继续退化而不是当成主身份
+	rBad := httptest.NewRequest("POST", "/", nil)
+	rBad.RemoteAddr = "10.0.0.9:1"
+	rBad.Header.Set("CF-Connecting-IP", "1.2.3.4:5678") // 带端口，非法
+	rBad.Header.Set("X-Forwarded-For", "9.9.9.9")
+	t.Setenv("TRUSTED_PROXY_HOPS", "1")
+	ip, src = PrincipalWithSource(rBad)
+	if ip != "9.9.9.9" || src != FromXFFHop {
+		t.Fatalf("非法 CF 头应退化到 XFF，实际 ip=%s src=%s", ip, src)
+	}
+}
+
+// TestPrincipalForgedChainIgnored 钉住「客户端自报 IP 在最左，不得影响取值」：
+// 攻击者塞多少假条目都只能加在链的左边，右数第 N 个仍是我们代理写的那一项。
+func TestPrincipalForgedChainIgnored(t *testing.T) {
+	t.Setenv("CF_CONNECTING_IP", "0")
+	t.Setenv("TRUSTED_PROXY_HOPS", "2")
+
+	realClient := "198.51.100.23"
+	for _, forged := range []string{
+		"1.1.1.1",
+		"1.1.1.1, 2.2.2.2",
+		"203.0.113.7", // 试图把被封 IP 塞进链里（陷害），也不该改变归属
+		strings.Repeat("7.7.7.7, ", 20),
+	} {
+		r := httptest.NewRequest("POST", "/", nil)
+		r.RemoteAddr = "10.0.0.9:1"
+		// 伪造条目只能加在链的左边：拼接时留好分隔符，别拼成一个假 IP
+		var parts []string
+		for _, f := range strings.Split(forged, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				parts = append(parts, f)
+			}
+		}
+		parts = append(parts, realClient, "104.22.109.48")
+		r.Header.Set("X-Forwarded-For", strings.Join(parts, ", "))
+		if got := Principal(r); got != realClient {
+			t.Fatalf("伪造前缀 %q 后归属被带偏：实际 %s，应为 %s（链=%s）",
+				forged, got, realClient, r.Header.Get("X-Forwarded-For"))
+		}
+	}
+}
+
+// TestPrincipalClampIsVisible 钉住「配错要能看见」：链长撑不起配置的跳数时，
+// 除了退化取值，必须留下计数，warnPrincipalAnomaly 才有东西可报。
+func TestPrincipalClampIsVisible(t *testing.T) {
+	t.Setenv("CF_CONNECTING_IP", "0")
+	t.Setenv("TRUSTED_PROXY_HOPS", "5") // 故意配大，模拟拓扑与配置不符
+
+	before := PrincipalStatsNow().XFFClamped
+	r := httptest.NewRequest("POST", "/", nil)
+	r.RemoteAddr = "10.0.0.9:1"
+	r.Header.Set("X-Forwarded-For", "1.1.1.1, 2.2.2.2")
+	ip, src := PrincipalWithSource(r)
+	if ip != "1.1.1.1" || src != FromXFFClamped {
+		t.Fatalf("链比跳数短应退化到最左，实际 ip=%s src=%s", ip, src)
+	}
+	if after := PrincipalStatsNow().XFFClamped; after <= before {
+		t.Fatalf("退化取值必须计入 XFFClamped（%d -> %d），否则日志里看不见", before, after)
+	}
+
+	// 触发一次告警路径，确保函数本身不炸（真实文件 + 无异常也应安静）
+	m := New(writeBans(t, "1.1.1.1\n"))
+	if err := m.ReloadFromFile(); err != nil {
+		t.Fatal(err)
+	}
+	warnPrincipalAnomaly()
+	warnPrincipalAnomaly() // 第二次计数未增长，应直接返回
 }
 
 // TestSharedIsSingleton 钉住第 5 条要求：两层必须拿到同一份实例，

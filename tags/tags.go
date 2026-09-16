@@ -317,6 +317,12 @@ func (s *Store) BannedUsernames() ([]string, error) {
 // 而不是"先全量聚合、再由调用方按缓存扣减"——后者有个实测出来的正确性缺陷：
 // 扣减用的是缓存快照，窗口内被封账号新增的标签根本扣不掉。
 // users 表不存在时自动退回不过滤（fail-open：读不到封禁状态不该把标签云清空）。
+//
+// 结果走进程内缓存（见 cloud_cache.go）：查询是 23k×17k 的反连接 + GROUP BY，
+// 线上实测 ~0.8s，而首页与 /api/tags/cloud 都是高频入口。缓存键含 excludeBanned
+// 但**不含 n**——缓存全量榜单再切片，否则 ?limit=37/38/… 每个值都是一次全表聚合。
+// 失效由写路径显式触发（CastVotes / commitUser / BackfillVoteBase），另有
+// cloudTTL 兜底进程外直改。所以**重启不承担刷新职责**。
 func (s *Store) Cloud(n int, excludeBanned bool) []Count {
 	if s == nil || s.db == nil {
 		return nil
@@ -324,6 +330,58 @@ func (s *Store) Cloud(n int, excludeBanned bool) []Count {
 	if n <= 0 {
 		n = 36
 	}
+	key := cloudKey{db: s.db, excludeBanned: excludeBanned}
+
+	// 快路径：命中即切片返回。
+	if full, ok := cloudGet(key); ok {
+		return truncateCounts(full, n)
+	}
+
+	// 慢路径：只有一个调用者去查库，其余等待它的结果（single-flight）。
+	// 没有这层的话，缓存失效瞬间的并发请求会各自触发一次 0.8s 全表聚合，
+	// 正是要避免的"访问代价过高"。
+	cloudMu.Lock()
+	if full, ok := cloudGet(key); ok { // 等锁期间别人可能已经填好
+		cloudMu.Unlock()
+		return truncateCounts(full, n)
+	}
+	if wait, ok := cloudFlight[key]; ok {
+		cloudMu.Unlock()
+		<-wait
+		if full, ok := cloudGet(key); ok {
+			return truncateCounts(full, n)
+		}
+		return nil // 那次刷新失败：返回 nil 让调用方降级
+	}
+	wait := make(chan struct{})
+	cloudFlight[key] = wait
+	cloudMu.Unlock()
+
+	full, err := s.queryCloudAll(excludeBanned)
+	cloudMu.Lock()
+	delete(cloudFlight, key)
+	cloudMu.Unlock()
+	close(wait)
+
+	if err != nil {
+		// 查询失败不写缓存（免得把失败固化 TTL 那么久），返回 nil 让调用方降级。
+		return nil
+	}
+	cloudPut(key, full)
+	return truncateCounts(full, n)
+}
+
+// truncateCounts 取前 n 条。入参已是副本（cloudGet/cloudPut 都做了 clone）。
+func truncateCounts(v []Count, n int) []Count {
+	if n <= 0 || len(v) <= n {
+		return v
+	}
+	return v[:n]
+}
+
+// queryCloudAll 查全量榜单（上限 cloudMaxEntries），供缓存填充用。
+// 一次查询服务所有 n，避免按 limit 分别打库。
+func (s *Store) queryCloudAll(excludeBanned bool) ([]Count, error) {
 	const base = `SELECT tag, COUNT(DISTINCT username) FROM account_tags a WHERE weight > 0`
 	const banned = ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
 	                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
@@ -333,17 +391,17 @@ func (s *Store) Cloud(n int, excludeBanned bool) []Count {
 	if excludeBanned {
 		q = base + banned + tail
 	}
-	out, err := s.queryCloud(q, n)
+	out, err := s.queryCloud(q, cloudMaxEntries)
 	if err != nil && excludeBanned {
 		// 多半是 users 表还没建（老库/独立部署的图站库）：退回不过滤并说一声。
 		log.Printf("tags: Cloud 排除被封账号失败，退回全量聚合: %v", err)
-		out, err = s.queryCloud(base+tail, n)
+		out, err = s.queryCloud(base+tail, cloudMaxEntries)
 	}
 	if err != nil {
 		log.Printf("tags: Cloud: %v", err)
-		return nil
+		return nil, err
 	}
-	return out
+	return out, nil
 }
 
 func (s *Store) queryCloud(q string, n int) ([]Count, error) {

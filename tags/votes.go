@@ -213,7 +213,14 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 	if _, err := tx.Exec(`DELETE FROM account_tags WHERE username = ? AND weight = 0`, username); err != nil {
 		return fmt.Errorf("清扫归零标签失败: %v", err)
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// 缓存失效放在**提交之后**：提交前失效会让并发读把尚未提交的旧值重新填进缓存，
+	// 那次写入就永远看不见了。提交后失效只保证"新值可见"，不保证"读到的必是新值"
+	// （另一个读者可能已在事务外抢了一次查询），这与"最终一致 + TTL 兜底"一致。
+	InvalidateCloud(s.db)
+	return nil
 }
 
 // clampTarget 把目标值夹进 {-1,0,+1}。注意夹的是**目标值**，不是请求带来的差值，

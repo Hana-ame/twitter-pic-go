@@ -71,7 +71,8 @@
   }
   function setURL(t, c) { history.replaceState(null, '', href(t, c)); }
 
-  /* ---- 动态瀑布流系统：基于真实高度动态平衡各列，实时监听图片/视频加载尺寸 ---- */
+  /* ---- 媒体占位比缓存：按 URL / 实测尺寸给图片与视频留位，避免加载后列内容跳动。
+     列高由 CSS 多列自动配平（见 partials.html 的 .grid），JS 不再重排卡片。 ---- */
   var aspectCache = {};
   try {
     var savedAspect = sessionStorage.getItem('tw_aspect_cache');
@@ -92,15 +93,8 @@
     if (match && match[1] && match[2]) {
       return match[1] + ' / ' + match[2];
     }
-    // twitter 图片没有尺寸段，给个默认占位比，避免初始 0 高度导致瀑布流全挤一列→load 后重排闪烁
+    // twitter 图片没有尺寸段：先按 1:1 占位，load 后按实测比例修正，避免初始 0 高造成列内容跳动
     return '1 / 1';
-  }
-
-  function nCols() {
-    var w = grid.clientWidth || window.innerWidth || 900;
-    // 移动端手机屏 (w < 560px) 保证 2 列瀑布流，超小屏兜底 1 列，平板 3 列，桌面 4-6 列
-    var minCol = w < 560 ? 155 : (w < 860 ? 220 : 280);
-    return Math.max(1, Math.min(8, Math.floor(w / minCol)));
   }
 
   function thumbURL(url) {
@@ -123,10 +117,8 @@
         if (n.videoWidth && n.videoHeight) {
           setAspect(m.url, n.videoWidth + ' / ' + n.videoHeight);
           n.style.aspectRatio = n.videoWidth + ' / ' + n.videoHeight;
-          scheduleWaterfall();
         }
       });
-      n.addEventListener('error', function () { scheduleWaterfall(); });
     } else {
       n = document.createElement('img');
       n.loading = 'lazy';
@@ -137,10 +129,8 @@
         if (n.naturalWidth && n.naturalHeight) {
           setAspect(m.url, n.naturalWidth + ' / ' + n.naturalHeight);
           n.style.aspectRatio = n.naturalWidth + ' / ' + n.naturalHeight;
-          scheduleWaterfall();
         }
       });
-      n.addEventListener('error', function () { scheduleWaterfall(); });
       if (n.complete && n.naturalWidth && n.naturalHeight) {
         setAspect(m.url, n.naturalWidth + ' / ' + n.naturalHeight);
         n.style.aspectRatio = n.naturalWidth + ' / ' + n.naturalHeight;
@@ -157,10 +147,6 @@
   var nextA = document.getElementById('g-next');
   var modes = Array.prototype.slice.call(document.querySelectorAll('[data-mode]'));
 
-  var cardRO = (typeof ResizeObserver !== 'undefined') ? new ResizeObserver(function () {
-    scheduleWaterfall();
-  }) : null;
-
   function gridCard(m, gIdx) {
     var d = document.createElement('div');
     d.className = 'card' + (m.video ? ' has-video' : '');
@@ -168,102 +154,18 @@
     var n = mediaNode(m, false, true);
     n.addEventListener('click', function () { openLightbox(gIdx); });
     d.appendChild(n);
-    if (cardRO) cardRO.observe(d);
     return d;
   }
 
-  var wfRaf = 0;
-  function scheduleWaterfall() {
-    if (wfRaf) cancelAnimationFrame(wfRaf);
-    wfRaf = requestAnimationFrame(function () {
-      wfRaf = 0;
-      balanceWaterfall();
-    });
-  }
-
-  function balanceWaterfall() {
-    var cols = Array.prototype.slice.call(grid.querySelectorAll('.gcol'));
-    if (cols.length < 2) return;
-    var cards = Array.prototype.slice.call(grid.querySelectorAll('.card'));
-    if (!cards.length) return;
-
-    // 按原始序号排序，保持瀑布流由上至下的流向次序
-    cards.sort(function (a, b) { return (+a.dataset.gidx) - (+b.dataset.gidx); });
-
-    var n = cols.length;
-    var cardHeights = cards.map(function (c) {
-      return c.getBoundingClientRect().height || c.offsetHeight || 220;
-    });
-
-    var colHeights = new Array(n).fill(0);
-    var assignments = [];
-    for (var c = 0; c < n; c++) assignments.push([]);
-
-    for (var i = 0; i < cards.length; i++) {
-      var minCol = 0;
-      for (var c = 1; c < n; c++) {
-        if (colHeights[c] < colHeights[minCol]) minCol = c;
-      }
-      assignments[minCol].push(cards[i]);
-      var gap = (window.innerWidth < 640 ? 8 : 16);
-      colHeights[minCol] += cardHeights[i] + gap;
-    }
-
-    var anyChange = false;
-    for (var c = 0; c < n; c++) {
-      var currentChildren = Array.prototype.slice.call(cols[c].children);
-      var targetCards = assignments[c];
-      if (currentChildren.length !== targetCards.length) {
-        anyChange = true;
-        break;
-      }
-      for (var k = 0; k < targetCards.length; k++) {
-        if (currentChildren[k] !== targetCards[k]) {
-          anyChange = true;
-          break;
-        }
-      }
-      if (anyChange) break;
-    }
-    if (!anyChange) return;
-
-    for (var c = 0; c < n; c++) {
-      if (cols[c].replaceChildren) {
-        cols[c].replaceChildren.apply(cols[c], assignments[c]);
-      } else {
-        while (cols[c].firstChild) cols[c].removeChild(cols[c].firstChild);
-        for (var k = 0; k < assignments[c].length; k++) {
-          cols[c].appendChild(assignments[c][k]);
-        }
-      }
-    }
-  }
-
   function renderGrid() {
-    if (cardRO) cardRO.disconnect();
     var arr = list();
     var start = clampStart(arr, cursorID());
     var end = Math.min(start + PER, arr.length);
-    var n = nCols();
-    var cols = [];
-    for (var i = 0; i < n; i++) {
-      var c = document.createElement('div');
-      c.className = 'gcol';
-      cols.push(c);
-    }
-    var cards = [];
-    for (var i = start; i < end; i++) {
-      cards.push(gridCard(arr[i], i));
-    }
     var frag = document.createDocumentFragment();
-    for (var i = 0; i < n; i++) frag.appendChild(cols[i]);
-    grid.replaceChildren(frag);
-
-    for (var i = 0; i < cards.length; i++) {
-      cols[i % n].appendChild(cards[i]);
+    for (var i = start; i < end; i++) {
+      frag.appendChild(gridCard(arr[i], i));
     }
-
-    scheduleWaterfall();
+    grid.replaceChildren(frag);
 
     if (countEl) countEl.textContent = arr.length + ' media';
     if (info) info.textContent = arr.length ? (start + 1) + '–' + end + ' / ' + arr.length : '0';
@@ -272,19 +174,6 @@
     modes.forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-mode') === typeFilter()); });
   }
 
-  var gridResTimer = 0;
-  window.addEventListener('resize', function () {
-    clearTimeout(gridResTimer);
-    gridResTimer = setTimeout(function () {
-      if (lb.hidden) {
-        if (nCols() !== grid.querySelectorAll('.gcol').length) {
-          renderGrid();
-        } else {
-          scheduleWaterfall();
-        }
-      }
-    }, 100);
-  });
   function go(t, c) { setURL(t, c); renderGrid(); }
 
   modes.forEach(function (a) {

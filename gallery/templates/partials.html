@@ -216,13 +216,14 @@ h1{font-size:22px;margin:0 0 6px;font-weight:700;letter-spacing:-.02em}
 .atag-input::placeholder{color:var(--faint)}
 .atag-input[hidden]{display:none}
 
-/* ---- media grid (account page) ---- */
-.grid{display:flex;gap:16px;align-items:flex-start}
-.grid:not(:has(.gcol)){display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
-.gcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:16px}
+/* ---- media grid (account page) ----
+   CSS 多列瀑布流：卡片整块入列（break-inside:avoid），浏览器按内容高度自动配平
+   （column-fill:balance）——每列张数不定、各列总高接近；图片 load 撑高自动回流，无 JS 重排。 */
+.grid{column-count:4;column-gap:16px;column-fill:balance}
 .card{
   position:relative;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;
-  display:block;width:100%;
+  display:block;width:100%;margin-bottom:16px;
+  break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;
   box-shadow:var(--shadow-sm);overflow:hidden;
   transition:transform .2s var(--ease),box-shadow .2s var(--ease),border-color .2s var(--ease);
 }
@@ -459,6 +460,11 @@ img.lb-media{cursor:pointer}
 .lb-vhud:not(.is-fs) .ico-fs{display:block}
 .lb-vhud:not(.is-fs) .ico-unfs{display:none}
 
+/* ---------- 响应式：列数随宽度降档（每列张数由内容高度决定） ---------- */
+@media (max-width:1100px){
+  .grid{column-count:3}
+}
+
 /* ---------- 手机端深度适配响应式规则 ---------- */
 @media (max-width:640px){
   header{padding:max(10px, env(safe-area-inset-top, 10px)) max(14px, env(safe-area-inset-right, 14px)) 10px max(14px, env(safe-area-inset-left, 14px))}
@@ -505,10 +511,8 @@ img.lb-media{cursor:pointer}
   .modes a.lg{margin-left:0}
 
   /* 媒体瀑布流：双列紧凑卡片，边距压缩提升内容可视面积 */
-  .grid{gap:8px}
-  .grid:not(:has(.gcol)){grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
-  .gcol{gap:8px}
-  .card{padding:4px;border-radius:8px}
+  .grid{column-count:2;column-gap:8px}
+  .card{padding:4px;border-radius:8px;margin-bottom:8px}
   .card img,.card video{border-radius:5px}
 
   /* 分页按钮 */
@@ -552,6 +556,7 @@ img.lb-media{cursor:pointer}
 
 @media (max-width:340px){
   .agrid{grid-template-columns:1fr}
+  .grid{column-count:1}
 }
 /* ---- reduced motion ---- */
 @media(prefers-reduced-motion:reduce){

@@ -2,12 +2,15 @@
 *.json.gz
 
 *.db
+*.db.gz
 *.db-shm
 *.db-wal
 
 .env
 
 server_bin
+twitter-server
+*.bak*
 bans.txt
 
 __pycache__/

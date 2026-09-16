@@ -258,6 +258,7 @@ func TestCloudBanExclusion(t *testing.T) {
 	if _, err := s.db.Exec(`INSERT INTO users VALUES ('alice','SUCCESS'),('bob','BANNED')`); err != nil {
 		t.Fatal(err)
 	}
+	InvalidateCloud(s.db)
 	all := s.Cloud(10, false)
 	if len(all) != 3 {
 		t.Fatalf("不带排除时应看到全部 3 个标签，实际 %+v", all)

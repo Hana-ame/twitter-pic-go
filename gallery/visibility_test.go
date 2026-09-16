@@ -98,14 +98,11 @@ func TestBannedAccountInvisibleEverywhere(t *testing.T) {
 			t.Fatalf("%s 应 404（被封/非 SUCCESS 账号隐身），实际 %d", u, got)
 		}
 	}
-	// 直链快照：完整时间线都在里面，是最大的口子，必须一起挡
-	for _, u := range []string{"/raw/bob", "/raw/dave"} {
+	// /raw 已删除并收敛到 /api/twitter/*，所有账号访问 /raw 均 404
+	for _, u := range []string{"/raw/bob", "/raw/dave", "/raw/alice"} {
 		if got := statusOf(t, cfg, "GET", u); got != 404 {
-			t.Fatalf("%s 应 404（不保留直链），实际 %d", u, got)
+			t.Fatalf("%s 应 404（/raw 已删除），实际 %d", u, got)
 		}
-	}
-	if got := statusOf(t, cfg, "GET", "/raw/alice"); got != 200 {
-		t.Fatalf("正常账号 /raw 应 200，实际 %d", got)
 	}
 
 	// 首页列表：bob / dave 不能出现在 #a-data 或任何位置

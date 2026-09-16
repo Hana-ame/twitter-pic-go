@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/Hana-ame/twitter-pic-go/tags"
 )
 
 var DB *sql.DB
@@ -62,6 +64,9 @@ const userSelectQuery = `
 
 // 做个delete方法就行了。
 func commitUser(username, status string) error {
+	var oldStatus sql.NullString
+	_ = DB.QueryRow(`SELECT status FROM users WHERE username = ?`, username).Scan(&oldStatus)
+
 	query := `UPDATE users 
           SET status = ?, 
               last_modify = CURRENT_TIMESTAMP 
@@ -70,6 +75,19 @@ func commitUser(username, status string) error {
 	_, err := DB.Exec(query, status, username)
 	if err != nil {
 		return fmt.Errorf("插入/更新用户失败: %v", err)
+	}
+
+	// 用户被封禁或解封时，同步增量更新 tag_counts 标签云表
+	if oldStatus.String == "SUCCESS" && status != "SUCCESS" {
+		_, _ = DB.Exec(`UPDATE tag_counts SET cnt = cnt - 1 
+			WHERE tag IN (SELECT tag FROM user_tag_cnt WHERE username = ? AND cnt > 0);
+			DELETE FROM tag_counts WHERE cnt <= 0;`, username)
+		tags.RefreshCloudByDB(DB)
+	} else if oldStatus.String != "SUCCESS" && status == "SUCCESS" {
+		_, _ = DB.Exec(`INSERT INTO tag_counts (tag, cnt)
+			SELECT tag, 1 FROM user_tag_cnt WHERE username = ? AND cnt > 0
+			ON CONFLICT(tag) DO UPDATE SET cnt = cnt + 1;`, username)
+		tags.RefreshCloudByDB(DB)
 	}
 
 	log.Printf("用户 %s 已成功提交", username)

@@ -7,6 +7,7 @@ package twitter
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -356,6 +357,116 @@ func VoteUpEmojiHandler(c *gin.Context) {
 	c.JSON(200, emojis)
 }
 
+// PostTagRequest 是向 /api/twitter/tag 提交标签投票的请求体结构
+type PostTagRequest struct {
+	User string `json:"user"`
+	Key  string `json:"key"` // 兼容 key 别名
+	Tag  string `json:"tag"`
+	D    *int   `json:"d"`
+}
+
+// PostTagHandler POST /api/twitter/tag · POST /api/twitter/account-tag
+func PostTagHandler(c *gin.Context) {
+	ip := ipban.Principal(c.Request)
+	agent := c.Request.UserAgent()
+
+	var req PostTagRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad json"})
+		return
+	}
+
+	user := strings.TrimSpace(req.User)
+	if user == "" {
+		user = strings.TrimSpace(req.Key)
+	}
+	tag := strings.TrimSpace(req.Tag)
+
+	if user == "" || tag == "" || req.D == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user, tag and d are required"})
+		return
+	}
+
+	if *req.D < -1 || *req.D > 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "d must be -1, 0 or 1"})
+		return
+	}
+
+	// 检查目标账号是否被封禁
+	if targetUser, err := getUserTags(user); err == nil {
+		if targetUser.Status != "" && targetUser.Status != "SUCCESS" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found or banned"})
+			return
+		}
+	}
+
+	if err := addTag(user, map[string]int{tag: *req.D}, ip, agent); err != nil {
+		log.Printf("twitter: POST tag %s %q=%d ip=%q: %v", user, tag, *req.D, ip, err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "write failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"user": user,
+		"tags": Store().Weights(user),
+	})
+}
+
+// PostUserTagsHandler POST /api/twitter/tags/:username
+func PostUserTagsHandler(c *gin.Context) {
+	username := c.Param("username")
+	if username == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "username is required"})
+		return
+	}
+	ip := ipban.Principal(c.Request)
+	agent := c.Request.UserAgent()
+
+	// 尝试单标签 {tag, d}
+	var singleReq struct {
+		Tag string `json:"tag"`
+		D   *int   `json:"d"`
+	}
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad request body"})
+		return
+	}
+
+	if err := json.Unmarshal(bodyBytes, &singleReq); err == nil && singleReq.Tag != "" && singleReq.D != nil {
+		if *singleReq.D < -1 || *singleReq.D > 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "d must be -1, 0 or 1"})
+			return
+		}
+		if err := addTag(username, map[string]int{singleReq.Tag: *singleReq.D}, ip, agent); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"user": username, "tags": Store().Weights(username)})
+		return
+	}
+
+	// 尝试 map[string]int
+	var tagMap map[string]int
+	if err := json.Unmarshal(bodyBytes, &tagMap); err == nil && len(tagMap) > 0 {
+		for k, v := range tagMap {
+			if v > 0 {
+				tagMap[k] = 1
+			} else if v < 0 {
+				tagMap[k] = -1
+			}
+		}
+		if err := addTag(username, tagMap, ip, agent); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"user": username, "tags": Store().Weights(username)})
+		return
+	}
+
+	c.JSON(http.StatusBadRequest, gin.H{"error": "invalid tags body"})
+}
+
 func AddToGroup(g *gin.RouterGroup) {
 
 	limiter := limit.NewFastLimiter(25)
@@ -368,7 +479,9 @@ func AddToGroup(g *gin.RouterGroup) {
 	g.POST("/:username", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), limit.GlobalRateLimitMiddleware(), CreateMetaData)
 	g.GET("/:fn", GetMetaData)
 	g.GET("/tags/:username", GetTags)
-	// g.POST("/tags/:username", PostTags) // 使用 ?donotrenew
+	g.POST("/tags/:username", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), PostUserTagsHandler)
+	g.POST("/tag", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), PostTagHandler)
+	g.POST("/account-tag", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), PostTagHandler)
 	g.GET("/", GetLists)
 	// admin
 	g.DELETE("/:username", DeleteUser)

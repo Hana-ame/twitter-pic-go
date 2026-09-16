@@ -75,6 +75,20 @@ func EnsureVoteSchema(db *sql.DB) error {
 	) WITHOUT ROWID;`); err != nil {
 		return fmt.Errorf("创建 tag_weight_base 失败: %v", err)
 	}
+	// 投票真相表 user_tag_ip
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS user_tag_ip (
+		username   TEXT    NOT NULL,
+		tag        TEXT    NOT NULL,
+		ip         TEXT    NOT NULL,
+		value      INTEGER NOT NULL,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (username, tag, ip)
+	) WITHOUT ROWID;`); err != nil {
+		return fmt.Errorf("创建 user_tag_ip 失败: %v", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_user_tag_ip_ip ON user_tag_ip(ip);`); err != nil {
+		return fmt.Errorf("创建 user_tag_ip ip 索引失败: %v", err)
+	}
 	return nil
 }
 
@@ -107,6 +121,7 @@ func BackfillVoteBase(db *sql.DB) (int64, error) {
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	InvalidateCloud(db)
 	if n > 0 {
 		log.Printf("tags: 历史底数快照完成，%d 行（此后不可变，作为 weight 的起点）", n)
 	}
@@ -172,11 +187,27 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 	}
 	defer tx.Rollback()
 
+	// 检查该用户是否为活跃用户（被封禁用户不计入全局标签云）
+	isUserActive := true
+	var uStatus sql.NullString
+	if err := tx.QueryRow(`SELECT status FROM users WHERE username = ?`, username).Scan(&uStatus); err == nil {
+		if !uStatus.Valid || uStatus.String != "SUCCESS" {
+			isUserActive = false
+		}
+	}
+
 	for tag, want := range targets {
 		if tag == "" {
 			continue
 		}
 		target := clampTarget(want)
+
+		// 变更前该用户对此标签的计数
+		var oldCnt int
+		_ = tx.QueryRow(`SELECT cnt FROM user_tag_cnt WHERE username = ? AND tag = ?`, username, tag).Scan(&oldCnt)
+		if oldCnt == 0 {
+			_ = tx.QueryRow(`SELECT weight FROM account_tags WHERE username = ? AND tag = ?`, username, tag).Scan(&oldCnt)
+		}
 
 		if target == VoteUndo {
 			// 撤票 = 删行（不置 0）。理由：置 0 会让账本永远长出一堆无意义的行，
@@ -186,6 +217,8 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 			if err != nil {
 				return fmt.Errorf("撤票 %s %q 失败: %v", username, tag, err)
 			}
+			_, _ = tx.Exec(`DELETE FROM user_tag_ip WHERE username = ? AND tag = ? AND ip = ?`,
+				username, tag, ip)
 			if n, _ := res.RowsAffected(); n == 0 {
 				continue // 这个 IP 本来就没投过：无事发生，连底数行都不该被顺带造出来
 			}
@@ -202,10 +235,44 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 				username, tag, ip, target); err != nil {
 				return fmt.Errorf("记票 %s %q=%d 失败: %v", username, tag, target, err)
 			}
+			if _, err := tx.Exec(`INSERT INTO user_tag_ip (username, tag, ip, value) VALUES (?, ?, ?, ?)
+				ON CONFLICT (username, tag, ip) DO UPDATE
+				SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+				WHERE user_tag_ip.value IS NOT excluded.value`,
+				username, tag, ip, target); err != nil {
+				return fmt.Errorf("记票 user_tag_ip %s %q=%d 失败: %v", username, tag, target, err)
+			}
 		}
 
 		if _, err := tx.Exec(rollupSQL, username, tag, username, tag, username, tag); err != nil {
 			return fmt.Errorf("重算权重 %s %q 失败: %v", username, tag, err)
+		}
+		// 重算唯一真相表 user_tag_cnt，更新 updated_at 为当前时间
+		const rollupUserTagCnt = `INSERT INTO user_tag_cnt (username, tag, cnt, updated_at)
+			SELECT ?, ?, IFNULL((SELECT base FROM tag_weight_base WHERE username = ? AND tag = ?), 0)
+			             + IFNULL((SELECT SUM(value) FROM user_tag_ip WHERE username = ? AND tag = ?), 0),
+			             CURRENT_TIMESTAMP
+			ON CONFLICT (username, tag) DO UPDATE SET cnt = excluded.cnt, updated_at = CURRENT_TIMESTAMP`
+		if _, err := tx.Exec(rollupUserTagCnt, username, tag, username, tag, username, tag); err != nil {
+			return fmt.Errorf("重算 user_tag_cnt %s %q 失败: %v", username, tag, err)
+		}
+
+		// 变更后该用户对此标签的计数
+		var newCnt int
+		_ = tx.QueryRow(`SELECT cnt FROM user_tag_cnt WHERE username = ? AND tag = ?`, username, tag).Scan(&newCnt)
+		if newCnt == 0 {
+			_ = tx.QueryRow(`SELECT weight FROM account_tags WHERE username = ? AND tag = ?`, username, tag).Scan(&newCnt)
+		}
+
+		// 同步增量维护全局标签云汇总表 tag_counts
+		if isUserActive {
+			if oldCnt <= 0 && newCnt > 0 {
+				_, _ = tx.Exec(`INSERT INTO tag_counts (tag, cnt) VALUES (?, 1)
+					ON CONFLICT(tag) DO UPDATE SET cnt = cnt + 1`, tag)
+			} else if oldCnt > 0 && newCnt <= 0 {
+				_, _ = tx.Exec(`UPDATE tag_counts SET cnt = cnt - 1 WHERE tag = ?`, tag)
+				_, _ = tx.Exec(`DELETE FROM tag_counts WHERE tag = ? AND cnt <= 0`, tag)
+			}
 		}
 	}
 	// 恰好归零删行（既有语义）；票行**保留**——账本才是真源，删了账本这个 IP
@@ -213,13 +280,14 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 	if _, err := tx.Exec(`DELETE FROM account_tags WHERE username = ? AND weight = 0`, username); err != nil {
 		return fmt.Errorf("清扫归零标签失败: %v", err)
 	}
+	if _, err := tx.Exec(`DELETE FROM user_tag_cnt WHERE username = ? AND cnt = 0`, username); err != nil {
+		return fmt.Errorf("清扫归零 user_tag_cnt 失败: %v", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	// 缓存失效放在**提交之后**：提交前失效会让并发读把尚未提交的旧值重新填进缓存，
-	// 那次写入就永远看不见了。提交后失效只保证"新值可见"，不保证"读到的必是新值"
-	// （另一个读者可能已在事务外抢了一次查询），这与"最终一致 + TTL 兜底"一致。
-	InvalidateCloud(s.db)
+	// 提交后同步刷新内存标签云缓存（读请求永远命中热缓存，0ms 响应）
+	s.RefreshCloud()
 	return nil
 }
 

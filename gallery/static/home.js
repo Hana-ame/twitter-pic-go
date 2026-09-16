@@ -260,27 +260,63 @@
     return { name: g("name"), nick: g("nick"), profile_image: g("profile_image") };
   }
   async function fetchMeta(name) {
-    const url = "/raw/" + encodeURIComponent(name);
+    const url = "/api/twitter/" + encodeURIComponent(name) + ".json.gz";
     const res = await fetch(url);
     if (!res.ok) throw new Error("HTTP " + res.status);
-    if (!res.body || !window.DecompressionStream) {
-      // 兜底：整包解压失败就全量 parse（旧浏览器）
+    if (!res.body) {
       const j = await res.json().catch(() => null);
       if (!j) throw new Error("no stream");
       return extractMeta(JSON.stringify(j), true) || { n: name };
     }
-    const rd = res.body.pipeThrough(new DecompressionStream("gzip")).getReader();
-    const td = new TextDecoder();
-    let text = "", done = false;
-    while (!done) {
-      const r = await rd.read();
-      if (r.done) break;
-      text += td.decode(r.value, { stream: true });
+    try {
+      const td = new TextDecoder();
+      const rd = res.body.getReader();
+      let text = "", done = false;
+      const first = await rd.read();
+      if (first.done) return { n: name };
+      const firstChunk = first.value;
+      if (firstChunk && firstChunk.length >= 2 && firstChunk[0] === 0x1f && firstChunk[1] === 0x8b && window.DecompressionStream) {
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(firstChunk);
+            function pump() {
+              return rd.read().then(({done, value}) => {
+                if (done) { controller.close(); return; }
+                controller.enqueue(value);
+                return pump();
+              });
+            }
+            return pump();
+          }
+        });
+        const dRd = stream.pipeThrough(new DecompressionStream("gzip")).getReader();
+        while (!done) {
+          const r = await dRd.read();
+          if (r.done) break;
+          text += td.decode(r.value, { stream: true });
+          const m = extractMeta(text, false);
+          if (m) { dRd.cancel().catch(() => {}); return m; }
+          if (text.length > MAX_SEEK) break;
+        }
+        return extractMeta(text, true) || { n: name };
+      }
+      text += td.decode(firstChunk, { stream: true });
       const m = extractMeta(text, false);
       if (m) { rd.cancel().catch(() => {}); return m; }
-      if (text.length > MAX_SEEK) break;
+      while (!done) {
+        const r = await rd.read();
+        if (r.done) break;
+        text += td.decode(r.value, { stream: true });
+        const m = extractMeta(text, false);
+        if (m) { rd.cancel().catch(() => {}); return m; }
+        if (text.length > MAX_SEEK) break;
+      }
+      return extractMeta(text, true) || { n: name };
+    } catch (e) {
+      const j = await res.json().catch(() => null);
+      if (j) return extractMeta(JSON.stringify(j), true) || { n: name };
+      throw e;
     }
-    return extractMeta(text, true) || { n: name };
   }
   /*</scan>*/
 

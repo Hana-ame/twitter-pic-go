@@ -31,10 +31,8 @@ import (
 // cloudTTL 是兜底过期时间（覆盖进程外的 sqlite3 直改）。主机制是显式失效。
 const cloudTTL = 10 * time.Minute
 
-// cloudMaxEntries 是缓存里保留的标签条数上限。缓存**全量**榜单（而不是按请求的
-// limit 分别缓存），否则 ?limit=37 / 38 / 39 … 每个值都会是一次 0.8s 全表聚合，
-// 等于把缓存变成缓存击穿点。取全量后按 n 切片是 O(1)。
-const cloudMaxEntries = 1000
+// 标签云不设数量上限：缓存全量榜单（而不是按请求的 limit 分别缓存），
+// 取全量后按需切片是 O(1)。
 
 // cloudKey 按 **库** 区分：同一个进程里测试会开多个 twitter.db，若只按
 // (n, excludeBanned) 做键，不同库的结果会互相串。生产里 API 与 gallery
@@ -98,4 +96,28 @@ func InvalidateCloud(db *sql.DB) {
 		}
 	}
 	cloudMu.Unlock()
+}
+
+// RefreshCloud 同步刷新指定库的标签云缓存，读 tag_counts 并填入 cloudData。
+// posttag 写动作提交事务后立即调用，使读请求永远命中热缓存（0ms 响应）。
+func (s *Store) RefreshCloud() {
+	if s == nil || s.db == nil {
+		return
+	}
+	key := cloudKey{db: s.db, excludeBanned: true}
+	full, err := s.queryCloudAll(true)
+	if err == nil && len(full) > 0 {
+		cloudPut(key, full)
+	} else {
+		InvalidateCloud(s.db)
+	}
+}
+
+// RefreshCloudByDB 同步刷新指定 sql.DB 的标签云缓存（供根包调用）
+func RefreshCloudByDB(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	s := &Store{db: db}
+	s.RefreshCloud()
 }

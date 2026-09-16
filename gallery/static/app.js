@@ -331,7 +331,7 @@
   //   - 重复点击/重发都是幂等的，服务端不依赖这里的 localStorage。
   // 本地的乐观更新只管即时反馈，最终权重一律以响应里的 tags 为权威（整份覆盖）。
   function postATag(tag, target) {
-    fetch('/api/account-tag', {
+    fetch('/api/twitter/tag', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ user: slug, tag: tag, d: target })
     }).then(function (r) { return r.json(); })

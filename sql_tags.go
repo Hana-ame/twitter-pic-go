@@ -42,49 +42,35 @@ func CreateTableV2() error {
 		return err
 	}
 
-	// 2. 创建独立标签表
-	// 使用 username 作为主键，确保一个用户只有一行标签记录
-	queryTags := `CREATE TABLE IF NOT EXISTS user_tags (
-        username TEXT PRIMARY KEY,
-        tags TEXT DEFAULT '{}',
-        last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(username) REFERENCES users(username)
-    );`
-	if _, err := DB.Exec(queryTags); err != nil {
-		return fmt.Errorf("创建 user_tags 失败: %v", err)
-	}
-
-	// 3. 创建规范标签表 account_tags：一行一个 (username, tag)。
-	//    DDL 与两层读写统一由 tags 包提供（唯一真源），此处只调它。
-	//    POST 直接按行 upsert 权重，GET 由 userSelectQuery 现场聚合，
-	//    不再读-改-写 JSON 大字段；tag 上建索引供反查（gallery /api/tag 同构）。
+	// 2. 创建规范标签表 user_tag_cnt, user_tag_ip, tag_counts, request_logs。
+	//    DDL 与读写统一由 tags 包提供（唯一真源），此处只调它。
 	if err := tags.EnsureSchema(DB); err != nil {
 		return err
 	}
 
-	// 3b. 旧数据一次性回填：account_tags 为空时从 user_tags 的 JSON 展开。
+	// 2b. 旧数据回填：若存在 user_tags 表且 account_tags 为空，从 user_tags 的 JSON 展开
 	if err := migrateAccountTags(); err != nil {
 		return err
 	}
 
-	// 3c. 历史底数快照（幂等），**必须**排在 3b 之后：account_tags 的行是在 3b 里
-	//     从 user_tags 灌进来的，快照若跑在前面，首次升级的那 2.3 万行就永远没有
-	//     底数、weight = 底数 + Σ票 对它们不成立。写侧另有逐行兜底，但只有这里
-	//     能把既有历史一次性纳入审计范围。
+	// 2c. 历史底数快照（幂等）
 	if _, err := tags.BackfillVoteBase(DB); err != nil {
 		return err
 	}
 
-	// 4. 请求日志表 request_logs 已由 tags.EnsureSchema 建好（DDL 只此一份，
-	//    gallery 先启动也不会漏建）。
-
 	return nil
-
 }
 
-// migrateAccountTags 把旧 user_tags 的 JSON 权重对象一次性展开进 account_tags。
-// 仅在 account_tags 为空（首次升级）时执行；json_each 属 JSON1，modernc 驱动内置。
+// migrateAccountTags 把旧 user_tags 的 JSON 权重对象一次性展开进 account_tags 与 user_tag_cnt。
 func migrateAccountTags() error {
+	var hasUserTags bool
+	var dummy int
+	if err := DB.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='user_tags'`).Scan(&dummy); err == nil {
+		hasUserTags = true
+	}
+	if !hasUserTags {
+		return nil
+	}
 	var n int
 	if err := DB.QueryRow(`SELECT COUNT(*) FROM account_tags`).Scan(&n); err != nil {
 		return fmt.Errorf("检查 account_tags: %v", err)
@@ -101,6 +87,8 @@ func migrateAccountTags() error {
 	if err != nil {
 		return fmt.Errorf("回填 account_tags 失败: %v", err)
 	}
+	_, _ = DB.Exec(`INSERT OR IGNORE INTO user_tag_cnt (username, tag, cnt, updated_at)
+		SELECT username, tag, weight, CURRENT_TIMESTAMP FROM account_tags`)
 	if c, _ := res.RowsAffected(); c > 0 {
 		log.Printf("account_tags 回填完成：%d 行（来自 user_tags JSON）", c)
 	}

@@ -255,26 +255,14 @@ func galleryMux(cfg config, reactions *reactionStore) *http.ServeMux {
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { handleHome(w, r, cfg) })
 	mux.HandleFunc("GET /index.html", func(w http.ResponseWriter, r *http.Request) { handleHome(w, r, cfg) })
 	mux.HandleFunc("GET /u/{account}", func(w http.ResponseWriter, r *http.Request) { handleAccount(w, r, cfg) })
-	// /raw/{account} 原样吐 json.gz（不解析）；首页卡片的头像/昵称/首图由前端流式自取。
-	// 这是最大的泄漏口子：被封账号的完整时间线快照。用户已定「都挡」，不保留直链。
-	mux.HandleFunc("GET /raw/{account}", func(w http.ResponseWriter, r *http.Request) {
-		acc := r.PathValue("account")
-		if !safeName(acc) || cfg.vis.hidden(acc) {
-			http.NotFound(w, r)
-			return
-		}
-		http.ServeFile(w, r, filepath.Join(cfg.jsonDir, acc+".json.gz"))
-	})
 	mux.HandleFunc("GET /api/reactions", func(w http.ResponseWriter, r *http.Request) { handleGetReactions(w, r, reactions) })
 	mux.HandleFunc("GET /api/tag-cloud", func(w http.ResponseWriter, r *http.Request) { handleTagCloud(w, r, cfg) })
 	mux.HandleFunc("GET /api/tags/cloud", func(w http.ResponseWriter, r *http.Request) { handleTagCloud(w, r, cfg) })
 	mux.HandleFunc("GET /api/tag/{tag}", func(w http.ResponseWriter, r *http.Request) { handleTagUsers(w, r, cfg) })
 	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions) })
 	mux.HandleFunc("GET /api/tags", func(w http.ResponseWriter, r *http.Request) { handleGetAccountTags(w, r, cfg) })
-	mux.HandleFunc("POST /api/tag", func(w http.ResponseWriter, r *http.Request) { handlePostAccountTag(w, r, cfg) })
-	// /api/account-tags 与 /api/account-tag 是同一套处理器的别名（账号级标签改名后的入口）。
+	// /api/account-tags 是读账号级标签入口别名
 	mux.HandleFunc("GET /api/account-tags", func(w http.ResponseWriter, r *http.Request) { handleGetAccountTags(w, r, cfg) })
-	mux.HandleFunc("POST /api/account-tag", func(w http.ResponseWriter, r *http.Request) { handlePostAccountTag(w, r, cfg) })
 
 	if sub, err := fs.Sub(staticFS, "static"); err == nil {
 		mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
@@ -283,57 +271,89 @@ func galleryMux(cfg config, reactions *reactionStore) *http.ServeMux {
 }
 
 // handleTagCloud GET /api/tags/cloud · GET /api/tag-cloud?limit=
-// 返回热门高频标签列表及各自的账号计数，按权重降序排列。
+// 返回热门高频标签列表及各自的账号计数，按权重降序排列。不设上限，分数>0的用户计为1。
 func handleTagCloud(w http.ResponseWriter, r *http.Request, cfg config) {
-	limit := 50
+	limit := 0
 	if v := r.URL.Query().Get("limit"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = min(n, 1000)
+			limit = n
 		}
 	}
-	cloud := cfg.vis.cloud()
-	if cloud == nil && cfg.tags != nil {
+	var cloud []tags.Count
+	if cfg.tags != nil {
 		cloud = cfg.tags.Cloud(limit, true)
 	}
 	if cloud == nil {
 		cloud = []tags.Count{}
 	}
-	if len(cloud) > limit {
-		cloud = cloud[:limit]
-	}
 	writeJSON(w, cloud)
 }
 
-// handleTagUsers GET /api/tag/{tag}?limit= — tag 反查账号（权重降序）。
-// 只返回磁盘上真实存在 json.gz、且未被封的账号，避免给出死链；标签库缺失时返回空列表。
+// handleTagUsers GET /api/tag/{tag}?limit=&page=&offset= — tag 反查账号。
+// 以 user_tag_cnt 表为唯一真相，按更新倒序（最新的最前）。支持分页，不扫磁盘。
 func handleTagUsers(w http.ResponseWriter, r *http.Request, cfg config) {
 	tag := strings.TrimSpace(r.PathValue("tag"))
 	if tag == "" || len(tag) > 64 {
 		http.Error(w, "bad tag", http.StatusBadRequest)
 		return
 	}
-	limit := 2000
+	limit := 50
+	page := 1
+	offset := 0
+
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = min(n, 50000)
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
 		}
 	}
-	names, err := listAccounts(cfg.jsonDir)
-	if err != nil {
-		http.Error(w, "read json dir: "+err.Error(), http.StatusInternalServerError)
+	if v := r.URL.Query().Get("page"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			page = n
+			if limit > 0 {
+				offset = (page - 1) * limit
+			}
+		}
+	}
+	if v := r.URL.Query().Get("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+
+	if cfg.tags == nil {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		json.NewEncoder(w).Encode(map[string]any{
+			"tag":   tag,
+			"count": 0,
+			"total": 0,
+			"page":  page,
+			"limit": limit,
+			"users": []string{},
+		})
 		return
 	}
-	// 反查列表也挡被封账号：过滤 exist 集合即可——UsersForTag 一边扫一边拿它筛，
-	// 被过滤掉的不会占 limit 名额。根 API 的 by=tag 靠 SQL 里的 status='SUCCESS'
-	// 挡的是同一件事，两层结果集因此对齐。
-	names = cfg.vis.filter(names)
-	exist := make(map[string]struct{}, len(names))
-	for _, n := range names {
-		exist[n] = struct{}{}
+
+	users, total, err := cfg.tags.UsersForTagPaged(tag, limit, offset, true)
+	if err != nil {
+		http.Error(w, "query tags: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
-	users := cfg.tags.UsersForTag(tag, exist, limit)
+	if cfg.vis != nil {
+		users = cfg.vis.filter(users)
+	}
+	if users == nil {
+		users = []string{}
+	}
+
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	json.NewEncoder(w).Encode(map[string]any{"tag": tag, "count": len(users), "users": users})
+	json.NewEncoder(w).Encode(map[string]any{
+		"tag":   tag,
+		"count": len(users),
+		"total": total,
+		"page":  page,
+		"limit": limit,
+		"users": users,
+	})
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
@@ -366,9 +386,10 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		}
 		return entries[i].Name < entries[j].Name
 	})
-	// 全局标签云：与账号列表同一个视图，封禁排除在 SQL 侧做（不做事后扣减）。
-	// 视图没建立（无库/读不到 users）时为 nil，前端自行从已过滤的 a-data 重算。
 	top := cfg.vis.cloud()
+	if top == nil && cfg.tags != nil {
+		top = cfg.tags.Cloud(36, true)
+	}
 	preview := make([]acctItem, 0, previewN)
 	for _, e := range entries[:min(len(entries), previewN)] {
 		initial := "?"

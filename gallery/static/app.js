@@ -92,7 +92,8 @@
     if (match && match[1] && match[2]) {
       return match[1] + ' / ' + match[2];
     }
-    return '';
+    // twitter 图片没有尺寸段，给个默认占位比，避免初始 0 高度导致瀑布流全挤一列→load 后重排闪烁
+    return '1 / 1';
   }
 
   function nCols() {
@@ -110,7 +111,7 @@
   function mediaNode(m, controls, isThumb) {
     var n;
     var url = (!m.video && isThumb) ? thumbURL(m.url) : m.url;
-    var cachedRatio = aspectCache[m.url] || (m.video ? guessAspectFromURL(m.url) : '');
+    var cachedRatio = aspectCache[m.url] || (m.video ? guessAspectFromURL(m.url) : guessAspectFromURL(m.url));
     if (cachedRatio) aspectCache[m.url] = cachedRatio;
     if (m.video) {
       n = document.createElement('video');

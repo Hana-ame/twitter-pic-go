@@ -96,6 +96,39 @@ h1{font-size:22px;margin:0 0 6px;font-weight:700;letter-spacing:-.02em}
 .tag.active span{color:rgba(255,255,255,.7)}
 .tag-clear{border-style:dashed}
 .tag-clear:hover{background:rgba(247,118,142,.15);color:var(--acc-3);border-color:var(--acc-3)}
+.tbtn.active{background:rgba(247,118,142,.16);border-color:var(--acc-3);color:#fca5a5}
+.tbtn.gay.active{background:linear-gradient(90deg,rgba(187,154,247,.25),rgba(91,157,255,.25));border-color:var(--acc-2);color:#d8b4fe}
+.tag.excluded{background:rgba(247,118,142,.18);border-color:var(--acc-3);color:#fca5a5;text-decoration:line-through}
+.tag.excluded span{color:rgba(252,165,165,.7)}
+
+/* ---- tag exclude modal ---- */
+.modal-overlay{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeUp .2s var(--ease)}
+.modal-overlay[hidden]{display:none}
+.modal-box{background:var(--card);border:1px solid var(--border-2);border-radius:var(--radius);max-width:680px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:var(--shadow-lg);overflow:hidden}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.modal-title{font-size:16px;font-weight:700;margin:0;display:flex;align-items:center;gap:8px}
+.modal-close{background:transparent;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:6px;line-height:1;transition:all .15s}
+.modal-close:hover{color:var(--fg);background:var(--card-2)}
+.modal-body{padding:18px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+.modal-tip{font-size:13px;color:var(--muted);margin:0}
+.modal-cloud{display:flex;flex-wrap:wrap;gap:8px;padding-top:4px}
+.modal-footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--bg-2)}
+.modal-stat{font-size:13px;color:var(--muted)}
+.modal-actions{display:flex;gap:10px}
+.modal-btn{padding:6px 14px;border-radius:var(--radius-pill);border:1px solid var(--border-2);background:var(--card);color:var(--fg);font-size:13px;cursor:pointer;transition:all .15s}
+.modal-btn:hover{background:var(--card-2);border-color:var(--acc)}
+.modal-btn.danger{border-color:rgba(247,118,142,.4);color:#fca5a5}
+.modal-btn.danger:hover{background:rgba(247,118,142,.15);border-color:var(--acc-3)}
+.modal-btn.primary{background:var(--acc);color:#fff;border-color:transparent}
+.modal-btn.primary:hover{filter:brightness(1.1)}
+.btn-group{display:inline-flex;align-items:center}
+.btn-group .tbtn:first-child{border-top-right-radius:0;border-bottom-right-radius:0;border-right:none}
+.btn-group .tbtn:last-child{border-top-left-radius:0;border-bottom-left-radius:0;padding-left:8px;padding-right:8px}
+.modal-input-row{display:flex;gap:8px;margin-bottom:6px}
+.modal-input{flex:1;background:var(--card-2);border:1px solid var(--border-2);border-radius:var(--radius-sm);padding:7px 12px;color:var(--fg);font-size:13px}
+.modal-input:focus{outline:none;border-color:var(--acc)}
+.tag.gay-tag{background:rgba(187,154,247,.18);border-color:var(--acc-2);color:#d8b4fe}
+.tag.gay-tag:hover{background:rgba(247,118,142,.15);border-color:var(--acc-3);color:#fca5a5}
 
 /* ---- home ---- */
 .home{max-width:1200px}

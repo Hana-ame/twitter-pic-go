@@ -14,6 +14,11 @@
     {{with .Home}}
     <div class="tools">
       <input id="a-search" class="search" type="search" placeholder="搜索账号名…（按 / 聚焦）" autocomplete="off" spellcheck="false">
+      <div class="btn-group">
+        <button id="a-gay-btn" class="tbtn gay" type="button" title="切换 Gay 模式">🌈 Gay模式</button>
+        <button id="a-gay-cfg" class="tbtn gay" type="button" title="配置 Gay 模式专属标签">⚙️</button>
+      </div>
+      <button id="a-exclude-btn" class="tbtn" type="button" title="屏蔽不想看到的标签">🚫 不看这些tag</button>
       <button id="a-rand" class="tbtn" type="button">🎲 随机逛逛</button>
     </div>
     <p class="muted a-meta"><span id="a-shown">显示 {{len .Preview}} / {{.Total}} 个账号</span></p>
@@ -41,6 +46,51 @@
   <p id="a-empty" class="muted center" hidden>没有匹配的账号。</p>
   <noscript><p class="muted center">启用 JS 后可预览各账号的头像与首图。</p></noscript>
 </main>
+
+<div id="a-exclude-modal" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="modal-title">🚫 排除标签设置</h3>
+      <button id="a-modal-close" class="modal-close" type="button" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-tip">点击下方标签即可切换「屏蔽 / 恢复」。被屏蔽的标签及其账号将从显示和随机逛逛中排除，首页标签云也会隐藏这些标签。</p>
+      <div id="a-modal-cloud" class="modal-cloud"></div>
+    </div>
+    <div class="modal-footer">
+      <span id="a-modal-stat" class="modal-stat">已排除 0 个标签</span>
+      <div class="modal-actions">
+        <button id="a-modal-clear" class="modal-btn danger" type="button">全部清空</button>
+        <button id="a-modal-done" class="modal-btn primary" type="button">完成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="a-gay-modal" class="modal-overlay" hidden>
+  <div class="modal-box">
+    <div class="modal-header">
+      <h3 class="modal-title">🌈 Gay 模式专属标签配置</h3>
+      <button id="a-gay-modal-close" class="modal-close" type="button" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="modal-tip">Gay 模式开启时仅显示包含下方标签的账号；关闭时隐藏包含下方标签的账号（正好取反）。支持输入标签名添加，点击已有标签即可移除。</p>
+      <div class="modal-input-row">
+        <input id="a-gay-input" class="modal-input" type="text" placeholder="输入标签名添加...">
+        <button id="a-gay-add-btn" class="modal-btn primary" type="button">添加</button>
+      </div>
+      <div id="a-gay-modal-tags" class="modal-cloud"></div>
+    </div>
+    <div class="modal-footer">
+      <span id="a-gay-modal-stat" class="modal-stat">当前配置 3 个标签</span>
+      <div class="modal-actions">
+        <button id="a-gay-modal-reset" class="modal-btn danger" type="button">恢复默认</button>
+        <button id="a-gay-modal-done" class="modal-btn primary" type="button">完成</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 {{template "footer" .}}
 <script>{{.HomeJS}}</script>
 </body>

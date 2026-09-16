@@ -31,6 +31,23 @@
   const moreBtn = document.getElementById("a-more");
   const randBtn = document.getElementById("a-rand");
   const emptyEl = document.getElementById("a-empty");
+  const gayBtn = document.getElementById("a-gay-btn");
+  const gayCfgBtn = document.getElementById("a-gay-cfg");
+  const gayModal = document.getElementById("a-gay-modal");
+  const gayModalClose = document.getElementById("a-gay-modal-close");
+  const gayModalDone = document.getElementById("a-gay-modal-done");
+  const gayModalReset = document.getElementById("a-gay-modal-reset");
+  const gayModalTags = document.getElementById("a-gay-modal-tags");
+  const gayModalStat = document.getElementById("a-gay-modal-stat");
+  const gayInput = document.getElementById("a-gay-input");
+  const gayAddBtn = document.getElementById("a-gay-add-btn");
+  const excludeBtn = document.getElementById("a-exclude-btn");
+  const excludeModal = document.getElementById("a-exclude-modal");
+  const modalCloud = document.getElementById("a-modal-cloud");
+  const modalClose = document.getElementById("a-modal-close");
+  const modalDone = document.getElementById("a-modal-done");
+  const modalClear = document.getElementById("a-modal-clear");
+  const modalStat = document.getElementById("a-modal-stat");
   const STEP = 120;
   const CONC = 6;        // 并发预览拉取数
   const MAX_SEEK = 8e6;  // 单文件解压后最多扫 8MB
@@ -99,7 +116,10 @@
   // 前端按数组原样渲染即为「只含正分、权重降序、同分按标签名」。
   // 注意 SSR 模板 templates/home.html 里是同一份逻辑的另一半，两处必须一起改。
   const tagPills = (n) => {
-    const ts = tagsMap.get(n) || [];
+    let ts = tagsMap.get(n) || [];
+    if (!ts.length) return "";
+    if (excludedTags.size > 0) ts = ts.filter((t) => !excludedTags.has(t));
+    if (!gayMode) ts = ts.filter((t) => !GAY_TAGS.has(t));
     if (!ts.length) return "";
     const h = ts.map((t) => '<span class="tg' + (activeTags.has(t) ? " active" : "") + '" data-t="' + esc(t) + '">#' + esc(t) + "</span>").join("");
     return '<span class="tgs">' + h + "</span>";
@@ -345,29 +365,220 @@
     if (emptyEl) emptyEl.hidden = view.length > 0;
   }
 
-  // ---- 标签分类（tag 数据由后端 tags.db 合并进 #a-data）----
+  // ---- 标签分类与排除 / Gay 模式（tag 数据由后端 tags.db 合并进 #a-data）----
   const tagbar = document.getElementById("a-tags");
   const UNTAGGED = "__untagged__";
   const activeTags = new Set();
+  const excludedTags = new Set();
+  const EXCLUDE_LS_KEY = "tp_excluded_tags_v1";
+
+  const DEFAULT_GAY_TAGS = ["男同", "男性", "露屌"];
+  const GAY_TAGS = new Set(DEFAULT_GAY_TAGS);
+  const GAY_TAGS_LS_KEY = "tp_gay_tags_v1";
+  const GAY_LS_KEY = "tp_gay_mode_v1";
+  let gayMode = false;
+  try {
+    gayMode = localStorage.getItem(GAY_LS_KEY) === "1" || localStorage.getItem("gay-mode") === "true";
+  } catch (e) {}
+
+  try {
+    const rawGay = JSON.parse(localStorage.getItem(GAY_TAGS_LS_KEY) || localStorage.getItem("gay-tags") || "null");
+    if (Array.isArray(rawGay) && rawGay.length > 0) {
+      GAY_TAGS.clear();
+      for (const t of rawGay) {
+        if (typeof t === "string" && t.trim()) GAY_TAGS.add(t.trim().replace(/^#+/, ""));
+      }
+    }
+  } catch (e) {}
+
+  function persistGayTags() {
+    try {
+      const arr = Array.from(GAY_TAGS);
+      localStorage.setItem(GAY_TAGS_LS_KEY, JSON.stringify(arr));
+      localStorage.setItem("gay-tags", JSON.stringify(arr));
+    } catch (e) {}
+  }
+
+  function renderGayModalTags() {
+    if (!gayModalTags) return;
+    if (gayModalStat) gayModalStat.textContent = "当前配置 " + GAY_TAGS.size + " 个专属标签";
+    if (GAY_TAGS.size === 0) {
+      gayModalTags.innerHTML = '<p class="muted">暂无专属标签</p>';
+      return;
+    }
+    gayModalTags.innerHTML = Array.from(GAY_TAGS).map((t) => {
+      return '<button class="tag gay-tag" type="button" data-del-gay="' + esc(t) + '" title="点击移除">✕ #' + esc(t) + '</button>';
+    }).join("");
+  }
+
+  function openGayModal() {
+    if (!gayModal) return;
+    renderGayModalTags();
+    gayModal.hidden = false;
+    gayInput && gayInput.focus();
+  }
+
+  function closeGayModal() {
+    if (!gayModal) return;
+    gayModal.hidden = true;
+  }
+
+  function addGayTag(raw) {
+    const t = (raw || "").trim().replace(/^#+/, "");
+    if (!t || GAY_TAGS.has(t)) return;
+    GAY_TAGS.add(t);
+    persistGayTags();
+    renderGayModalTags();
+    renderTagBar();
+    renderExcludeModalCloud();
+    applyFilter();
+    syncURL();
+  }
+
+  function removeGayTag(raw) {
+    const t = (raw || "").trim().replace(/^#+/, "");
+    if (!t || !GAY_TAGS.has(t)) return;
+    GAY_TAGS.delete(t);
+    persistGayTags();
+    renderGayModalTags();
+    renderTagBar();
+    renderExcludeModalCloud();
+    applyFilter();
+    syncURL();
+  }
+
+  function resetGayTags() {
+    GAY_TAGS.clear();
+    for (const t of DEFAULT_GAY_TAGS) GAY_TAGS.add(t);
+    persistGayTags();
+    renderGayModalTags();
+    renderTagBar();
+    renderExcludeModalCloud();
+    applyFilter();
+    syncURL();
+  }
+
+  try {
+    const savedEx = JSON.parse(localStorage.getItem(EXCLUDE_LS_KEY) || "[]");
+    if (Array.isArray(savedEx)) {
+      for (const t of savedEx) {
+        if (typeof t === "string" && t.trim()) excludedTags.add(t.trim());
+      }
+    }
+  } catch (e) {}
+
   try {
     const p = new URLSearchParams(location.search);
     for (const raw of p.getAll("tag")) {
       for (const t of raw.split(",")) {
         const clean = t.trim();
-        if (clean) activeTags.add(clean);
+        if (clean && !excludedTags.has(clean) && (gayMode || !GAY_TAGS.has(clean))) activeTags.add(clean);
       }
     }
   } catch (e) {}
 
+  function persistExcludedTags() {
+    try {
+      localStorage.setItem(EXCLUDE_LS_KEY, JSON.stringify(Array.from(excludedTags)));
+    } catch (e) {}
+  }
+
+  function updateGayBtnUI() {
+    if (!gayBtn) return;
+    if (gayMode) {
+      gayBtn.classList.add("active");
+      gayBtn.textContent = "🌈 Gay模式 (开)";
+    } else {
+      gayBtn.classList.remove("active");
+      gayBtn.textContent = "🌈 Gay模式";
+    }
+  }
+
+  function toggleGayMode() {
+    gayMode = !gayMode;
+    try {
+      localStorage.setItem(GAY_LS_KEY, gayMode ? "1" : "0");
+      localStorage.setItem("gay-mode", gayMode ? "true" : "false");
+    } catch (e) {}
+    activeTags.clear();
+    updateGayBtnUI();
+    renderTagBar();
+    renderExcludeModalCloud();
+    applyFilter();
+    syncURL();
+  }
+
+  function updateExcludeBtnUI() {
+    if (!excludeBtn) return;
+    if (excludedTags.size > 0) {
+      excludeBtn.textContent = "🚫 不看这些tag (" + excludedTags.size + ")";
+      excludeBtn.classList.add("active");
+    } else {
+      excludeBtn.textContent = "🚫 不看这些tag";
+      excludeBtn.classList.remove("active");
+    }
+  }
+
+  function isUserExcluded(n) {
+    if (excludedTags.size === 0) return false;
+    const ts = tagsMap.get(n);
+    if (!ts || !ts.length) return false;
+    for (const t of ts) {
+      if (excludedTags.has(t)) return true;
+    }
+    return false;
+  }
+
+  function userHasGayTag(n) {
+    const ts = tagsMap.get(n);
+    if (!ts || !ts.length) return false;
+    for (let i = 0; i < ts.length; i++) {
+      if (GAY_TAGS.has(ts[i])) return true;
+    }
+    return false;
+  }
+
+  function isUserGayModeMatched(n) {
+    const hasGay = userHasGayTag(n);
+    return gayMode ? hasGay : !hasGay;
+  }
+
   let tagsExpanded = false;
   const hasTag = (n, t) => (t === UNTAGGED ? !tagsMap.has(n) : (tagsMap.get(n) || []).indexOf(t) >= 0);
 
+  // 全量标签词频统计（供排除弹窗使用，根据当前 gayMode 匹配账号词频）
+  function allTagsCloud() {
+    const cnt = new Map();
+    for (const n of names) {
+      if (!isUserGayModeMatched(n)) continue;
+      const ts = tagsMap.get(n);
+      if (!ts || !ts.length) continue;
+      for (const t of ts) {
+        if (!gayMode && GAY_TAGS.has(t)) continue;
+        cnt.set(t, (cnt.get(t) || 0) + 1);
+      }
+    }
+    return [...cnt.entries()].sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1));
+  }
+
+  // 首页标签云统计（排除已排除标签及其对应的账号标签贡献；根据当前 gayMode 精确统计）
   function tagCloud() {
     const cnt = new Map();
     for (const n of names) {
+      if (!isUserGayModeMatched(n)) continue;
+      if (isUserExcluded(n)) continue;
       const ts = tagsMap.get(n);
-      if (!ts || !ts.length) { cnt.set(UNTAGGED, (cnt.get(UNTAGGED) || 0) + 1); continue; }
-      for (const t of ts) cnt.set(t, (cnt.get(t) || 0) + 1);
+      if (!ts || !ts.length) {
+        if (!gayMode) {
+          cnt.set(UNTAGGED, (cnt.get(UNTAGGED) || 0) + 1);
+        }
+        continue;
+      }
+      for (const t of ts) {
+        if (excludedTags.has(t)) continue;
+        if (!gayMode && GAY_TAGS.has(t)) continue;
+        cnt.set(t, (cnt.get(t) || 0) + 1);
+      }
     }
     return [...cnt.entries()].sort((x, y) => y[1] - x[1] || (x[0] === UNTAGGED ? 1 : y[0] === UNTAGGED ? -1 : (x[0] < y[0] ? -1 : 1)));
   }
@@ -388,6 +599,32 @@
     tagbar.hidden = false;
   }
 
+  function renderExcludeModalCloud() {
+    if (!modalCloud) return;
+    const allTags = allTagsCloud();
+    if (modalStat) modalStat.textContent = "已排除 " + excludedTags.size + " 个标签（共 " + allTags.length + " 个）";
+    if (!allTags.length) {
+      modalCloud.innerHTML = '<p class="muted">暂无可排除标签</p>';
+      return;
+    }
+    modalCloud.innerHTML = allTags.map((x) => {
+      const isEx = excludedTags.has(x[0]);
+      return '<button class="tag' + (isEx ? " excluded" : "") + '" type="button" data-ex-tag="' +
+        esc(x[0]) + '">' + (isEx ? "✕ #" : "#") + esc(x[0]) + " <span>" + x[1] + "</span></button>";
+    }).join("");
+  }
+
+  function openExcludeModal() {
+    if (!excludeModal) return;
+    renderExcludeModalCloud();
+    excludeModal.hidden = false;
+  }
+
+  function closeExcludeModal() {
+    if (!excludeModal) return;
+    excludeModal.hidden = true;
+  }
+
   function syncURL() {
     try {
       const url = new URL(location.href);
@@ -398,7 +635,7 @@
   }
 
   function toggleTag(t) {
-    if (!t) return;
+    if (!t || excludedTags.has(t)) return;
     if (t === UNTAGGED) {
       if (activeTags.has(UNTAGGED)) activeTags.delete(UNTAGGED);
       else {
@@ -415,12 +652,42 @@
     syncURL();
   }
 
+  function toggleExcludeTag(t) {
+    if (!t) return;
+    if (excludedTags.has(t)) {
+      excludedTags.delete(t);
+    } else {
+      excludedTags.add(t);
+      if (activeTags.has(t)) activeTags.delete(t);
+    }
+    persistExcludedTags();
+    updateExcludeBtnUI();
+    renderExcludeModalCloud();
+    renderTagBar();
+    applyFilter();
+    syncURL();
+  }
+
+  function clearAllExcluded() {
+    if (excludedTags.size === 0) return;
+    excludedTags.clear();
+    persistExcludedTags();
+    updateExcludeBtnUI();
+    renderExcludeModalCloud();
+    renderTagBar();
+    applyFilter();
+    syncURL();
+  }
+
   function applyFilter() {
-    let list = names;
+    let list = names.filter(isUserGayModeMatched);
+    if (excludedTags.size > 0) {
+      list = list.filter((n) => !isUserExcluded(n));
+    }
     const q = ((search && search.value.trim().toLowerCase()) || "");
     if (q) {
       const pre = [], sub = [];
-      for (const n of names) {
+      for (const n of list) {
         const l = n.toLowerCase();
         if (l.startsWith(q)) pre.push(n);
         else if (l.includes(q)) sub.push(n);
@@ -439,6 +706,8 @@
     reset(list);
   }
 
+  updateGayBtnUI();
+  updateExcludeBtnUI();
   renderTagBar();
   applyFilter(); // 接管 SSR 预览
 
@@ -446,6 +715,47 @@
   search && search.addEventListener("input", () => {
     clearTimeout(timer);
     timer = setTimeout(applyFilter, 120);
+  });
+
+  gayBtn && gayBtn.addEventListener("click", toggleGayMode);
+  gayCfgBtn && gayCfgBtn.addEventListener("click", openGayModal);
+  gayModalClose && gayModalClose.addEventListener("click", closeGayModal);
+  gayModalDone && gayModalDone.addEventListener("click", closeGayModal);
+  gayModalReset && gayModalReset.addEventListener("click", resetGayTags);
+  gayModal && gayModal.addEventListener("click", (e) => {
+    if (e.target === gayModal) closeGayModal();
+  });
+  gayModalTags && gayModalTags.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const t = btn.dataset.delGay || "";
+    if (t) removeGayTag(t);
+  });
+  gayAddBtn && gayAddBtn.addEventListener("click", () => {
+    if (!gayInput) return;
+    addGayTag(gayInput.value);
+    gayInput.value = "";
+  });
+  gayInput && gayInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addGayTag(gayInput.value);
+      gayInput.value = "";
+    }
+  });
+  excludeBtn && excludeBtn.addEventListener("click", openExcludeModal);
+  modalClose && modalClose.addEventListener("click", closeExcludeModal);
+  modalDone && modalDone.addEventListener("click", closeExcludeModal);
+  modalClear && modalClear.addEventListener("click", clearAllExcluded);
+  excludeModal && excludeModal.addEventListener("click", (e) => {
+    if (e.target === excludeModal) closeExcludeModal();
+  });
+
+  modalCloud && modalCloud.addEventListener("click", (e) => {
+    const btn = e.target.closest("button");
+    if (!btn) return;
+    const t = btn.dataset.exTag || "";
+    if (t) toggleExcludeTag(t);
   });
 
   tagbar && tagbar.addEventListener("click", (e) => {
@@ -481,13 +791,29 @@
   moreBtn && moreBtn.addEventListener("click", renderChunk);
 
   randBtn && randBtn.addEventListener("click", () => {
-    if (!names.length) return;
-    location.href = "/u/" + encodeURIComponent(names[Math.floor(Math.random() * names.length)]) + "?type=photo";
+    let candidates = names.filter(isUserGayModeMatched);
+    if (excludedTags.size > 0) {
+      candidates = candidates.filter((n) => !isUserExcluded(n));
+    }
+    if (!candidates.length) return;
+    location.href = "/u/" + encodeURIComponent(candidates[Math.floor(Math.random() * candidates.length)]) + "?type=photo";
   });
 
-  // 斜杠键聚焦搜索框
+  // 快捷键支持：ESC 关闭弹窗，斜杠键聚焦搜索框
   document.addEventListener("keydown", (e) => {
-    if (e.key === "/" && document.activeElement !== search) {
+    if (e.key === "Escape") {
+      if (excludeModal && !excludeModal.hidden) {
+        e.preventDefault();
+        closeExcludeModal();
+        return;
+      }
+      if (gayModal && !gayModal.hidden) {
+        e.preventDefault();
+        closeGayModal();
+        return;
+      }
+    }
+    if (e.key === "/" && document.activeElement !== search && (!excludeModal || excludeModal.hidden) && (!gayModal || gayModal.hidden)) {
       e.preventDefault();
       search && search.focus();
     }

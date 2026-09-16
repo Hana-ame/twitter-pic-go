@@ -105,6 +105,7 @@ type accountPage struct {
 	NextHref  string
 	RawJSON   template.JS
 	ATagsJSON template.JS
+	MediaBase string
 	LegacyURL string
 }
 
@@ -494,6 +495,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		NextHref:  buildHref(slug, filter, nextCursor),
 		RawJSON:   template.JS(raw),
 		ATagsJSON: template.JS(atagJSON),
+		MediaBase: cfg.mediaBase,
 		LegacyURL: legacyURL(cfg.legacyBase, slug),
 	}
 	render(w, "account.html", pageData{Title: acc.Name, Account: acc, AppJS: appJS, LegacyBase: cfg.legacyBase})

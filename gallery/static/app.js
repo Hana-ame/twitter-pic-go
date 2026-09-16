@@ -25,12 +25,24 @@
     }
   }
 
+  // 图片（含头像）改写：pbs.twimg.com → MEDIA_BASE（服务端 data-base 下发，默认 pbs.moonchan.xyz）。
+  // 与 Go 侧 mediaURL 同规则：只改 pbs.twimg.com 的 host，路径与 query 原样保留。
+  var MEDIA_BASE = (grid.getAttribute('data-base') || '').replace(/\/+$/, '');
+  function mediaURL(raw) {
+    if (!raw || !MEDIA_BASE) return raw;
+    try {
+      var u = new URL(raw);
+      if (u.host === 'pbs.twimg.com') return MEDIA_BASE + u.pathname + (u.search || '');
+    } catch (e) {}
+    return raw;
+  }
+
   var slug = grid.getAttribute('data-slug') || '';
   var PER = parseInt(grid.getAttribute('data-per') || '12', 10) || 12;
   var all = (data.timeline || []).filter(function (m) { return m && m.url; }).map(function (m) {
     var isVid = (m.type === 'video' || m.type === 'animated_gif');
     return {
-      url: isVid ? videoURL(m.url) : m.url,
+      url: isVid ? videoURL(m.url) : mediaURL(m.url),
       id: (m.tweet_id || 0),
       video: isVid
     };

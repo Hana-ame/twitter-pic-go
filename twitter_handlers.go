@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,14 +171,10 @@ func GetMetaData(c *gin.Context) {
 		return
 	}
 
-	if _, ok := c.GetQuery("t"); !ok {
-		// 用 URL.Path 而非 URL.String()：后者带 query，带参请求会拼成 /foo?x=y.json.gz?t=...
-		c.Redirect(302, c.Request.URL.Path+".json.gz?t="+user.LastModify.String())
-		return
-	}
-
 	if !strings.HasSuffix(fn, ".json.gz") {
-		ginkit.AbortWithError(c, 403, fmt.Errorf("not allowed"))
+		// 未带 .json.gz 后缀时（如 GET /api/twitter/:username），302 重定向到带时间戳的 .json.gz 文件路径
+		tStr := url.QueryEscape(user.LastModify.String())
+		c.Redirect(http.StatusFound, "/api/twitter/"+username+".json.gz?t="+tStr)
 		return
 	}
 
@@ -188,10 +185,22 @@ func GetMetaData(c *gin.Context) {
 		ginkit.AbortWithError(c, 403, fmt.Errorf("not allowed"))
 		return
 	}
-	f, err := os.Open(safeFn) // 都放在同一个文件夹。
+
+	filePath := safeFn
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		if jsonDir := os.Getenv("GALLERY_JSON_DIR"); jsonDir != "" {
+			alt := filepath.Join(jsonDir, safeFn)
+			if _, err := os.Stat(alt); err == nil {
+				filePath = alt
+			}
+		}
+	}
+
+	f, err := os.Open(filePath) // 都放在同一个文件夹。
 	if ginkit.AbortWithError(c, 500, err) {
 		return
 	}
+	defer f.Close()
 
 	fileInfo, err := f.Stat()
 	if ginkit.AbortWithError(c, 500, err) {

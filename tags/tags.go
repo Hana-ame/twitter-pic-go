@@ -186,6 +186,100 @@ func (s *Store) UsersForTag(tag string, exist map[string]struct{}, limit int) []
 	return out
 }
 
+// UsersForTagAfter 反查：tag -> usernames（正权重，按 weight DESC, username ASC 排序，取 after 游标之后的账号）。
+func (s *Store) UsersForTagAfter(tag string, after string, exist map[string]struct{}, limit int) []string {
+	if s == nil || s.db == nil || tag == "" || limit <= 0 {
+		return nil
+	}
+	if after == "" {
+		return s.UsersForTag(tag, exist, limit)
+	}
+
+	var afterWeight int
+	err := s.db.QueryRow(`SELECT weight FROM account_tags WHERE tag = ? AND username = ?`, tag, after).Scan(&afterWeight)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		log.Printf("tags: UsersForTagAfter scan afterWeight: %v", err)
+		return nil
+	}
+
+	rows, err := s.db.Query(
+		`SELECT username FROM account_tags 
+		 WHERE tag = ? AND weight > 0 AND (weight < ? OR (weight = ? AND username > ?))
+		 ORDER BY weight DESC, username`, tag, afterWeight, afterWeight, after)
+	if err != nil {
+		log.Printf("tags: UsersForTagAfter %q after %q: %v", tag, after, err)
+		return nil
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, min(limit, 512))
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			continue
+		}
+		if exist != nil {
+			if _, ok := exist[u]; !ok {
+				continue
+			}
+		}
+		out = append(out, u)
+		if len(out) >= limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("tags: UsersForTagAfter scan: %v", err)
+	}
+	return out
+}
+
+// UsersForTagOffset 反查：tag -> usernames（跳过 offset 个，取 limit 个）。
+func (s *Store) UsersForTagOffset(tag string, offset int, exist map[string]struct{}, limit int) []string {
+	if s == nil || s.db == nil || tag == "" || limit <= 0 {
+		return nil
+	}
+	if offset <= 0 {
+		return s.UsersForTag(tag, exist, limit)
+	}
+	rows, err := s.db.Query(
+		`SELECT username FROM account_tags WHERE tag = ? AND weight > 0 ORDER BY weight DESC, username`, tag)
+	if err != nil {
+		log.Printf("tags: UsersForTagOffset %q: %v", tag, err)
+		return nil
+	}
+	defer rows.Close()
+
+	skipped := 0
+	out := make([]string, 0, min(limit, 512))
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			continue
+		}
+		if exist != nil {
+			if _, ok := exist[u]; !ok {
+				continue
+			}
+		}
+		if skipped < offset {
+			skipped++
+			continue
+		}
+		out = append(out, u)
+		if len(out) >= limit {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("tags: UsersForTagOffset scan: %v", err)
+	}
+	return out
+}
+
 // BannedUsernames 返回 users 表里**显式标记为非 SUCCESS** 的账号（封禁隐身用）。
 //
 // 返回值区分两种"空"：error != nil 才是读不到（库/表缺失），error == nil 且切片为空

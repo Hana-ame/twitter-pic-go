@@ -6,7 +6,11 @@
 <main class="home">
   <section class="hero">
     <h1 class="big">Twitter&nbsp;Pic <span class="grad">Gallery</span></h1>
-    <p class="tagline">已归档 {{with .Home}}{{.Total}}{{end}} 个账号的公开时间线媒体 · 图片 / 视频 · 全屏沉浸式浏览</p>
+    <p class="tagline">已收录 {{with .Home}}{{.Total}}{{end}} 个账号的公开时间线媒体 · 图片 / 视频 · 全屏沉浸式浏览</p>
+    <div class="notice">
+      <span class="notice-icon">📢</span>
+      <span>提示：视频请下载ECH proxy。没那个火星流量给你们抗视频。</span>
+    </div>
     {{with .Home}}
     <div class="tools">
       <input id="a-search" class="search" type="search" placeholder="搜索账号名…（按 / 聚焦）" autocomplete="off" spellcheck="false">
@@ -23,7 +27,7 @@
   {{with .Home}}
   <div class="agrid" id="a-grid" data-base="{{.MediaBase}}">
     {{range .Preview}}
-    <a class="acct" href="/u/{{.Name}}" data-n="{{.Name}}"><span class="bnr-ph" style="--h:{{.Hue}}">{{.Initial}}</span><span class="arow"><span class="av" style="--h:{{.Hue}}">{{.Initial}}</span><span class="col"><span class="at">@{{.Name}}</span><span class="nk"></span></span></span><span class="tgs">{{range .Tags}}<span class="tg">#{{.}}</span>{{end}}</span></a>
+    <a class="acct" href="/u/{{.Name}}?type=photo" data-n="{{.Name}}"><span class="bnr-ph" style="--h:{{.Hue}}">{{.Initial}}</span><span class="arow"><span class="av" style="--h:{{.Hue}}">{{.Initial}}</span><span class="col"><span class="at">@{{.Name}}</span><span class="nk"></span></span></span><span class="tgs">{{range .Tags}}<span class="tg" data-t="{{.}}">#{{.}}</span>{{end}}</span></a>
     {{end}}
   </div>
   <script id="a-data" type="application/json">{{.NamesJSON}}</script>

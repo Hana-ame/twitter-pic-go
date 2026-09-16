@@ -155,6 +155,7 @@ type config struct {
 	addr          string
 	jsonDir       string
 	mediaBase     string
+	videoBase     string
 	legacyBase    string
 	pageSize      int
 	reactionsFile string
@@ -167,17 +168,19 @@ type config struct {
 	vis           *vis               // 被封账号隐身：users.status 视图（与根 API 同真源）
 }
 
-func Run(addr string) {
-	if addr == "" {
-		addr = envOr("GALLERY_ADDR", ":8090")
-	}
+// NewHandler 构建并返回图站的 http.Handler（供与根 API 挂在同一个 HTTP 路由上使用）。
+// 可选传入已初始化的 *sql.DB（与根 API 共用同一数据库连接池）；若未传入，则读取 GALLERY_DB（默认 ./twitter.db）开启。
+func NewHandler(dbs ...*sql.DB) http.Handler {
 	cfg := config{
-		addr:          addr,
 		jsonDir:       envOr("GALLERY_JSON_DIR", "."),
 		mediaBase:     strings.TrimRight(envOr("GALLERY_MEDIA_BASE", ""), "/"),
+		videoBase:     strings.TrimRight(envOr("GALLERY_VIDEO_BASE", defaultVideoBase), "/"),
 		legacyBase:    legacyBase(),
 		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
 		reactionsFile: envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),
+	}
+	if cfg.videoBase == "" {
+		cfg.videoBase = defaultVideoBase
 	}
 	if cfg.pageSize <= 0 {
 		cfg.pageSize = defaultPageSize
@@ -185,38 +188,58 @@ func Run(addr string) {
 
 	reactions := newReactionStore(cfg.reactionsFile)
 
-	// 标签唯一真源：与 twitter API 同一个 twitter.db 的 account_tags 表。
-	// 不再有独立的 tags.db 快照，也不再有 account_votes.json 投票文件。
-	if store, writable, err := openTagStore(envOr("GALLERY_DB", "./twitter.db")); err == nil {
+	var db *sql.DB
+	if len(dbs) > 0 && dbs[0] != nil {
+		db = dbs[0]
+	}
+
+	if db != nil {
+		cfg.db = db
+		cfg.tags = tags.New(db)
+		cfg.writable = true
+		if err := tags.EnsureSchema(db); err != nil {
+			log.Printf("gallery: account_tags 建表失败（标签降为只读）: %v", err)
+			cfg.writable = false
+		} else {
+			if _, err := tags.BackfillVoteBase(db); err != nil {
+				log.Printf("gallery: 历史底数快照失败（计票仍可用，写侧会逐行补）: %v", err)
+			}
+		}
+	} else if store, writable, err := openTagStore(envOr("GALLERY_DB", "./twitter.db")); err == nil {
 		cfg.db = store.DB()
 		cfg.tags = store
 		cfg.writable = writable
 		if writable {
-			// 历史底数快照（幂等；与根包的 CreateTableV2 各调一次，谁先到谁快照，
-			// 后到的那个不会重复改已有底数）。只读挂载不开写事务。
-			// 放在这里而不是 EnsureSchema 里：见 tags.BackfillVoteBase 的"调用时机"注释。
 			if _, err := tags.BackfillVoteBase(store.DB()); err != nil {
 				log.Printf("gallery: 历史底数快照失败（计票仍可用，写侧会逐行补）: %v", err)
 			}
 		}
-		defer cfg.db.Close()
+	} else {
+		log.Printf("gallery: 打开标签库失败: %v", err)
 	}
-	cfg.vis = newVis(cfg.tags) // cfg.tags 为 nil 时 vis 一律 fail-open（不隐身）
+
+	cfg.vis = newVis(cfg.tags)
 	cfg.tagLimit = limit.NewFastLimiter(envIntOr("GALLERY_TAG_RATE_MAX", tagRateMax))
-	// 封禁必须与根 API 共用进程级单例：两份内存副本各自 reload 会出现
-	// 「API 侧已封、gallery 侧还没封」的窗口。热重载协程也只在 Shared() 里挂一次。
 	cfg.bans = ipban.Shared()
 
 	mux := galleryMux(cfg, reactions)
+	return logRequests(mux)
+}
+
+func Run(addr string) {
+	if addr == "" {
+		addr = envOr("GALLERY_ADDR", ":8090")
+	}
+	handler := NewHandler()
 
 	srv := &http.Server{
-		Addr:              cfg.addr,
-		Handler:           logRequests(mux),
+		Addr:              addr,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    1 << 20,
 	}
-	log.Printf("gallery: serving %s (json dir: %s)", cfg.addr, cfg.jsonDir)
+	log.Printf("gallery: serving %s (json dir: %s)", addr, envOr("GALLERY_JSON_DIR", "."))
 	if err := srv.ListenAndServe(); err != nil {
 		log.Printf("gallery: %v", err)
 	}
@@ -230,6 +253,7 @@ func galleryMux(cfg config, reactions *reactionStore) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { fmt.Fprintln(w, "ok") })
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { handleHome(w, r, cfg) })
+	mux.HandleFunc("GET /index.html", func(w http.ResponseWriter, r *http.Request) { handleHome(w, r, cfg) })
 	mux.HandleFunc("GET /u/{account}", func(w http.ResponseWriter, r *http.Request) { handleAccount(w, r, cfg) })
 	// /raw/{account} 原样吐 json.gz（不解析）；首页卡片的头像/昵称/首图由前端流式自取。
 	// 这是最大的泄漏口子：被封账号的完整时间线快照。用户已定「都挡」，不保留直链。
@@ -242,6 +266,8 @@ func galleryMux(cfg config, reactions *reactionStore) *http.ServeMux {
 		http.ServeFile(w, r, filepath.Join(cfg.jsonDir, acc+".json.gz"))
 	})
 	mux.HandleFunc("GET /api/reactions", func(w http.ResponseWriter, r *http.Request) { handleGetReactions(w, r, reactions) })
+	mux.HandleFunc("GET /api/tag-cloud", func(w http.ResponseWriter, r *http.Request) { handleTagCloud(w, r, cfg) })
+	mux.HandleFunc("GET /api/tags/cloud", func(w http.ResponseWriter, r *http.Request) { handleTagCloud(w, r, cfg) })
 	mux.HandleFunc("GET /api/tag/{tag}", func(w http.ResponseWriter, r *http.Request) { handleTagUsers(w, r, cfg) })
 	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions) })
 	mux.HandleFunc("GET /api/tags", func(w http.ResponseWriter, r *http.Request) { handleGetAccountTags(w, r, cfg) })
@@ -254,6 +280,28 @@ func galleryMux(cfg config, reactions *reactionStore) *http.ServeMux {
 		mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 	}
 	return mux
+}
+
+// handleTagCloud GET /api/tags/cloud · GET /api/tag-cloud?limit=
+// 返回热门高频标签列表及各自的账号计数，按权重降序排列。
+func handleTagCloud(w http.ResponseWriter, r *http.Request, cfg config) {
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = min(n, 1000)
+		}
+	}
+	cloud := cfg.vis.cloud()
+	if cloud == nil && cfg.tags != nil {
+		cloud = cfg.tags.Cloud(limit, true)
+	}
+	if cloud == nil {
+		cloud = []tags.Count{}
+	}
+	if len(cloud) > limit {
+		cloud = cloud[:limit]
+	}
+	writeJSON(w, cloud)
 }
 
 // handleTagUsers GET /api/tag/{tag}?limit= — tag 反查账号（权重降序）。
@@ -360,8 +408,18 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		return
 	}
 
-	filter := normalizeFilter(r.URL.Query().Get("type"))
-	list := filterMedia(buildAll(doc, cfg.mediaBase), filter)
+	typeParam := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("type")))
+	var filter string
+	switch typeParam {
+	case "all", "everything":
+		filter = "all"
+	case "video", "videos", "movie", "animated_gif", "gif":
+		filter = "video"
+	default:
+		// 默认图片 only
+		filter = "photo"
+	}
+	list := filterMedia(buildAll(doc, cfg.mediaBase, cfg.videoBase), filter)
 
 	start := clampStart(list, int(parseCursorID(r.URL.Query().Get("cursor"))), cfg.pageSize)
 	end := start + cfg.pageSize
@@ -377,6 +435,12 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		nextCursor = int64(end)
 	}
 
+	// 视频 URL 全量 override 成独立代理基址
+	for i := range doc.Timeline {
+		if doc.Timeline[i].Type == "video" || doc.Timeline[i].Type == "animated_gif" {
+			doc.Timeline[i].URL = overrideVideoURL(cfg.videoBase, doc.Timeline[i].URL)
+		}
+	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		raw = []byte("{}")
@@ -402,7 +466,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		PageSize:  cfg.pageSize,
 		HasPrev:   start > 0,
 		HasNext:   end < len(list),
-		HrefAll:   buildHref(slug, "", 0),
+		HrefAll:   buildHref(slug, "all", 0),
 		HrefPhoto: buildHref(slug, "photo", 0),
 		HrefVideo: buildHref(slug, "video", 0),
 		PrevHref:  buildHref(slug, filter, prevCursor),
@@ -521,16 +585,23 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // ---- helpers ----
 
-func buildAll(doc document, mediaBase string) []mediaItem {
+func buildAll(doc document, mediaBase, videoBase string) []mediaItem {
 	out := make([]mediaItem, 0, len(doc.Timeline))
 	for _, te := range doc.Timeline {
 		raw := strings.TrimSpace(te.URL)
 		if raw == "" {
 			continue
 		}
+		isVideo := te.Type == "video" || te.Type == "animated_gif"
+		u := raw
+		if isVideo {
+			u = overrideVideoURL(videoBase, raw)
+		} else {
+			u = mediaURL(mediaBase, raw)
+		}
 		out = append(out, mediaItem{
-			URL:     mediaURL(mediaBase, raw),
-			IsVideo: te.Type == "video" || te.Type == "animated_gif",
+			URL:     u,
+			IsVideo: isVideo,
 			TweetID: te.TweetID,
 		})
 	}
@@ -538,7 +609,7 @@ func buildAll(doc document, mediaBase string) []mediaItem {
 }
 
 func filterMedia(items []mediaItem, filter string) []mediaItem {
-	if filter == "" {
+	if filter == "all" || filter == "" {
 		return items
 	}
 	out := make([]mediaItem, 0, len(items))
@@ -704,6 +775,28 @@ func mediaURL(base, raw string) string {
 	return out
 }
 
+const defaultVideoBase = "https://twimg.l.moonchan.xyz:8443"
+
+func overrideVideoURL(videoBase, raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	base := strings.TrimRight(videoBase, "/")
+	if base == "" {
+		base = defaultVideoBase
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	out := base + u.Path
+	if u.RawQuery != "" {
+		out += "?" + u.RawQuery
+	}
+	return out
+}
+
 // legacyBase 读 GALLERY_LEGACY_BASE：未设置用默认；显式设为空串则隐藏旧版入口。
 func legacyBase() string {
 	v, ok := os.LookupEnv("GALLERY_LEGACY_BASE")
@@ -733,6 +826,7 @@ func safeName(name string) bool {
 
 func render(w http.ResponseWriter, name string, data pageData) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 	if err := templates.ExecuteTemplate(w, name, data); err != nil {
 		log.Printf("gallery: render %s: %v", name, err)
 	}

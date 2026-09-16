@@ -1,12 +1,11 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/Hana-ame/twitter-pic-go"
@@ -44,84 +43,22 @@ func main() {
 
 	go twimg.Run(os.Getenv("TWIMG_ADDR"))
 
-	// gallery 作为独立包运行在同一二进制内，单独监听 GALLERY_ADDR（默认 :8090）
-	go gallery.Run(os.Getenv("GALLERY_ADDR"))
-
 	err = twitter.RefreshAllRankings()
 	if err != nil {
 		log.Println(err)
 	}
 
-	r := gin.Default()
-	r.Use(middleware.CORS())
+	r := setupRouter(twitter.DB)
 
-	api := r.Group("/api/twitter")
-
-	twitter.AddToGroup(api)
-
-	// 打印实际生效的 IP 口径（CF 头优先与否 / TRUSTED_PROXY_HOPS / 封禁表加载条数）。
-	// AddToGroup 里已经初始化过 ipban.Shared()，这里的 Count 才是真值。
-	// 目的是「配错了要能看见」：跳数配错只会让限流和归属静默失效，不留日志就是假绿。
-	ipban.LogEffectiveConfig()
-
-	r.NoRoute(func(c *gin.Context) {
-		staticRoot := os.Getenv("STATIC_ROOT")
-		if staticRoot == "" {
-			c.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-
-		// 获取请求路径，并清理和校验
-		path := c.Request.URL.Path
-		// 移除前导斜杠，得到相对路径
-		relPath := strings.TrimPrefix(path, "/")
-		// 安全拼接完整路径
-		fullPath := filepath.Join(staticRoot, relPath)
-		// 清理路径（去除多余斜杠、.. 等）
-		fullPath = filepath.Clean(fullPath)
-
-		// 防止路径遍历攻击：用 filepath.Rel 判断 fullPath 是否真的在 staticRoot 之下。
-		// HasPrefix 不行：staticRoot=/var/www 时 /../wwwfoo 清成 /var/wwwfoo，
-		// HasPrefix 误判为 true，兄弟目录文件可读。
-		rel, err := filepath.Rel(staticRoot, fullPath)
-		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-			c.AbortWithStatus(http.StatusForbidden)
-			return
-		}
-
-		// 获取文件信息
-		info, err := os.Stat(fullPath)
-		if err != nil {
-			// 如果文件不存在，返回 index.html（前端路由）
-			if os.IsNotExist(err) {
-				c.File(filepath.Join(staticRoot, "index.html"))
-				return
-			}
-			// 其他错误（如权限）返回 500
-			c.AbortWithError(http.StatusInternalServerError, err)
-			return
-		}
-
-		// 如果是目录，也返回 index.html（可根据需求调整）
-		if info.IsDir() {
-			c.File(filepath.Join(staticRoot, "index.html"))
-			return
-		}
-
-		// 正常提供文件
-		c.File(fullPath)
-	})
-
-	// 用显式 http.Server 代替 r.Run：gin 的 r.Run 无法配置超时。
-	// addr 为空时 gin 的 r.Run 会绑 ":80"（gin 的 net.ListenAddr 把空串归一化
-	// 成 ":80"），而 http.Server{Addr:""} 会绑随机端口 —— 语义不同，这里显式对齐。
+	// 用显式 http.Server 代替 r.Run：统一运行在 8080 端口（优先 LISTEN_ADDR，其次 GALLERY_ADDR，默认 :8080）
 	addr := os.Getenv("LISTEN_ADDR")
 	if addr == "" {
-		addr = ":80"
+		addr = os.Getenv("GALLERY_ADDR")
 	}
-	// 同 gallery / twimg：只设握手期与 keep-alive 的超时，**不设**
-	// ReadTimeout / WriteTimeout。这个服务同时出 /api/twitter 和静态文件
-	//（含媒体下载），长连接是正常业务，WriteTimeout 会把媒体流掐断。
+	if addr == "" {
+		addr = ":8080"
+	}
+
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           r,
@@ -129,7 +66,30 @@ func main() {
 		MaxHeaderBytes:    1 << 20,
 		IdleTimeout:       60 * time.Second,
 	}
+	log.Printf("server: serving on %s (api on /api/twitter, gallery SSR occupies the rest)", addr)
 	if err := srv.ListenAndServe(); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+func setupRouter(db *sql.DB) *gin.Engine {
+	r := gin.Default()
+	r.Use(middleware.CORS())
+
+	// API 专属路径给原来的 twitter API
+	api := r.Group("/api/twitter")
+	twitter.AddToGroup(api)
+
+	ipban.LogEffectiveConfig()
+
+	// 初始化 gallery SSR 处理引擎，与 API 共享同一 DB 连接池
+	galleryHandler := gallery.NewHandler(db)
+
+	// API 相关 path 以外的全部路由，全量交由 Gallery 的 SSR 占据
+	r.NoRoute(func(c *gin.Context) {
+		c.Status(http.StatusOK)
+		galleryHandler.ServeHTTP(c.Writer, c.Request)
+	})
+
+	return r
 }

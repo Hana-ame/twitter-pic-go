@@ -172,25 +172,30 @@ func TestChainIncludesCFHeader(t *testing.T) {
 	}
 }
 
-// TestPrincipalCFHeaderDefaultOff 钉住 2026-09-16 的默认值翻转：
-// **默认不采信 CF-Connecting-IP**，因为它可被直连源站的客户端自报
-// （部署核查实测：iptables 零规则 / 无 ufw / nginx 0.0.0.0:443 / 直连源站 IP 得 200）。
-// 默认路径是 XFF 右数第 N 个。
-func TestPrincipalCFHeaderDefaultOff(t *testing.T) {
+// TestPrincipalCFHeaderDefaultOn 钉住默认行为：
+// 默认优先采信 CF-Connecting-IP。
+func TestPrincipalCFHeaderDefaultOn(t *testing.T) {
 	r := httptest.NewRequest("POST", "/", nil)
 	r.RemoteAddr = "10.0.0.9:1"
 	r.Header.Set("CF-Connecting-IP", "203.0.113.7")
 	r.Header.Set("X-Forwarded-For", "1.2.3.4, 5.6.7.8, 104.22.109.48")
 	t.Setenv("TRUSTED_PROXY_HOPS", "2")
 
-	// 默认（不设 CF_CONNECTING_IP）：必须忽略 CF 头，走 XFF 右数第 2
+	// 默认（不设 CF_CONNECTING_IP）：优先采信 CF 头
 	ip, src := PrincipalWithSource(r)
+	if ip != "203.0.113.7" || src != FromCFHeader {
+		t.Fatalf("默认应优先采信 CF 头，实际 ip=%s src=%s", ip, src)
+	}
+
+	// 可关：CF_CONNECTING_IP=0 时退回 XFF 跳数
+	t.Setenv("CF_CONNECTING_IP", "0")
+	ip, src = PrincipalWithSource(r)
 	if ip != "5.6.7.8" || src != FromXFFHop {
-		t.Fatalf("默认不该采信可伪造的 CF 头，应取 XFF 右数第 2，实际 ip=%s src=%s", ip, src)
+		t.Fatalf("关掉 CF 头后应按 XFF 右数第 2 取，实际 ip=%s src=%s", ip, src)
 	}
 }
 
-// TestPrincipalCFHeaderOptIn 钉住显式开启后的行为（开启 = 同时要求防火墙只放行 CF 网段）。
+// TestPrincipalCFHeaderOptIn 钉住显式开启与参数行为。
 func TestPrincipalCFHeaderOptIn(t *testing.T) {
 	t.Setenv("CF_CONNECTING_IP", "1")
 	r := httptest.NewRequest("POST", "/", nil)
@@ -202,14 +207,6 @@ func TestPrincipalCFHeaderOptIn(t *testing.T) {
 	ip, src := PrincipalWithSource(r)
 	if ip != "203.0.113.7" || src != FromCFHeader {
 		t.Fatalf("显式开启后应采信 CF 头，实际 ip=%s src=%s", ip, src)
-	}
-
-	// 可关：CF_CONNECTING_IP=0 时退回 XFF 跳数（用于排查或不经 CF 的入口）
-	t.Setenv("CF_CONNECTING_IP", "0")
-	t.Setenv("TRUSTED_PROXY_HOPS", "2")
-	ip, src = PrincipalWithSource(r)
-	if ip != "5.6.7.8" || src != FromXFFHop {
-		t.Fatalf("关掉 CF 头后应按 XFF 右数第 2 取，实际 ip=%s src=%s", ip, src)
 	}
 
 	// IPv6 也要能解析（CF 会回源 IPv6 客户端）

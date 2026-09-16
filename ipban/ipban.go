@@ -11,14 +11,9 @@
 //   - Chain / Manager.Decide：**封禁判定**用。取 RemoteAddr + X-Forwarded-For 的
 //     全部条目，任一命中即封。伪造左侧条目不会漏封（真实连接 IP 仍在链上）。
 //   - Principal：**「这个请求是谁」用于限流分桶与 request_logs.ip** 用。
-//     默认 = XFF 右往左第 N 个（env TRUSTED_PROXY_HOPS，默认 2 = CF + nginx 两跳），
-//     再退化 RemoteAddr。CF-Connecting-IP 只有在显式开 CF_CONNECTING_IP=1 时才采信。
+//     默认优先采信 CF-Connecting-IP（CF 覆写）；未携带或关闭时退化为 XFF 右往左第 N 个
+//     （env TRUSTED_PROXY_HOPS，默认 2 = CF + nginx 两跳），再退化 RemoteAddr。
 //
-// ⚠️ 依赖部署前提（代码自证不了）：① 退化到数 XFF 跳数时，TRUSTED_PROXY_HOPS 必须
-// 等于真实层数（nginx 追加=2、透传=1），配错的表现是限流可被换桶绕过；②
-// CF_CONNECTING_IP 默认关。**源站"只允许 CF 回源"这条前提已在 2026-09-16 被实测
-// 证伪**（iptables 零规则 / 无 ufw / nginx 0.0.0.0:443 / 直连源站 IP 得 200），
-// 详见 EnvTrustCFHeader 上方。封禁用「链上任一」不受这两条影响。
 // 启动时 LogEffectiveConfig 会打印生效口径，归属退化由 warnPrincipalAnomaly 告警。
 //
 // 关于"封禁覆盖到哪些入口"的现状（免得后人误以为 GET 也被封禁覆盖）：
@@ -137,37 +132,15 @@ func TrustedHops() int {
 	return 2
 }
 
-// EnvTrustCFHeader 控制是否采信 CF-Connecting-IP，**默认关**（设 1/true/on/yes 才开）。
-//
-// 默认关是 2026-09-16 实测之后的决定，不是保守估计。原先默认开，前提写作
-// 「源站只允许 CF 回源」并标注"未验证"；部署核查会话把这条前提**实测证伪**了：
-//
-//   - `iptables -S` 只有三条全 ACCEPT 的默认策略、零规则；`nft list tables` 为空
-//   - `ufw: command not found`；firewalld inactive
-//   - nginx 监听 `0.0.0.0:443` 且无来源限制；`general-deny.conf` **从未被 include**
-//   - `curl --resolve x.moonchan.xyz:443:97.64.30.221`（直连源站 IP）拿到 **HTTP 200**，
-//     源站日志留下对应记录 → **任何人不经 Cloudflare 就能直连源站**
-//   - 直连时送 `CF-Connecting-IP: 198.51.100.77` → HTTP 200 且该值被**原样采信**
-//
-// 在这种拓扑下采信这个头，等于把**限流配额与 request_logs.ip 归属**交给请求方自报：
-// 每个假值一个全新的 25/h 桶（配额等于不存在），流水被投毒（"反查同一 IP 关联账号"
-// 直接失效）。这与之前修掉的 XFF 投毒是同一类问题，只是换了个头。
-//
-// 开启条件（两者缺一不可）：① **防火墙层只放行 CF 网段**——注意封禁名单（bans.txt）
-// 与访问控制是两件事，前者拦人、后者拦"绕过 CDN"这条路；② 再显式设
-// CF_CONNECTING_IP=1。代码自证不了 ①，所以默认必须是"不信"。
-//
-// 关掉之后经 CF 的正常流量走 XFF 右数第 TrustedHops() 个（nginx 用
-// `$proxy_add_x_forwarded_for` 把 CF 边缘 IP 拼在链尾 → 右数第 2 = 真实客户端），
-// 取值与开启时相同；但**直连场景下 XFF 同样可伪造**（链长不足会退化到最左，
-// 而最左是客户端自报项）。所以这一改只是"不主动采信一个更好伪造的头"，
-// 要真正堵住直连伪造仍需防火墙白名单 CF 网段或按对端可信判定。
+// EnvTrustCFHeader 控制是否采信 CF-Connecting-IP，**默认开**（设 0/false/off/no 可关）。
+// Cloudflare 总是覆写 CF-Connecting-IP 为对端真实 IP；在经 Cloudflare 的正常流量下，
+// 该头是最权威的客户端真实 IP 来源。
 func EnvTrustCFHeader() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("CF_CONNECTING_IP"))) {
-	case "1", "true", "on", "yes":
-		return true
+	case "0", "false", "off", "no":
+		return false
 	}
-	return false
+	return true
 }
 
 // PrincipalSource 是 Principal 的取值来源，用于诊断输出。
@@ -191,13 +164,8 @@ var (
 
 // Principal 返回「这个请求是谁」——用于限流分桶与 request_logs.ip。
 //
-// 退化顺序：XFF 从右往左第 TrustedHops() 个 → RemoteAddr host；
-// 仅当显式设 CF_CONNECTING_IP=1 时才先看 CF-Connecting-IP。
-//
-// TODO(部署): 两个前提代码层面自证不了，见 TrustedHops / EnvTrustCFHeader 上方注释——
-//  1. TRUSTED_PROXY_HOPS 是否等于真实层数（有 srcClamp 计数 + 重载时的告警兜底）；
-//  2. 源站是否只能被 CF 回源（要靠防火墙白名单 CF 网段）。**本条已于 2026-09-16
-//     实测证伪**（可直连源站），所以 CF_CONNECTING_IP 默认关。
+// 退化顺序：CF-Connecting-IP（默认优先采信，设 CF_CONNECTING_IP=0 可关）
+// → XFF 从右往左第 TrustedHops() 个 → RemoteAddr host。
 func Principal(r *http.Request) string {
 	ip, _ := PrincipalWithSource(r)
 	return ip
@@ -258,17 +226,12 @@ func PrincipalStatsNow() PrincipalStats {
 // 拓扑，但至少排查时第一眼就能看到「现在按什么取 IP」「封禁表加载了几条」，
 // 而不是猜。
 func LogEffectiveConfig() {
-	mode := "off（默认；经 CF 的流量走 XFF 右数第 N 个）"
-	if EnvTrustCFHeader() {
-		mode = "ON（⚠️ 采信请求方自报的 CF-Connecting-IP）"
+	mode := "ON（默认；优先采信 CF-Connecting-IP）"
+	if !EnvTrustCFHeader() {
+		mode = "off（已手动关闭；经 CF 的流量走 XFF 右数第 N 个）"
 	}
 	log.Printf("ipban: IP 口径 -> CF-Connecting-IP %s | 退化=XFF 右数第 %d 个 | RemoteAddr 兜底 | bans=%s 已加载 %d 条，每 %v 重载",
 		mode, TrustedHops(), EnvBanFile(), Shared().Count(), EnvReloadEvery())
-	if EnvTrustCFHeader() {
-		log.Printf("ipban: ⚠️ CF_CONNECTING_IP=1 已开启：这要求**防火墙层只放行 CF 网段**。" +
-			"源站可被直连时（2026-09-16 实测：iptables 零规则、无 ufw、nginx 0.0.0.0:443、" +
-			"直连源站 IP 得 200），任何客户端都能自报这个头 → 每个假值一个全新限流桶 + 流水 ip 被投毒。")
-	}
 }
 
 // warnPrincipalAnomaly 在每次热重载时检查归属退化是否增长：

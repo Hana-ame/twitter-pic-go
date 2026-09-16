@@ -17,11 +17,15 @@
   <input class="atag-input" id="g-ataginput" maxlength="24" autocomplete="off" placeholder="添加标签后回车" hidden>
 
   <div class="modes">
-    <a data-mode="" href="{{.HrefAll}}" class="{{if eq .Filter ""}}active{{end}}">全部</a>
+    <a data-mode="all" href="{{.HrefAll}}" class="{{if eq .Filter "all"}}active{{end}}">全部</a>
     <a data-mode="photo" href="{{.HrefPhoto}}" class="{{if eq .Filter "photo"}}active{{end}}">图片 only</a>
     <a data-mode="video" href="{{.HrefVideo}}" class="{{if eq .Filter "video"}}active{{end}}">视频 only</a>
     {{if .LegacyURL}}<a class="lg" href="{{.LegacyURL}}" rel="noopener" title="用旧版界面浏览本账号">🕹 切换到旧版 →</a>{{end}}
   </div>
+
+  {{if and (eq .Filter "photo") (eq (len .Media) 0)}}
+    <p class="muted center" style="margin:24px 0">该账号暂无图片，可切换至 <a href="{{.HrefVideo}}" style="color:var(--acc)">视频 only</a> 查看。</p>
+  {{end}}
 
   <div class="grid" id="g-grid" data-slug="{{.Slug}}" data-per="{{.PageSize}}">
     {{range .Media}}
@@ -58,6 +62,39 @@
     <button class="lb-act" id="lb-fav" title="喜欢">♥</button>
   </div>
   <div class="lb-info" id="lb-info"></div>
+
+  <!-- 视频 HUD：进度条 / 时间 / 播放暂停 / 静音音量 / 倍速 / 全屏 -->
+  <div class="lb-vhud" id="lb-vhud" hidden>
+    <div class="lb-vprog" id="lb-vprog" title="点击或拖动调整播放进度">
+      <div class="lb-vprog-buf" id="lb-vbuf"></div>
+      <div class="lb-vprog-bar" id="lb-vbar"></div>
+      <div class="lb-vprog-thumb" id="lb-vthumb"></div>
+      <div class="lb-vprog-tip" id="lb-vtip">00:00</div>
+    </div>
+    <div class="lb-vbar">
+      <div class="lb-vleft">
+        <button class="lb-vbtn" id="lb-vplay" type="button" title="播放/暂停 (Space)" aria-label="播放/暂停">
+          <svg class="ico-play" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="ico-pause" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        </button>
+        <span class="lb-vtime" id="lb-vtime">00:00 / 00:00</span>
+      </div>
+      <div class="lb-vright">
+        <div class="lb-vvol">
+          <button class="lb-vbtn" id="lb-vmute" type="button" title="静音/取消静音 (M)" aria-label="静音">
+            <svg class="ico-vol-high" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+            <svg class="ico-vol-mute" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>
+          </button>
+          <input class="lb-vslider" id="lb-vslider" type="range" min="0" max="1" step="0.05" value="1" title="音量">
+        </div>
+        <button class="lb-vbtn lb-vspeed" id="lb-vspeed" type="button" title="播放倍速">1.0x</button>
+        <button class="lb-vbtn" id="lb-vfs" type="button" title="全屏" aria-label="全屏">
+          <svg class="ico-fs" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+          <svg class="ico-unfs" viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script id="g-data" type="application/json">{{.Account.RawJSON}}</script>

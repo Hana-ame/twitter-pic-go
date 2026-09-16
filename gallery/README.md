@@ -61,7 +61,8 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 |---|---|---|
 | `GALLERY_ADDR` | `:8090` | 监听地址 |
 | `GALLERY_JSON_DIR` | `./` | json.gz 目录 |
-| `GALLERY_MEDIA_BASE` | 空 | pbs.twimg.com 改写前缀 |
+| `GALLERY_MEDIA_BASE` | `https://pbs.moonchan.xyz` | 图片（含头像）改写前缀：`pbs.twimg.com` → 该基址；置空则不改写 |
+| `GALLERY_VIDEO_BASE` | `https://twimg.l.moonchan.xyz:8443` | 视频改写前缀（与图片分开：视频不走 pbs） |
 | `GALLERY_LEGACY_BASE` | `https://x.4545810.xyz` | 旧版站点基址；账号页「切换到旧版」跳 `{base}/{user}`，置空隐藏入口 |
 | `GALLERY_PAGE_SIZE` | `12` | 每页媒体数 |
 | `GALLERY_REACTIONS_FILE` | `./reactions.json` | 赞踩计数文件 |

@@ -62,6 +62,15 @@ header a:hover{color:var(--acc)}
   transition:all .18s var(--ease);
 }
 .lgbtn:hover{color:var(--fg);border-color:var(--acc);background:var(--card-2)}
+/* 头部右侧动作区：加群按钮 + 旧版入口等宽排列，窄屏可换行不挤压标题 */
+.hact{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+/* 加群按钮做强强调：唯一填色按钮，与描边的 .lgbtn 拉开层级 */
+.lgbtn.join{
+  background:linear-gradient(135deg,var(--acc),var(--acc-2));
+  border-color:transparent;color:#0a0d14;font-weight:700;
+  box-shadow:var(--shadow-sm);
+}
+.lgbtn.join:hover{color:#0a0d14;border-color:transparent;filter:brightness(1.08)}
 
 /* ---- main ---- */
 main{padding:24px;max-width:1500px;margin:0 auto}
@@ -552,7 +561,10 @@ img.lb-media{cursor:pointer}
 {{define "header"}}
 <header>
   <a href="/">Twitter&nbsp;Pic <span class="muted">·</span> Gallery</a>
-  {{if .LegacyBase}}<a class="lgbtn" href="{{.LegacyBase}}" rel="noopener" title="切换到旧版界面">🕹 旧版首页</a>{{end}}
+  <span class="hact">
+    <a class="lgbtn join" href="https://chatto.moonchan.xyz" target="_blank" rel="noopener" title="点击加群">💬 点击加群</a>
+    {{if .LegacyBase}}<a class="lgbtn" href="{{.LegacyBase}}" rel="noopener" title="切换到旧版界面">🕹 旧版首页</a>{{end}}
+  </span>
 </header>
 {{end}}
 

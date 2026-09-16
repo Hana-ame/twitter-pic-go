@@ -173,7 +173,7 @@ type config struct {
 func NewHandler(dbs ...*sql.DB) http.Handler {
 	cfg := config{
 		jsonDir:       envOr("GALLERY_JSON_DIR", "."),
-		mediaBase:     strings.TrimRight(envOr("GALLERY_MEDIA_BASE", ""), "/"),
+		mediaBase:     strings.TrimRight(envOr("GALLERY_MEDIA_BASE", defaultMediaBase), "/"),
 		videoBase:     strings.TrimRight(envOr("GALLERY_VIDEO_BASE", defaultVideoBase), "/"),
 		legacyBase:    legacyBase(),
 		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
@@ -774,6 +774,11 @@ func mediaURL(base, raw string) string {
 	}
 	return out
 }
+
+// defaultMediaBase 图片（含头像）改写前缀：pbs.twimg.com → pbs.moonchan.xyz。
+// 刻意与 defaultVideoBase 分开：图片走 pbs.moonchan.xyz（无端口、CF 前置），
+// 视频仍走 twimg.l.moonchan.xyz:8443，两者不是同一个入口。
+const defaultMediaBase = "https://pbs.moonchan.xyz"
 
 const defaultVideoBase = "https://twimg.l.moonchan.xyz:8443"
 

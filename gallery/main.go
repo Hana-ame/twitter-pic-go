@@ -822,9 +822,13 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.Error(w, "tags disabled", http.StatusServiceUnavailable)
 		return
 	}
-	// IP 口径统一走 ipban.Principal（按可信跳数取）：限流分桶、request_logs.ip、
-	// 根 API、以及**票桶 (账号,标签,IP)** 四处同一个值。原先这里是「XFF 首项」，既能被
+	// IP 口径统一走 ipban.Principal：限流分桶、request_logs.ip、根 API、
+	// 以及**票桶 (账号,标签,IP)** 四处同一个值。原先这里是「XFF 首项」，既能被
 	// `X-Forwarded-For: <好人IP>, <被封IP>` 绕过封禁，也和流水里的归属对不上。
+	// 默认取 XFF 右数第 TrustedHops() 个（nginx $proxy_add_x_forwarded_for 把 CF 边缘
+	// 拼在链尾 → 右数第 2 = 真实客户端）；CF-Connecting-IP 只在显式开
+	// CF_CONNECTING_IP=1 时采信——源站可被直连（2026-09-16 实测证伪"只允许 CF 回源"），
+	// 默认信任它等于把配额与流水归属交给请求方自报。
 	ip := ipban.Principal(r)
 	if cfg.tagLimit != nil && !cfg.tagLimit.Allow(ip) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")

@@ -372,7 +372,7 @@
   const excludedTags = new Set();
   const EXCLUDE_LS_KEY = "tp_excluded_tags_v1";
 
-  const DEFAULT_GAY_TAGS = ["男同", "男性", "露屌"];
+  const DEFAULT_GAY_TAGS = ["男性", "男娘", "人妖", "露屌", "阳痿", "男同"];
   const GAY_TAGS = new Set(DEFAULT_GAY_TAGS);
   const GAY_TAGS_LS_KEY = "tp_gay_tags_v1";
   const GAY_LS_KEY = "tp_gay_mode_v1";
@@ -458,14 +458,33 @@
     syncURL();
   }
 
+  const DEFAULT_EXCLUDED_TAGS = ["无关内容"];
   try {
-    const savedEx = JSON.parse(localStorage.getItem(EXCLUDE_LS_KEY) || "[]");
-    if (Array.isArray(savedEx)) {
-      for (const t of savedEx) {
-        if (typeof t === "string" && t.trim()) excludedTags.add(t.trim());
+    const rawEx = localStorage.getItem(EXCLUDE_LS_KEY);
+    if (rawEx !== null) {
+      const savedEx = JSON.parse(rawEx || "[]");
+      if (Array.isArray(savedEx)) {
+        for (const t of savedEx) {
+          if (typeof t === "string" && t.trim()) excludedTags.add(t.trim());
+        }
+      }
+    } else {
+      let fromReact = null;
+      try {
+        const rawRules = JSON.parse(localStorage.getItem("tag-rules") || "null");
+        if (rawRules && Array.isArray(rawRules.block)) {
+          fromReact = rawRules.block.filter((t) => typeof t === "string" && t.trim() && !GAY_TAGS.has(t.trim()));
+        }
+      } catch (err) {}
+      if (fromReact && fromReact.length > 0) {
+        for (const t of fromReact) excludedTags.add(t);
+      } else {
+        for (const t of DEFAULT_EXCLUDED_TAGS) excludedTags.add(t);
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    for (const t of DEFAULT_EXCLUDED_TAGS) excludedTags.add(t);
+  }
 
   try {
     const p = new URLSearchParams(location.search);

@@ -568,6 +568,7 @@
   // 全量标签词频统计（供排除弹窗使用，根据当前 gayMode 匹配账号词频）
   function allTagsCloud() {
     const cnt = new Map();
+    for (const t of excludedTags) cnt.set(t, 0);
     for (const n of names) {
       if (!isUserGayModeMatched(n)) continue;
       const ts = tagsMap.get(n);

@@ -97,18 +97,116 @@
     // Twitter 缩略图优化：卡片展示仅需 small 规格 (680px)，相比 orig 原图节省 90%+ 带宽
     return raw.replace(/([?&]name=)[^&]+/, "$1small");
   };
-  const VIDEO_BASE = "https://twimg.l.moonchan.xyz:8443";
-  const videoURL = (raw) => {
+  const IMAGE_BASES = [
+    "https://pbs.twimg.com",
+    "https://twimg.l.moonchan.xyz:8443",
+    "https://pbs.moonchan.xyz"
+  ];
+  const VIDEO_BASES = [
+    "https://video.twimg.com",
+    "https://twimg.l.moonchan.xyz:8443"
+  ];
+  const MEDIA_TIMEOUT_MS = 2500;
+
+  const extractPath = (raw, defaultBase) => {
     if (!raw) return "";
-    try { const u = new URL(raw); return VIDEO_BASE + u.pathname + (u.search || ""); } catch (e) {}
-    return raw;
+    try {
+      const u = new URL(raw, defaultBase);
+      return u.pathname + (u.search || "") + (u.hash || "");
+    } catch (e) {
+      return raw;
+    }
   };
-  const mediaURL = (raw) => {
-    if (!raw) return "";
-    if (!BASE) return raw;
-    try { const u = new URL(raw); if (u.host === "pbs.twimg.com") return BASE + u.pathname + (u.search || ""); } catch (e) {}
-    return raw;
+
+  const getImageCandidates = (raw) => {
+    if (!raw) return [];
+    const path = extractPath(raw, "https://pbs.twimg.com");
+    return IMAGE_BASES.map((b) => b + path);
   };
+
+  const getVideoCandidates = (raw) => {
+    if (!raw) return [];
+    const path = extractPath(raw, "https://video.twimg.com");
+    return VIDEO_BASES.map((b) => b + path);
+  };
+
+  function loadWithFallback(el, candidates, timeoutMs, onSuccess) {
+    if (!el || !candidates || !candidates.length) return;
+    let idx = 0;
+    let timer = null;
+    let done = false;
+    const isVideo = el.tagName === "VIDEO";
+
+    function cleanup() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      el.removeEventListener("load", onOk);
+      el.removeEventListener("error", onFail);
+      el.removeEventListener("loadedmetadata", onOk);
+      el.removeEventListener("canplay", onOk);
+    }
+
+    function onOk() {
+      if (done) return;
+      done = true;
+      cleanup();
+      if (typeof onSuccess === "function") onSuccess(candidates[idx], idx);
+    }
+
+    function onFail() {
+      if (done) return;
+      cleanup();
+      idx++;
+      if (idx < candidates.length) {
+        tryCandidate();
+      }
+    }
+
+    function tryCandidate() {
+      if (idx >= candidates.length) return;
+      done = false;
+      const src = candidates[idx];
+
+      timer = setTimeout(function () {
+        if (done) return;
+        onFail();
+      }, timeoutMs || MEDIA_TIMEOUT_MS);
+
+      if (isVideo) {
+        const wasPlaying = !el.paused;
+        el.addEventListener("loadedmetadata", onOk, { once: true });
+        el.addEventListener("canplay", onOk, { once: true });
+        el.addEventListener("error", onFail, { once: true });
+        if (el.src !== src) {
+          el.src = src;
+          try { el.load(); } catch (e) {}
+        }
+        if (el.readyState >= 1) {
+          onOk();
+        } else if (wasPlaying) {
+          const p = el.play();
+          if (p && p.catch) p.catch(() => {});
+        }
+      } else {
+        el.addEventListener("load", onOk, { once: true });
+        el.addEventListener("error", onFail, { once: true });
+        if (el.src !== src) {
+          el.src = src;
+        }
+        if (el.complete) {
+          if (el.naturalWidth > 0) {
+            onOk();
+          } else {
+            onFail();
+          }
+        }
+      }
+    }
+
+    tryCandidate();
+  }
 
   // 卡片标签**全部显示**：不截断、不折 +N。
   // 顺序与条数都不在前端二次加工：后端 ForUsers 的 SQL 已经是
@@ -138,23 +236,40 @@
     if (!m || typeof m !== "object") return;
     const name = el.dataset.n;
     const rawB = typeof m.b === "string" ? m.b : "";
-    const b = m.v ? videoURL(rawB) : mediaURL(thumbURL(rawB));
-    if (b) {
+    if (rawB) {
       const ph = el.querySelector(".bnr-ph");
       if (ph) {
         if (m.v) {
-          const videoSrc = esc(b) + (b.indexOf("#") >= 0 ? "" : "#t=0.001");
-          const media = '<video class="bnr" muted loop playsinline autoplay preload="metadata" src="' + videoSrc + '"></video>';
-          ph.outerHTML = media;
+          const videoSrc = rawB + (rawB.indexOf("#") >= 0 ? "" : "#t=0.001");
+          const v = document.createElement("video");
+          v.className = "bnr";
+          v.muted = true;
+          v.loop = true;
+          v.playsInline = true;
+          v.autoplay = true;
+          v.preload = "metadata";
+          ph.replaceWith(v);
+          loadWithFallback(v, getVideoCandidates(videoSrc), MEDIA_TIMEOUT_MS);
         } else {
-          ph.outerHTML = '<img class="bnr" loading="lazy" decoding="async" alt="" src="' + esc(b) + '">';
+          const img = document.createElement("img");
+          img.className = "bnr";
+          img.loading = "lazy";
+          img.decoding = "async";
+          img.alt = "";
+          ph.replaceWith(img);
+          loadWithFallback(img, getImageCandidates(thumbURL(rawB)), MEDIA_TIMEOUT_MS);
         }
       }
     }
-    const a = mediaURL(typeof m.a === "string" ? m.a : "");
-    if (a) {
+    const rawA = typeof m.a === "string" ? m.a : "";
+    if (rawA) {
       const av = el.querySelector(".av");
-      if (av && !av.querySelector("img")) av.insertAdjacentHTML("afterbegin", '<img alt="" src="' + esc(a) + '">');
+      if (av && !av.querySelector("img")) {
+        const img = document.createElement("img");
+        img.alt = "";
+        av.insertAdjacentElement("afterbegin", img);
+        loadWithFallback(img, getImageCandidates(rawA), MEDIA_TIMEOUT_MS);
+      }
     }
     const nick = el.querySelector(".nk");
     if (nick && typeof m.i === "string" && m.i && m.i !== name) nick.textContent = m.i;

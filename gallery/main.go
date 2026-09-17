@@ -798,12 +798,13 @@ func mediaURL(base, raw string) string {
 	return out
 }
 
-// defaultMediaBase 图片（含头像）改写前缀：pbs.twimg.com → pbs.moonchan.xyz。
-// 刻意与 defaultVideoBase 分开：图片走 pbs.moonchan.xyz（无端口、CF 前置），
-// 视频仍走 twimg.l.moonchan.xyz:8443，两者不是同一个入口。
-const defaultMediaBase = "https://pbs.moonchan.xyz"
+// defaultMediaBase 图片（含头像）初始优先域名：pbs.twimg.com。
+// 前端 Web 页面按 pbs.twimg.com → twimg.l.moonchan.xyz:8443 → pbs.moonchan.xyz 顺序 fallback。
+const defaultMediaBase = "https://pbs.twimg.com"
 
-const defaultVideoBase = "https://twimg.l.moonchan.xyz:8443"
+// defaultVideoBase 视频初始优先域名：video.twimg.com。
+// 前端 Web 页面按 video.twimg.com → twimg.l.moonchan.xyz:8443 顺序 fallback。
+const defaultVideoBase = "https://video.twimg.com"
 
 func overrideVideoURL(videoBase, raw string) string {
 	raw = strings.TrimSpace(raw)

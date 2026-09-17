@@ -14,27 +14,115 @@
   var aTagsData = document.getElementById('g-atags-data');
   try { if (aTagsData) aTags = JSON.parse(aTagsData.textContent) || {}; } catch (e) {}
 
-  var VIDEO_BASE = 'https://twimg.l.moonchan.xyz:8443';
-  function videoURL(raw) {
+  var IMAGE_BASES = [
+    'https://pbs.twimg.com',
+    'https://twimg.l.moonchan.xyz:8443',
+    'https://pbs.moonchan.xyz'
+  ];
+  var VIDEO_BASES = [
+    'https://video.twimg.com',
+    'https://twimg.l.moonchan.xyz:8443'
+  ];
+  var MEDIA_TIMEOUT_MS = 2500;
+
+  function extractPath(raw, defaultBase) {
     if (!raw) return '';
     try {
-      var u = new URL(raw);
-      return VIDEO_BASE + u.pathname + (u.search || '');
+      var u = new URL(raw, defaultBase);
+      return u.pathname + (u.search || '') + (u.hash || '');
     } catch (e) {
       return raw;
     }
   }
 
-  // 图片（含头像）改写：pbs.twimg.com → MEDIA_BASE（服务端 data-base 下发，默认 pbs.moonchan.xyz）。
-  // 与 Go 侧 mediaURL 同规则：只改 pbs.twimg.com 的 host，路径与 query 原样保留。
-  var MEDIA_BASE = (grid.getAttribute('data-base') || '').replace(/\/+$/, '');
-  function mediaURL(raw) {
-    if (!raw || !MEDIA_BASE) return raw;
-    try {
-      var u = new URL(raw);
-      if (u.host === 'pbs.twimg.com') return MEDIA_BASE + u.pathname + (u.search || '');
-    } catch (e) {}
-    return raw;
+  function getImageCandidates(raw) {
+    if (!raw) return [];
+    var path = extractPath(raw, 'https://pbs.twimg.com');
+    return IMAGE_BASES.map(function (b) { return b + path; });
+  }
+
+  function getVideoCandidates(raw) {
+    if (!raw) return [];
+    var path = extractPath(raw, 'https://video.twimg.com');
+    return VIDEO_BASES.map(function (b) { return b + path; });
+  }
+
+  function loadWithFallback(el, candidates, timeoutMs, onSuccess) {
+    if (!el || !candidates || !candidates.length) return;
+    var idx = 0;
+    var timer = null;
+    var done = false;
+    var isVideo = (el.tagName === 'VIDEO');
+
+    function cleanup() {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      el.removeEventListener('load', onOk);
+      el.removeEventListener('error', onFail);
+      el.removeEventListener('loadedmetadata', onOk);
+      el.removeEventListener('canplay', onOk);
+    }
+
+    function onOk() {
+      if (done) return;
+      done = true;
+      cleanup();
+      if (typeof onSuccess === 'function') onSuccess(candidates[idx], idx);
+    }
+
+    function onFail() {
+      if (done) return;
+      cleanup();
+      idx++;
+      if (idx < candidates.length) {
+        tryCandidate();
+      }
+    }
+
+    function tryCandidate() {
+      if (idx >= candidates.length) return;
+      done = false;
+      var src = candidates[idx];
+
+      timer = setTimeout(function () {
+        if (done) return;
+        onFail();
+      }, timeoutMs || MEDIA_TIMEOUT_MS);
+
+      if (isVideo) {
+        var wasPlaying = !el.paused;
+        el.addEventListener('loadedmetadata', onOk, { once: true });
+        el.addEventListener('canplay', onOk, { once: true });
+        el.addEventListener('error', onFail, { once: true });
+        if (el.src !== src) {
+          el.src = src;
+          try { el.load(); } catch (e) {}
+        }
+        if (el.readyState >= 1) {
+          onOk();
+        } else if (wasPlaying) {
+          var p = el.play();
+          if (p && p.catch) p.catch(function () {});
+        }
+      } else {
+        el.addEventListener('load', onOk, { once: true });
+        el.addEventListener('error', onFail, { once: true });
+        if (el.src !== src) {
+          el.src = src;
+        }
+        if (el.complete) {
+          if (el.naturalWidth > 0) {
+            onOk();
+          } else {
+            onFail();
+          }
+        }
+      }
+    }
+
+    tryCandidate();
   }
 
   var slug = grid.getAttribute('data-slug') || '';
@@ -42,7 +130,7 @@
   var all = (data.timeline || []).filter(function (m) { return m && m.url; }).map(function (m) {
     var isVid = (m.type === 'video' || m.type === 'animated_gif');
     return {
-      url: isVid ? videoURL(m.url) : mediaURL(m.url),
+      url: m.url,
       id: (m.tweet_id || 0),
       video: isVid
     };
@@ -104,7 +192,6 @@
 
   function mediaNode(m, controls, isThumb) {
     var n;
-    var url = (!m.video && isThumb) ? thumbURL(m.url) : m.url;
     var cachedRatio = aspectCache[m.url] || (m.video ? guessAspectFromURL(m.url) : guessAspectFromURL(m.url));
     if (cachedRatio) aspectCache[m.url] = cachedRatio;
     if (m.video) {
@@ -119,6 +206,7 @@
           n.style.aspectRatio = n.videoWidth + ' / ' + n.videoHeight;
         }
       });
+      loadWithFallback(n, getVideoCandidates(m.url), MEDIA_TIMEOUT_MS);
     } else {
       n = document.createElement('img');
       n.loading = 'lazy';
@@ -131,12 +219,9 @@
           n.style.aspectRatio = n.naturalWidth + ' / ' + n.naturalHeight;
         }
       });
-      if (n.complete && n.naturalWidth && n.naturalHeight) {
-        setAspect(m.url, n.naturalWidth + ' / ' + n.naturalHeight);
-        n.style.aspectRatio = n.naturalWidth + ' / ' + n.naturalHeight;
-      }
+      var raw = isThumb ? thumbURL(m.url) : m.url;
+      loadWithFallback(n, getImageCandidates(raw), MEDIA_TIMEOUT_MS);
     }
-    n.src = url;
     return n;
   }
 
@@ -894,4 +979,8 @@
   initAccountTags();
   renderATags();
   renderGrid();
+  var uavImg = document.querySelector('.uav img');
+  if (uavImg && uavImg.getAttribute('src')) {
+    loadWithFallback(uavImg, getImageCandidates(uavImg.getAttribute('src')), MEDIA_TIMEOUT_MS);
+  }
 })();

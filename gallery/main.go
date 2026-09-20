@@ -5,6 +5,7 @@
 package gallery
 
 import (
+	"bytes"
 	"compress/gzip"
 	"database/sql"
 	"embed"
@@ -167,6 +168,7 @@ type config struct {
 	tagLimit      *limit.FastLimiter // 标签写入的 per-IP 配额，与根 API 同一个实现
 	bans          *ipban.Manager     // IP 封禁：与根 API 同一个进程级单例（同一份 bans.txt）
 	vis           *vis               // 被封账号隐身：users.status 视图（与根 API 同真源）
+	home          *homeCache         // 首页整页 SSR 缓存（见 home_cache.go）
 }
 
 // NewHandler 构建并返回图站的 http.Handler（供与根 API 挂在同一个 HTTP 路由上使用）。
@@ -222,6 +224,19 @@ func NewHandler(dbs ...*sql.DB) http.Handler {
 	cfg.vis = newVis(cfg.tags)
 	cfg.tagLimit = limit.NewFastLimiter(envIntOr("GALLERY_TAG_RATE_MAX", tagRateMax))
 	cfg.bans = ipban.Shared()
+
+	// 首页整页 SSR 缓存：GALLERY_HOME_CACHE_TTL 秒（默认 60；0 或负值关闭）。
+	cfg.home = newHomeCache(
+		time.Duration(envIntOr("GALLERY_HOME_CACHE_TTL", int(homeCacheTTL/time.Second)))*time.Second,
+		func() ([]byte, error) { return buildHomeHTML(cfg) },
+	)
+	if cfg.home != nil {
+		go func() {
+			// 稍等片刻再预热，给 API 侧启动期的建表/底数快照/标签云聚合让路。
+			time.Sleep(2 * time.Second)
+			cfg.home.warm()
+		}()
+	}
 
 	mux := galleryMux(cfg, reactions)
 	return logRequests(mux)
@@ -358,10 +373,29 @@ func handleTagUsers(w http.ResponseWriter, r *http.Request, cfg config) {
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
+	body, err := homeHTML(cfg)
+	if err != nil {
+		log.Printf("gallery: 首页构造失败: %v", err)
+		http.Error(w, "home: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeHTML(w, body)
+}
+
+// homeHTML 取首页整页 HTML：优先走缓存（见 home_cache.go），缓存关闭时现构造。
+func homeHTML(cfg config) ([]byte, error) {
+	if cfg.home == nil {
+		return buildHomeHTML(cfg)
+	}
+	return cfg.home.html()
+}
+
+// buildHomeHTML 现构造一次首页 HTML。全部失败都作为 error 返回、不写响应——
+// 结果要先落缓存，发不发、什么时候发由调用方决定。
+func buildHomeHTML(cfg config) ([]byte, error) {
 	names, err := listAccounts(cfg.jsonDir)
 	if err != nil {
-		http.Error(w, "read json dir: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("read json dir: %w", err)
 	}
 	// 被封账号在首页隐身：账号列表和 #a-data 里都不出现（#a-data 是前端筛选与
 	// 「加载更多」的数据源，漏在这里就等于全站泄漏）。
@@ -389,7 +423,7 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 	})
 	top := cfg.vis.cloud()
 	if top == nil && cfg.tags != nil {
-		top = cfg.tags.Cloud(36, true)
+		top = cfg.tags.Cloud(cloudTopN, true)
 	}
 	preview := make([]acctItem, 0, previewN)
 	for _, e := range entries[:min(len(entries), previewN)] {
@@ -401,10 +435,10 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 	}
 	dataJSON, err := json.Marshal(entries)
 	if err != nil {
-		http.Error(w, "marshal entries: "+err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("marshal entries: %w", err)
 	}
-	render(w, "home.html", pageData{
+	var buf bytes.Buffer
+	if err := templates.ExecuteTemplate(&buf, "home.html", pageData{
 		Title: "首页",
 		Home: &homeData{
 			Total: len(names), Preview: preview, Cloud: top, Untagged: untagged,
@@ -412,7 +446,10 @@ func handleHome(w http.ResponseWriter, r *http.Request, cfg config) {
 		},
 		HomeJS:     homeJS,
 		LegacyBase: cfg.legacyBase,
-	})
+	}); err != nil {
+		return nil, fmt.Errorf("render home.html: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
@@ -861,6 +898,17 @@ func render(w http.ResponseWriter, name string, data pageData) {
 	}
 }
 
+// writeHTML 发一整块已渲染好的 HTML（首页缓存走这条路）：
+// 显式带 Content-Length，省掉 chunked 与一次写缓冲。
+func writeHTML(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	if _, err := w.Write(body); err != nil {
+		log.Printf("gallery: write html: %v", err)
+	}
+}
+
 func logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -1002,5 +1050,8 @@ func handlePostAccountTag(w http.ResponseWriter, r *http.Request, cfg config) {
 		http.Error(w, "write failed", http.StatusInternalServerError)
 		return
 	}
+	// 首页的标签云与账号标签排序都来自 account_tags：把整页缓存标脏，
+	// 下一个访客仍先拿旧页（不等），由后台重建补新。
+	cfg.home.invalidate()
 	writeJSON(w, map[string]any{"user": user, "tags": cfg.tags.Weights(user)})
 }

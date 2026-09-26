@@ -835,13 +835,13 @@ func mediaURL(base, raw string) string {
 	return out
 }
 
-// defaultMediaBase 图片（含头像）初始优先域名：pbs.twimg.com。
-// 前端 Web 页面按 pbs.twimg.com → twimg.l.moonchan.xyz:8443 → pbs.moonchan.xyz 顺序 fallback。
-const defaultMediaBase = "https://pbs.twimg.com"
+// defaultMediaBase 图片（含头像）初始优先域名：twimg.l.moonchan.xyz:8443。
+// 前端 Web 页面按 twimg.l.moonchan.xyz:8443 → pbs.moonchan.xyz → pbs.twimg.com 顺序 fallback。
+const defaultMediaBase = "https://twimg.l.moonchan.xyz:8443"
 
-// defaultVideoBase 视频初始优先域名：video.twimg.com。
-// 前端 Web 页面按 video.twimg.com → twimg.l.moonchan.xyz:8443 顺序 fallback。
-const defaultVideoBase = "https://video.twimg.com"
+// defaultVideoBase 视频初始优先域名：twimg.l.moonchan.xyz:8443。
+// 前端 Web 页面按 twimg.l.moonchan.xyz:8443 → video.twimg.com 顺序 fallback。
+const defaultVideoBase = "https://twimg.l.moonchan.xyz:8443"
 
 func overrideVideoURL(videoBase, raw string) string {
 	raw = strings.TrimSpace(raw)

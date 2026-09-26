@@ -98,13 +98,13 @@
     return raw.replace(/([?&]name=)[^&]+/, "$1small");
   };
   const IMAGE_BASES = [
-    "https://pbs.twimg.com",
     "https://twimg.l.moonchan.xyz:8443",
-    "https://pbs.moonchan.xyz"
+    "https://pbs.moonchan.xyz",
+    "https://pbs.twimg.com"
   ];
   const VIDEO_BASES = [
-    "https://video.twimg.com",
-    "https://twimg.l.moonchan.xyz:8443"
+    "https://twimg.l.moonchan.xyz:8443",
+    "https://video.twimg.com"
   ];
   const MEDIA_TIMEOUT_MS = 2500;
 

@@ -99,8 +99,7 @@
   };
   const IMAGE_BASES = [
     "https://twimg.l.moonchan.xyz:8443",
-    "https://pbs.moonchan.xyz",
-    "https://pbs.twimg.com"
+    "https://pbs-cf.twimg.com"
   ];
   const VIDEO_BASES = [
     "https://twimg.l.moonchan.xyz:8443",
@@ -190,6 +189,7 @@
           if (p && p.catch) p.catch(() => {});
         }
       } else {
+        el.referrerPolicy = "no-referrer";
         el.addEventListener("load", onOk, { once: true });
         el.addEventListener("error", onFail, { once: true });
         if (el.src !== src) {
@@ -255,6 +255,7 @@
           img.className = "bnr";
           img.loading = "lazy";
           img.decoding = "async";
+          img.referrerPolicy = "no-referrer";
           img.alt = "";
           ph.replaceWith(img);
           loadWithFallback(img, getImageCandidates(thumbURL(rawB)), MEDIA_TIMEOUT_MS);
@@ -267,6 +268,7 @@
       if (av && !av.querySelector("img")) {
         const img = document.createElement("img");
         img.alt = "";
+        img.referrerPolicy = "no-referrer";
         av.insertAdjacentElement("afterbegin", img);
         loadWithFallback(img, getImageCandidates(rawA), MEDIA_TIMEOUT_MS);
       }

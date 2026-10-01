@@ -16,8 +16,7 @@
 
   var IMAGE_BASES = [
     'https://twimg.l.moonchan.xyz:8443',
-    'https://pbs.moonchan.xyz',
-    'https://pbs.twimg.com'
+    'https://pbs-cf.twimg.com'
   ];
   var VIDEO_BASES = [
     'https://twimg.l.moonchan.xyz:8443',
@@ -107,6 +106,7 @@
           if (p && p.catch) p.catch(function () {});
         }
       } else {
+        el.referrerPolicy = 'no-referrer';
         el.addEventListener('load', onOk, { once: true });
         el.addEventListener('error', onFail, { once: true });
         if (el.src !== src) {
@@ -210,6 +210,7 @@
     } else {
       n = document.createElement('img');
       n.loading = 'lazy';
+      n.referrerPolicy = 'no-referrer';
       n.alt = '';
       n.draggable = false;
       if (cachedRatio) n.style.aspectRatio = cachedRatio;
@@ -981,6 +982,7 @@
   renderGrid();
   var uavImg = document.querySelector('.uav img');
   if (uavImg && uavImg.getAttribute('src')) {
+    uavImg.referrerPolicy = 'no-referrer';
     loadWithFallback(uavImg, getImageCandidates(uavImg.getAttribute('src')), MEDIA_TIMEOUT_MS);
   }
 })();

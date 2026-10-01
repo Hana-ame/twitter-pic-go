@@ -6,7 +6,7 @@
 <main>
   {{with .Account}}
   <div class="uhead">
-    {{with .Avatar}}<div class="uav"><img src="{{.}}" alt=""></div>{{else}}<div class="uav">@</div>{{end}}
+    {{with .Avatar}}<div class="uav"><img referrerpolicy="no-referrer" src="{{.}}" alt=""></div>{{else}}<div class="uav">@</div>{{end}}
     <div class="umeta">
       <h1>{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}}</h1>
       <p class="muted">@{{.Name}} · <span id="g-count">{{.Total}} media</span> · <span id="g-range"></span></p>
@@ -33,7 +33,7 @@
         {{if .IsVideo}}
           <video preload="metadata" src="{{.URL}}"></video>
         {{else}}
-          <img loading="lazy" src="{{.URL}}" alt="">
+          <img loading="lazy" referrerpolicy="no-referrer" src="{{.URL}}" alt="">
         {{end}}
       </div>
     {{end}}

@@ -22,7 +22,6 @@
     'https://twimg.l.moonchan.xyz:8443',
     'https://video-cf.twimg.com'
   ];
-  var MEDIA_TIMEOUT_MS = 2500;
 
   function extractPath(raw, defaultBase) {
     if (!raw) return '';
@@ -46,18 +45,13 @@
     return VIDEO_BASES.map(function (b) { return b + path; });
   }
 
-  function loadWithFallback(el, candidates, timeoutMs, onSuccess) {
+  function loadWithFallback(el, candidates, onSuccess) {
     if (!el || !candidates || !candidates.length) return;
     var idx = 0;
-    var timer = null;
     var done = false;
     var isVideo = (el.tagName === 'VIDEO');
 
     function cleanup() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
       el.removeEventListener('load', onOk);
       el.removeEventListener('error', onFail);
       el.removeEventListener('loadedmetadata', onOk);
@@ -84,11 +78,6 @@
       if (idx >= candidates.length) return;
       done = false;
       var src = candidates[idx];
-
-      timer = setTimeout(function () {
-        if (done) return;
-        onFail();
-      }, timeoutMs || MEDIA_TIMEOUT_MS);
 
       if (isVideo) {
         var wasPlaying = !el.paused;
@@ -206,7 +195,7 @@
           n.style.aspectRatio = n.videoWidth + ' / ' + n.videoHeight;
         }
       });
-      loadWithFallback(n, getVideoCandidates(m.url), MEDIA_TIMEOUT_MS);
+      loadWithFallback(n, getVideoCandidates(m.url));
     } else {
       n = document.createElement('img');
       n.loading = 'lazy';
@@ -221,7 +210,7 @@
         }
       });
       var raw = isThumb ? thumbURL(m.url) : m.url;
-      loadWithFallback(n, getImageCandidates(raw), MEDIA_TIMEOUT_MS);
+      loadWithFallback(n, getImageCandidates(raw));
     }
     return n;
   }
@@ -983,6 +972,6 @@
   var uavImg = document.querySelector('.uav img');
   if (uavImg && uavImg.getAttribute('src')) {
     uavImg.referrerPolicy = 'no-referrer';
-    loadWithFallback(uavImg, getImageCandidates(uavImg.getAttribute('src')), MEDIA_TIMEOUT_MS);
+    loadWithFallback(uavImg, getImageCandidates(uavImg.getAttribute('src')));
   }
 })();

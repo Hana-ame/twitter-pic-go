@@ -105,7 +105,6 @@
     "https://twimg.l.moonchan.xyz:8443",
     "https://video-cf.twimg.com"
   ];
-  const MEDIA_TIMEOUT_MS = 2500;
 
   const extractPath = (raw, defaultBase) => {
     if (!raw) return "";
@@ -129,18 +128,13 @@
     return VIDEO_BASES.map((b) => b + path);
   };
 
-  function loadWithFallback(el, candidates, timeoutMs, onSuccess) {
+  function loadWithFallback(el, candidates, onSuccess) {
     if (!el || !candidates || !candidates.length) return;
     let idx = 0;
-    let timer = null;
     let done = false;
     const isVideo = el.tagName === "VIDEO";
 
     function cleanup() {
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
       el.removeEventListener("load", onOk);
       el.removeEventListener("error", onFail);
       el.removeEventListener("loadedmetadata", onOk);
@@ -167,11 +161,6 @@
       if (idx >= candidates.length) return;
       done = false;
       const src = candidates[idx];
-
-      timer = setTimeout(function () {
-        if (done) return;
-        onFail();
-      }, timeoutMs || MEDIA_TIMEOUT_MS);
 
       if (isVideo) {
         const wasPlaying = !el.paused;
@@ -249,7 +238,7 @@
           v.autoplay = true;
           v.preload = "metadata";
           ph.replaceWith(v);
-          loadWithFallback(v, getVideoCandidates(videoSrc), MEDIA_TIMEOUT_MS);
+          loadWithFallback(v, getVideoCandidates(videoSrc));
         } else {
           const img = document.createElement("img");
           img.className = "bnr";
@@ -258,7 +247,7 @@
           img.referrerPolicy = "no-referrer";
           img.alt = "";
           ph.replaceWith(img);
-          loadWithFallback(img, getImageCandidates(thumbURL(rawB)), MEDIA_TIMEOUT_MS);
+          loadWithFallback(img, getImageCandidates(thumbURL(rawB)));
         }
       }
     }
@@ -270,7 +259,7 @@
         img.alt = "";
         img.referrerPolicy = "no-referrer";
         av.insertAdjacentElement("afterbegin", img);
-        loadWithFallback(img, getImageCandidates(rawA), MEDIA_TIMEOUT_MS);
+        loadWithFallback(img, getImageCandidates(rawA));
       }
     }
     const nick = el.querySelector(".nk");

@@ -20,7 +20,7 @@
   ];
   var VIDEO_BASES = [
     'https://twimg.l.moonchan.xyz:8443',
-    'https://video.twimg.com'
+    'https://video-cf.twimg.com'
   ];
   var MEDIA_TIMEOUT_MS = 2500;
 

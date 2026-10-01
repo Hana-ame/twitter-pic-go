@@ -103,7 +103,7 @@
   ];
   const VIDEO_BASES = [
     "https://twimg.l.moonchan.xyz:8443",
-    "https://video.twimg.com"
+    "https://video-cf.twimg.com"
   ];
   const MEDIA_TIMEOUT_MS = 2500;
 

@@ -16,7 +16,7 @@
 
   var IMAGE_BASES = [
     'https://twimg.l.moonchan.xyz:8443',
-    'https://pbs-cf.twimg.com'
+    'https://video-cf.twimg.com'
   ];
   var VIDEO_BASES = [
     'https://twimg.l.moonchan.xyz:8443',

@@ -99,7 +99,7 @@
   };
   const IMAGE_BASES = [
     "https://twimg.l.moonchan.xyz:8443",
-    "https://pbs-cf.twimg.com"
+    "https://video-cf.twimg.com"
   ];
   const VIDEO_BASES = [
     "https://twimg.l.moonchan.xyz:8443",

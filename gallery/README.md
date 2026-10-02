@@ -61,8 +61,8 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 |---|---|---|
 | `GALLERY_ADDR` | `:8090` | 监听地址 |
 | `GALLERY_JSON_DIR` | `./` | json.gz 目录 |
-| `GALLERY_MEDIA_BASE` | `https://twimg.l.moonchan.xyz:8443` | 图片（含头像/封面/媒体）初始基址；前端按 `twimg.l.moonchan.xyz:8443` → `video-cf.twimg.com`（无referer） 顺序 fallback |
-| `GALLERY_VIDEO_BASE` | `https://twimg.l.moonchan.xyz:8443` | 视频初始基址；前端按 `twimg.l.moonchan.xyz:8443` → `video-cf.twimg.com`（无referer） 顺序 fallback |
+| `GALLERY_MEDIA_BASE` | `https://twimg.l.moonchan.xyz:8443` | 图片（含头像/封面/媒体）初始基址；前端按 `twimg.l.moonchan.xyz:8443` → `pbs.moonchan.xyz` → `video-cf.twimg.com`（无referer） 顺序 fallback |
+| `GALLERY_VIDEO_BASE` | `https://twimg.l.moonchan.xyz:8443` | 视频初始基址；前端按 `twimg.l.moonchan.xyz:8443` → `pbs.moonchan.xyz`（视频 302 正常重定向） → `video-cf.twimg.com`（无referer） 顺序 fallback |
 | `GALLERY_LEGACY_BASE` | `https://x.4545810.xyz` | 旧版站点基址；账号页「切换到旧版」跳 `{base}/{user}`，置空隐藏入口 |
 | `GALLERY_PAGE_SIZE` | `12` | 每页媒体数 |
 | `GALLERY_REACTIONS_FILE` | `./reactions.json` | 赞踩计数文件 |

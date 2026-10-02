@@ -836,11 +836,11 @@ func mediaURL(base, raw string) string {
 }
 
 // defaultMediaBase 图片（含头像）初始优先域名：twimg.l.moonchan.xyz:8443。
-// 前端 Web 页面按 twimg.l.moonchan.xyz:8443 → video-cf.twimg.com（无referer） 顺序 fallback。
+// 前端 Web 页面按 twimg.l.moonchan.xyz:8443 → pbs.moonchan.xyz → video-cf.twimg.com（无referer） 顺序 fallback。
 const defaultMediaBase = "https://twimg.l.moonchan.xyz:8443"
 
 // defaultVideoBase 视频初始优先域名：twimg.l.moonchan.xyz:8443。
-// 前端 Web 页面按 twimg.l.moonchan.xyz:8443 → video-cf.twimg.com（无referer） 顺序 fallback。
+// 前端 Web 页面按 twimg.l.moonchan.xyz:8443 → pbs.moonchan.xyz（视频返回 302 正常重定向） → video-cf.twimg.com（无referer） 顺序 fallback。
 const defaultVideoBase = "https://twimg.l.moonchan.xyz:8443"
 
 func overrideVideoURL(videoBase, raw string) string {

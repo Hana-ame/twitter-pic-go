@@ -99,10 +99,12 @@
   };
   const IMAGE_BASES = [
     "https://twimg.l.moonchan.xyz:8443",
+    "https://pbs.moonchan.xyz",
     "https://video-cf.twimg.com"
   ];
   const VIDEO_BASES = [
     "https://twimg.l.moonchan.xyz:8443",
+    "https://pbs.moonchan.xyz",
     "https://video-cf.twimg.com"
   ];
 
@@ -164,6 +166,7 @@
 
       if (isVideo) {
         const wasPlaying = !el.paused;
+        el.referrerPolicy = "no-referrer";
         el.addEventListener("loadedmetadata", onOk, { once: true });
         el.addEventListener("canplay", onOk, { once: true });
         el.addEventListener("error", onFail, { once: true });

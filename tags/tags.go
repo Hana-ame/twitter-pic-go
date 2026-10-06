@@ -310,8 +310,21 @@ func (s *Store) UsersForTagPaged(tag string, limit, offset int, excludeBanned bo
 			                         AND u.status = 'SUCCESS')`
 		}
 		var oldTotal int
-		_ = s.db.QueryRow(oldSQL, tag).Scan(&oldTotal)
-		if oldTotal > 0 || total > 0 {
+		oldErr := s.db.QueryRow(oldSQL, tag).Scan(&oldTotal)
+		// 若**带过滤**的计数拿不到数（oldTotal == 0），再试一次不带过滤的：
+		// `users` 表整体缺失时 EXISTS 子查询对每一行都返回假，于是计数是 0，
+		// 而这不是「这个标签没有可见账号」，是**判据本身失效**（与
+		// visibility.go 的 fail-open 同理）。此时退回不带过滤的计数，
+		// 否则 users 表一缺失，整个标签页就全空了。
+		if oldTotal == 0 {
+			var raw int
+			if e := s.db.QueryRow(
+				`SELECT COUNT(*) FROM account_tags a WHERE a.tag = ? AND a.weight > 0`,
+				tag).Scan(&raw); e == nil && raw > 0 {
+				oldTotal, oldErr = raw, nil
+			}
+		}
+		if oldTotal > 0 || oldErr == nil {
 			total = oldTotal
 			useAccountTags = oldTotal > 0
 		}

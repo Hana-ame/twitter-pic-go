@@ -129,4 +129,28 @@ func TestUsersForTagPagedPagingDoesNotDriftPastVisibleTotal(t *testing.T) {
 	}
 }
 
+// `users` 表整体缺失时，**判据本身失效**，`EXISTS` 对每一行都返回假。
+//
+// 这是修复「排除幽灵账号」时最容易踩的回归：可见性条件一旦失效，
+// 标签页就会**整页空白**，而且是在服务出问题时才空白 —— 故障与症状同时发生，
+// 最难排查。因此显式钉住 fail-open 语义（与 gallery/visibility.go 的
+// `if !haveView { return names }` 同一条原则：判据不可信时不据此拒绝）。
+//
+// 修这条之前实测：`users=[] total=0`（整页空）。
+func TestUsersForTagPagedFallsOpenWhenUsersTableMissing(t *testing.T) {
+	s := newBareStore(t) // 刻意不调 openUsers
+	seedWeights(t, s, "alice", map[string]int{"女性": 1})
+
+	users, total, err := s.UsersForTagPaged("女性", 25, 0, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || users[0] != "alice" {
+		t.Fatalf("users 表缺失时应 fail-open 照常返回，实际 %v", users)
+	}
+	if total != 1 {
+		t.Fatalf("total 应为 1，实际 %d", total)
+	}
+}
+
 var _ = sql.ErrNoRows

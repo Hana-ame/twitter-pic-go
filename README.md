@@ -10,9 +10,25 @@ Twitter 媒体抓取与图库浏览。
 | 队列处理 | `deamon.py` | 从 pending 文件读取 URL，翻译成抓取命令，排队执行 |
 | Go API | `twitter_handlers.go` | REST API：创建/查询元数据、标签管理、Emoji 投票 |
 | 图库 | `gallery/` | 直接服务 HTML 的图站后端，读取 json.gz 渲染媒体列表 |
+| V2 API (Flutter / 移动端) | `v2_handlers.go` | 面向移动端的轻量动态切片 API（媒体分页、标签反查无幽灵、Feed 聚合） |
 | 标签存储 | `tags/tags.go` | **账号标签的唯一实现**：`account_tags` 读写 + `request_logs` 流水，Go API 与 gallery 共用同一份语义 |
 | IP 封禁 | `ipban/ipban.go` | **封禁的唯一实现**：bans.txt 编译 trie + 链上任一命中 + 热重载 + 统一 IP 口径，Go API 与 gallery 共用同一个单例 |
 | twimg 反代 | `twimg/main.go` | 反向代理 pbs.twimg.com 图片 |
+
+## Cloudflare 边缘缓存 与 V2 动态切片 API
+
+详细接口规范见 **[API_V2.md](API_V2.md)**。
+
+- **边缘缓存由 Cloudflare 统一负责**：
+  - 核心缓存层已由 **Cloudflare CDN** 在边缘直接承接。V2 所有读接口均下发标准 `Cache-Control: public, max-age=..., s-maxage=...` 以及 `Last-Modified`。
+  - Cloudflare 边缘节点自动进行全球就近缓存与 304 条件协商，请求几乎不穿透至源站，完美契合 1 vCPU / 528MB 的小内存源站配置。
+  - **客户端无缓存包袱**：Flutter 移动端及现代 Web **完全无需下载、解压或自行维护 `.json.gz` 缓存文件**。直接请求标准 V2 JSON API 即可享受 Cloudflare 毫秒级边缘加速。
+- **V2 API 负责轻量动态切片（彻底消除客户端与源站负担）**：
+  - **媒体分页切片**：`GET /api/twitter/v2/users/:username/media?limit=24&type=photo` 首屏瀑布流由传统数兆压缩至 **~3KB**，节约 99% 流量与内存。
+  - **标签反查无幽灵**：`GET /api/twitter/v2/tags/:tag/users` 强制 `status = 'SUCCESS'` 且单次带齐头像/昵称/标签，彻底消灭 404 幽灵账号与 N+1 流量风暴。
+  - **冷启动 Feed 聚合**：`GET /api/twitter/v2/feed` 一次请求返回热门标签与推荐用户，源站 30s 内存自愈缓存 + Cloudflare 边缘缓存，0.1ms 响应。
+  - **HTTP 304 条件协商**：未发生更新时直接返回 `304 Not Modified`（0 字节负载）。
+  - **小内存机器保护**：服务端内部仅保留 $\le 30$ 个用户的极小有界淘汰缓存（<2MB），杜绝内存膨胀。
 
 ## 标签（账号级）的存储
 

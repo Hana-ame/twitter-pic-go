@@ -76,9 +76,13 @@ func setupRouter(db *sql.DB) *gin.Engine {
 	r := gin.Default()
 	r.Use(middleware.CORS())
 
-	// API 专属路径给原来的 twitter API
+	// API 专属路径给原来的 twitter API（包含 /api/twitter/v2）
 	api := r.Group("/api/twitter")
 	twitter.AddToGroup(api)
+
+	// 面向 Flutter 与现代客户端的根路径别名：支持 /api/v2/... 与 /api/flutter/...
+	twitter.RegisterV2Routes(r.Group("/api/v2"))
+	twitter.RegisterV2Routes(r.Group("/api/flutter"))
 
 	ipban.LogEffectiveConfig()
 

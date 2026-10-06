@@ -492,4 +492,7 @@ func AddToGroup(g *gin.RouterGroup) {
 	g.GET("/emojis.json.gz", GetEmojisGz)
 	g.GET("/emojis", GetEmojis)
 	g.POST("/emojis", VoteUpEmojiHandler)
+
+	// 新增：面向 Flutter 及现代移动端的新版 API 路由组 (v2)
+	RegisterV2Routes(g.Group("/v2"))
 }

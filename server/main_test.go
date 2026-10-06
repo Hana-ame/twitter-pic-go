@@ -67,4 +67,14 @@ func TestUnifiedServerRouting(t *testing.T) {
 	if wReactions.Code != 200 {
 		t.Fatalf("Gallery reactions 期望 200, 实际 %d", wReactions.Code)
 	}
+
+	// 6. 新版 Flutter API 路由: /api/twitter/v2/users, /api/v2/users, /api/flutter/users
+	for _, path := range []string{"/api/twitter/v2/users", "/api/v2/users", "/api/flutter/users"} {
+		reqV2 := httptest.NewRequest("GET", path, nil)
+		wV2 := httptest.NewRecorder()
+		router.ServeHTTP(wV2, reqV2)
+		if wV2.Code != 200 {
+			t.Fatalf("Flutter API %s 期望 200, 实际 %d: %s", path, wV2.Code, wV2.Body.String())
+		}
+	}
 }

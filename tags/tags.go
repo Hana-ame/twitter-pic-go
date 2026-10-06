@@ -121,15 +121,29 @@ func EnsureTagCounts(db *sql.DB) error {
 		return fmt.Errorf("创建 tag_counts 失败: %v", err)
 	}
 
+	// **每次启动都从真实聚合重建 tag_counts**，不再只在空表时建一次。
+	//
+	// 以前是 `if n == 0`，于是 tag_counts 一旦非空就永远不再对账：它此后只由
+	// CastVotes 的 ±1 增量与 commitUser 维护，**历史数据一条都不计入**。
+	// 后果（复现见 tags/membership_contract_test.go 的
+	// TestCloudCountMustEqualRealMembership）：6 个账号持有「女性」，云本该报 6，
+	// 但只要有**一个 IP 投过一票**，物化表就从 0 长到 1 并从此接管，
+	// queryCloudAll 的 ban 过滤分支再也不回退真实聚合 —— 云永久把 6 报成 1。
+	// 而且 ban 是在进程外用 SQL 打的（见 gallery/visibility.go 的运维路径），
+	// tag_counts 同样看不到，于是**封禁账号永远不会从标签云里消失**。
+	//
+	// 代价是一次全表聚合（account_tags 约 4.4k 行、user_tag_cnt 同量级），
+	// 启动时跑一次完全可接受；换来的是「云的人数 = 真实持有账号数」这条
+	// 不变量在**每次重启后自动复位**，而不是靠人记得去手工对账。
 	var n int
 	_ = db.QueryRow(`SELECT COUNT(*) FROM tag_counts`).Scan(&n)
-	if n == 0 {
+	if n >= 0 {
 		// 优先从 user_tag_cnt 聚合
 		res, err := db.Exec(`INSERT OR REPLACE INTO tag_counts (tag, cnt)
 			SELECT a.tag, COUNT(DISTINCT a.username)
 			FROM user_tag_cnt a
 			WHERE a.cnt > 0
-			  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username AND (u.status IS NULL OR u.status != 'SUCCESS'))
+			  AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username AND u.status = 'SUCCESS')
 			GROUP BY a.tag`)
 		if err != nil {
 			res, _ = db.Exec(`INSERT OR REPLACE INTO tag_counts (tag, cnt)
@@ -148,7 +162,7 @@ func EnsureTagCounts(db *sql.DB) error {
 				SELECT a.tag, COUNT(DISTINCT a.username)
 				FROM account_tags a
 				WHERE a.weight > 0
-				  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username AND (u.status IS NULL OR u.status != 'SUCCESS'))
+				  AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username AND u.status = 'SUCCESS')
 				GROUP BY a.tag`)
 			if err != nil {
 				_, _ = db.Exec(`INSERT OR REPLACE INTO tag_counts (tag, cnt)
@@ -249,7 +263,8 @@ func (s *Store) ForUsers(names []string) map[string][]string {
 	return out
 }
 
-// UsersForTagPaged tag 反查账号分页：以 user_tag_cnt 为唯一真相，按 updated_at 倒序排列（最新的最前）。
+// UsersForTagPaged tag 反查账号分页：以 user_tag_cnt 为唯一真相，**按权重降序**
+// （同权重按 username 升序）。这条顺序是跨端契约的一部分，见上面的注释。
 func (s *Store) UsersForTagPaged(tag string, limit, offset int, excludeBanned bool) ([]string, int, error) {
 	if s == nil || s.db == nil || tag == "" {
 		return nil, 0, nil
@@ -257,20 +272,61 @@ func (s *Store) UsersForTagPaged(tag string, limit, offset int, excludeBanned bo
 	var total int
 	countSQL := `SELECT COUNT(*) FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0`
 	if excludeBanned {
-		countSQL += ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
-		                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
+		countSQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+		                            AND u.status = 'SUCCESS')`
 	}
+	// 只在**查询出错**时才回退到不带过滤的 count——注意回退的 count 也必须
+	// 带上同一个可见性条件，否则 total 会比实际能取到的行数多（客户端拿
+	// total 判断「还有没有下一页」，多算就会多翻空页）。
+	//
+	// ⚠️ `total == 0` **不**再触发回退。原来写成 `err != nil || total == 0`：
+	// 「主表算出来 0 条」被当成了「主表不可用」，于是转去 account_tags。
+	// 但 0 条完全可能是**真的**没有可见账号（全部被封或不存在），此时回退
+	// 会换一个仍含不可见账号的计数，把刚排除掉的 ghost 又算回总数。
+	// 「主表为空」与「主表不可用」是两件事，只有 err 才能区分。
 	err := s.db.QueryRow(countSQL, tag).Scan(&total)
 	if err != nil && excludeBanned {
-		err = s.db.QueryRow(`SELECT COUNT(*) FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0`, tag).Scan(&total)
+		countSQL = `SELECT COUNT(*) FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0`
+		if excludeBanned {
+			countSQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+			                            AND u.status = 'SUCCESS')`
+		}
+		err = s.db.QueryRow(countSQL, tag).Scan(&total)
 	}
 	useAccountTags := false
 	if err != nil || total == 0 {
+		// account_tags 是标签归属的**权威**来源（user_tag_cnt 只是增量镜像），
+		// 所以主表算不出可见数时以它为准。
+		//
+		// ⚠️ 这里必须区分两种「主表不可用」：
+		//   - `err != nil`：查询出错（users 表缺失等）→ 回退是**必要的**；
+		//   - `total == 0`：主表里这个标签**确实没有可见账号**。此时回退要
+		//     重新用 account_tags 算一遍**带同样可见性条件**的数，而不是直接
+		//     沿用不带过滤的 oldTotal——否则刚排除掉的 ghost/banned 又被算回
+		//     总数，客户端会据此多翻空页。
+		oldSQL := `SELECT COUNT(*) FROM account_tags a WHERE a.tag = ? AND a.weight > 0`
+		if excludeBanned {
+			oldSQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+			                         AND u.status = 'SUCCESS')`
+		}
 		var oldTotal int
-		_ = s.db.QueryRow(`SELECT COUNT(*) FROM account_tags a WHERE a.tag = ? AND a.weight > 0`, tag).Scan(&oldTotal)
-		if oldTotal > 0 {
+		oldErr := s.db.QueryRow(oldSQL, tag).Scan(&oldTotal)
+		// 若**带过滤**的计数拿不到数（oldTotal == 0），再试一次不带过滤的：
+		// `users` 表整体缺失时 EXISTS 子查询对每一行都返回假，于是计数是 0，
+		// 而这不是「这个标签没有可见账号」，是**判据本身失效**（与
+		// visibility.go 的 fail-open 同理）。此时退回不带过滤的计数，
+		// 否则 users 表一缺失，整个标签页就全空了。
+		if oldTotal == 0 {
+			var raw int
+			if e := s.db.QueryRow(
+				`SELECT COUNT(*) FROM account_tags a WHERE a.tag = ? AND a.weight > 0`,
+				tag).Scan(&raw); e == nil && raw > 0 {
+				oldTotal, oldErr = raw, nil
+			}
+		}
+		if oldTotal > 0 || oldErr == nil {
 			total = oldTotal
-			useAccountTags = true
+			useAccountTags = oldTotal > 0
 		}
 	}
 
@@ -278,17 +334,26 @@ func (s *Store) UsersForTagPaged(tag string, limit, offset int, excludeBanned bo
 	if useAccountTags {
 		querySQL = `SELECT a.username FROM account_tags a WHERE a.tag = ? AND a.weight > 0`
 		if excludeBanned {
-			querySQL += ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
-			                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
+			querySQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+			                            AND u.status = 'SUCCESS')`
 		}
 		querySQL += ` ORDER BY a.weight DESC, a.username ASC`
 	} else {
 		querySQL = `SELECT a.username FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0`
 		if excludeBanned {
-			querySQL += ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
-			                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
+			querySQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+			                            AND u.status = 'SUCCESS')`
 		}
-		querySQL += ` ORDER BY a.updated_at DESC, a.username ASC`
+		// **按权重降序**，与 account_tags 分支及跨端契约一致
+		// （notes/design-twitter-pic-flutter-tag-filter-contract：「服务端按
+		// account_tags 正权重降序返回」）。
+		//
+		// 原先是 `ORDER BY a.updated_at DESC`（最新更新的排最前）。统一库把
+		// account_tags 灌进 user_tag_cnt 时，updated_at 全部写成 CURRENT_TIMESTAMP，
+		// 之后只有被投票改过的行才会刷新 —— 于是反查顺序实际由「谁最近被改过」
+		// 决定，与权重毫无关系。实测反例见 tags/order_contract_test.go 的
+		// TestUsersForTagPagedOrdersByWeightDesc：权重最高的账号被排到最后一位。
+		querySQL += ` ORDER BY a.cnt DESC, a.username ASC`
 	}
 
 	var rows *sql.Rows
@@ -302,7 +367,7 @@ func (s *Store) UsersForTagPaged(tag string, limit, offset int, excludeBanned bo
 		if useAccountTags {
 			querySQL = `SELECT a.username FROM account_tags a WHERE a.tag = ? AND a.weight > 0 ORDER BY a.weight DESC, a.username ASC`
 		} else {
-			querySQL = `SELECT a.username FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0 ORDER BY a.updated_at DESC, a.username ASC`
+			querySQL = `SELECT a.username FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0 ORDER BY a.cnt DESC, a.username ASC`
 		}
 		if limit > 0 {
 			querySQL += ` LIMIT ? OFFSET ?`
@@ -327,20 +392,28 @@ func (s *Store) UsersForTagPaged(tag string, limit, offset int, excludeBanned bo
 	return out, total, rows.Err()
 }
 
-// UsersForTag 反查：tag -> usernames（优先 user_tag_cnt，按更新倒序；支持 exist 过滤与 limit）。
+// UsersForTag 反查：tag -> usernames（优先 user_tag_cnt，**按权重降序**；
+// 支持 exist 过滤与 limit）。
 func (s *Store) UsersForTag(tag string, exist map[string]struct{}, limit int) []string {
 	if s == nil || s.db == nil || tag == "" || limit <= 0 {
 		return nil
 	}
 	// 先从 user_tag_cnt 查
 	users, _, _ := s.UsersForTagPaged(tag, limit, 0, false)
-	if len(users) == 0 {
-		// 回退到 account_tags
-		rows, err := s.db.Query(
-			`SELECT username FROM account_tags WHERE tag = ? AND weight > 0 ORDER BY weight DESC, username`, tag)
-		if err != nil {
-			return nil
-		}
+
+	// **account_tags 里的账号也必须一并算进来，而不是「只在返回 0 行时才回退」。**
+	//
+	// 原来的 `if len(users) == 0` 回退是「一个 IP 投一票就把整个标签的人数
+	// 砍到 1」的根因：user_tag_cnt 只在**被投过票**的 (账号,标签) 上有行，
+	// 所以哪怕它返回了 1 行，另外 N-1 个从未被投过票的账号就被这一行
+	// 「挡」掉了（复现见 membership_contract_test.go 的
+	// TestSingleVoteMustNotTruncateTagMembership）。
+	//
+	// 两表并集、且只保留正权重，既修掉截断，又不依赖启动时那次对齐是否跑过
+	// （对齐只是兜底，这里才是真正的不变量所在）。
+	rows, err := s.db.Query(
+		`SELECT username FROM account_tags WHERE tag = ? AND weight > 0 ORDER BY weight DESC, username`, tag)
+	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var u string
@@ -349,8 +422,16 @@ func (s *Store) UsersForTag(tag string, exist map[string]struct{}, limit int) []
 			}
 		}
 	}
+	// 两表并集后同一个 username 可能出现两次（user_tag_cnt 一份、
+	// account_tags 一份），去重时**保留先出现的那个**——也就是 user_tag_cnt
+	// 那份，它已按 cnt DESC 排好，所以权重顺序与契约一致。
 	out := make([]string, 0, min(limit, len(users)))
+	seen := make(map[string]struct{}, len(users))
 	for _, u := range users {
+		if _, dup := seen[u]; dup {
+			continue
+		}
+		seen[u] = struct{}{}
 		if exist != nil {
 			if _, ok := exist[u]; !ok {
 				continue
@@ -557,6 +638,17 @@ func truncateCounts(v []Count, n int) []Count {
 // 一个 user 拥有该 tag 且 cnt > 0 时记为 1。
 func (s *Store) queryCloudAll(excludeBanned bool) ([]Count, error) {
 	if excludeBanned {
+		// tag_counts 是**物化增量表**：只在 CastVotes 的 ±1 转移里长大，
+		// 历史数据一条都不计入。于是「只要有**一个** IP 投过一票，这个 tag 的
+		// cnt 就从 0 长到 1 并从此接管」——6 个账号的标签被报成 1（复现见
+		// membership_contract_test.go 的 TestCloudCountMustEqualRealMembership）。
+		//
+		// 同一个分支还让**进程外封禁**的账号永远留在云里：ban 是运维用 SQL 打的
+		// （gallery/visibility.go 记着这条路径），tag_counts 看不到，而
+		// cloud_cache.go 的 cloudTTL 只管内存缓存、过期后重读的还是这张错表。
+		//
+		// 判据：物化表里**没有任何 tag 的计数超过真实聚合**时才用它当快路径。
+		// 慢路径（下面的实时聚合）本来就是权威答案，所以宁可慢也不给错数。
 		rows, err := s.db.Query(`SELECT tag, cnt FROM tag_counts WHERE cnt > 0 ORDER BY cnt DESC, tag ASC`)
 		if err == nil {
 			var out []Count
@@ -567,42 +659,58 @@ func (s *Store) queryCloudAll(excludeBanned bool) ([]Count, error) {
 				}
 			}
 			rows.Close()
-			if len(out) > 0 {
+			if len(out) > 0 && s.tagCountsNotUndercounting(out) {
 				return out, nil
 			}
 		}
 	}
 
-	const base = `SELECT a.tag, COUNT(DISTINCT a.username) FROM user_tag_cnt a WHERE a.cnt > 0`
-	const banned = ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
-	                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
-	const tail = ` GROUP BY a.tag ORDER BY 2 DESC, a.tag ASC`
+	// 权威口径：**两表并集**上数「正权重账号」。
+	//
+	// 以前只数 user_tag_cnt，而 user_tag_cnt 只在**被投过票**的 (账号,标签) 上
+	// 有行 —— 于是「一个 IP 投一票」就把标签云从 6 砍到 1（复现见
+	// membership_contract_test.go）。account_tags 才是「这个账号持有这个标签」
+	// 的完整来源，user_tag_cnt 只是它的增量镜像，所以并集才是真实人数。
+	// 子查询包一层 m：外层的 banned 条件要引用 m.username，SQLite 在
+	// 「派生表别名 t + 外层别名 t」同名时会解析失败（near "AND": syntax error）。
+	//
+	// banned 条件必须落在**派生表内部的 SELECT 上**（即 `WHERE ... AND NOT
+	// EXISTS`），不能拼在 `) m` 之后 —— 那样 SQL 会变成
+	// `FROM (...) m AND NOT EXISTS (...) GROUP BY`，直接 near "AND": syntax
+	// error。拼错的症状很隐蔽：queryCloud 报错后代码会 **fail-open** 退回不带
+	// 排除的全量聚合，于是「封禁账号又回到标签云里」，而日志里只有一行
+	// 「Cloud 排除被封账号失败」——看起来像偶发告警，其实是每次都错。
+	//
+	// banned 条件**套在并集外面**（`FROM ( ... UNION ... ) x WHERE NOT EXISTS`），
+	// 不能塞进 UNION 的两个分支里：相关子查询在 UNION 分支内引用派生表别名，
+	// SQLite 直接报 `no such column: x.username`。同理也不能拼在 `) x` 之后、
+	// GROUP BY 之前的位置之外——那样会变成 near "AND": syntax error。
+	//
+	// 这两个 SQL 坑的症状都很隐蔽：queryCloud 报错后代码 fail-open 退回不带排除的
+	// 全量聚合，于是「封禁账号又回到标签云里」，日志里只有一行看起来像偶发告警的
+	// 「Cloud 排除被封账号失败」，实际是每次都错。
+	inner := func(banned bool) string {
+		b := ""
+		if banned {
+			b = ` WHERE NOT EXISTS (SELECT 1 FROM users u WHERE u.username = x.username
+				AND (u.status IS NULL OR u.status != 'SUCCESS'))`
+		}
+		return `SELECT x.tag, COUNT(DISTINCT x.username) FROM (` +
+			`SELECT tag AS tag, username AS username FROM user_tag_cnt WHERE cnt > 0` +
+			` UNION ` +
+			`SELECT tag AS tag, username AS username FROM account_tags WHERE weight > 0` +
+			`) x` + b + ` GROUP BY x.tag ORDER BY 2 DESC, x.tag ASC`
+	}
 
-	q := base + tail
-	if excludeBanned {
-		q = base + banned + tail
-	}
-	out, err := s.queryCloud(q)
+	// 权威查询本身已经是两表并集，所以不再需要「空了就退回 account_tags」那一层
+	// 回退（旧回退只在 len(out)==0 时触发，而那恰恰是「并集也为空」的情形，
+	// 再查一次单表只会得到同样的空）。
+	out, err := s.queryCloud(inner(excludeBanned))
 	if err != nil && excludeBanned {
+		// fail-open：排除封禁的查询失败（典型是 users 表还不存在）时退回全量聚合，
+		// 而不是把标签云清空。
 		log.Printf("tags: Cloud 排除被封账号失败，退回全量聚合: %v", err)
-		out, err = s.queryCloud(base + tail)
-	}
-	if err != nil || len(out) == 0 {
-		// 回退到 account_tags
-		const baseOld = `SELECT a.tag, COUNT(DISTINCT a.username) FROM account_tags a WHERE a.weight > 0`
-		const tailOld = ` GROUP BY a.tag ORDER BY 2 DESC, a.tag ASC`
-		qOld := baseOld + tailOld
-		if excludeBanned {
-			qOld = baseOld + banned + tailOld
-		}
-		oldOut, oldErr := s.queryCloud(qOld)
-		if oldErr != nil && excludeBanned {
-			oldOut, oldErr = s.queryCloud(baseOld + tailOld)
-		}
-		if oldErr == nil && len(oldOut) > 0 {
-			out = oldOut
-			err = nil
-		}
+		out, err = s.queryCloud(inner(false))
 	}
 	if err != nil {
 		log.Printf("tags: Cloud: %v", err)
@@ -697,4 +805,38 @@ func normTimestampStr(s string) string {
 		}
 	}
 	return s
+}
+
+// tagCountsNotUndercounting 判断物化表 tag_counts 能不能当快路径用。
+//
+// 判据（可证伪，测试见 membership_contract_test.go）：物化表里出现的**每一个**
+// tag，其 cnt 都必须 <= 真实聚合（COUNT DISTINCT 正权重账号）。只要有一个
+// tag 报小了，物化表就是「部分数据」，此时必须回退到实时聚合。
+//
+// 为什么只查「有没有报小」而不是「全等」：全等要扫一遍 user_tag_cnt 与
+// account_tags 的并集，成本和慢路径一样；快路径的价值只在于**便宜**，
+// 一旦必须付慢路径的钱就该直接走慢路径。而「报小」是本 bug 的唯一形态
+// （投票只增不减 cnt），报大只可能来自并发误加，允许它走快路径。
+func (s *Store) tagCountsNotUndercounting(materialized []Count) bool {
+	if s == nil || s.db == nil || len(materialized) == 0 {
+		return false
+	}
+	for _, c := range materialized {
+		var real int
+		err := s.db.QueryRow(
+			`SELECT COUNT(DISTINCT username) FROM account_tags WHERE tag = ? AND weight > 0`,
+			c.Tag).Scan(&real)
+		if err != nil {
+			return false
+		}
+		// account_tags 还没有这行（只存在于 user_tag_cnt 的新票路径），跳过。
+		if real == 0 {
+			continue
+		}
+		if c.Count < real {
+			// 报小了 —— 物化表只见过「投过票的那部分账号」，不能用。
+			return false
+		}
+	}
+	return true
 }

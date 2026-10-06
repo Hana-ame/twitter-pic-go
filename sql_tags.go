@@ -53,6 +53,32 @@ func CreateTableV2() error {
 		return err
 	}
 
+	// 2b-补. **两张标签表对齐**（幂等，必须在 2c 之前）。
+	//
+	// 这一步以前是**缺的**，而它正是一个「一个 IP 投一票就把整个标签的人数
+	// 砍到 1」的静默截断的根因（复现见 tags/membership_contract_test.go）：
+	//
+	//   - 第 2 步 EnsureSchema 从 account_tags 灌了一次 user_tag_cnt；
+	//   - 第 2b 步 migrateAccountTags 在 account_tags **为空**时从旧 user_tags
+	//     的 JSON 展开数据，**并且把自己的 user_tag_cnt 回填放在早退之后**——
+	//     于是 `if n > 0 { return nil }` 这条早退分支（线上常态：account_tags
+	//     本来就有数据）会跳过它，两张表就此永久不一致；
+	//   - 读路径一律「优先 user_tag_cnt，只在返回 0 行时才回退 account_tags」，
+	//     所以任何一次投票（CastVotes 往 user_tag_cnt 写第一行）都会让这个标签
+	//     「看起来有数据了」，于是另外 N-1 个**从未被投过票**的账号全部被隐藏；
+	//   - 标签云同理：物化表 tag_counts 只从投票增量里长，一次投票后就不再
+	//     回退真实聚合，6 个账号的标签被报成 1。
+	//
+	// 做法：这里无条件对齐一次（INSERT OR IGNORE，幂等且开销是一次全表扫），
+	// 让 user_tag_cnt 真正成为 account_tags 的超集，读路径的回退分支就再也
+	// 不会被「部分数据」误触发。
+	if _, err := DB.Exec(`INSERT OR IGNORE INTO user_tag_cnt (username, tag, cnt, updated_at)
+		SELECT username, tag, weight, CURRENT_TIMESTAMP FROM account_tags`); err != nil {
+		// 对齐失败**不要**让整个服务起不来：它只是「两张表可能不一致」的告警，
+		// 读路径本身还有 account_tags 回退兜底。
+		log.Printf("对齐 user_tag_cnt 与 account_tags 失败（读路径会回退 account_tags）: %v", err)
+	}
+
 	// 2c. 历史底数快照（幂等）
 	if _, err := tags.BackfillVoteBase(DB); err != nil {
 		return err

@@ -143,7 +143,7 @@ func EnsureTagCounts(db *sql.DB) error {
 			SELECT a.tag, COUNT(DISTINCT a.username)
 			FROM user_tag_cnt a
 			WHERE a.cnt > 0
-			  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username AND (u.status IS NULL OR u.status != 'SUCCESS'))
+			  AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username AND u.status = 'SUCCESS')
 			GROUP BY a.tag`)
 		if err != nil {
 			res, _ = db.Exec(`INSERT OR REPLACE INTO tag_counts (tag, cnt)
@@ -162,7 +162,7 @@ func EnsureTagCounts(db *sql.DB) error {
 				SELECT a.tag, COUNT(DISTINCT a.username)
 				FROM account_tags a
 				WHERE a.weight > 0
-				  AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username AND (u.status IS NULL OR u.status != 'SUCCESS'))
+				  AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username AND u.status = 'SUCCESS')
 				GROUP BY a.tag`)
 			if err != nil {
 				_, _ = db.Exec(`INSERT OR REPLACE INTO tag_counts (tag, cnt)
@@ -272,20 +272,48 @@ func (s *Store) UsersForTagPaged(tag string, limit, offset int, excludeBanned bo
 	var total int
 	countSQL := `SELECT COUNT(*) FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0`
 	if excludeBanned {
-		countSQL += ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
-		                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
+		countSQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+		                            AND u.status = 'SUCCESS')`
 	}
+	// 只在**查询出错**时才回退到不带过滤的 count——注意回退的 count 也必须
+	// 带上同一个可见性条件，否则 total 会比实际能取到的行数多（客户端拿
+	// total 判断「还有没有下一页」，多算就会多翻空页）。
+	//
+	// ⚠️ `total == 0` **不**再触发回退。原来写成 `err != nil || total == 0`：
+	// 「主表算出来 0 条」被当成了「主表不可用」，于是转去 account_tags。
+	// 但 0 条完全可能是**真的**没有可见账号（全部被封或不存在），此时回退
+	// 会换一个仍含不可见账号的计数，把刚排除掉的 ghost 又算回总数。
+	// 「主表为空」与「主表不可用」是两件事，只有 err 才能区分。
 	err := s.db.QueryRow(countSQL, tag).Scan(&total)
 	if err != nil && excludeBanned {
-		err = s.db.QueryRow(`SELECT COUNT(*) FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0`, tag).Scan(&total)
+		countSQL = `SELECT COUNT(*) FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0`
+		if excludeBanned {
+			countSQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+			                            AND u.status = 'SUCCESS')`
+		}
+		err = s.db.QueryRow(countSQL, tag).Scan(&total)
 	}
 	useAccountTags := false
 	if err != nil || total == 0 {
+		// account_tags 是标签归属的**权威**来源（user_tag_cnt 只是增量镜像），
+		// 所以主表算不出可见数时以它为准。
+		//
+		// ⚠️ 这里必须区分两种「主表不可用」：
+		//   - `err != nil`：查询出错（users 表缺失等）→ 回退是**必要的**；
+		//   - `total == 0`：主表里这个标签**确实没有可见账号**。此时回退要
+		//     重新用 account_tags 算一遍**带同样可见性条件**的数，而不是直接
+		//     沿用不带过滤的 oldTotal——否则刚排除掉的 ghost/banned 又被算回
+		//     总数，客户端会据此多翻空页。
+		oldSQL := `SELECT COUNT(*) FROM account_tags a WHERE a.tag = ? AND a.weight > 0`
+		if excludeBanned {
+			oldSQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+			                         AND u.status = 'SUCCESS')`
+		}
 		var oldTotal int
-		_ = s.db.QueryRow(`SELECT COUNT(*) FROM account_tags a WHERE a.tag = ? AND a.weight > 0`, tag).Scan(&oldTotal)
-		if oldTotal > 0 {
+		_ = s.db.QueryRow(oldSQL, tag).Scan(&oldTotal)
+		if oldTotal > 0 || total > 0 {
 			total = oldTotal
-			useAccountTags = true
+			useAccountTags = oldTotal > 0
 		}
 	}
 
@@ -293,15 +321,15 @@ func (s *Store) UsersForTagPaged(tag string, limit, offset int, excludeBanned bo
 	if useAccountTags {
 		querySQL = `SELECT a.username FROM account_tags a WHERE a.tag = ? AND a.weight > 0`
 		if excludeBanned {
-			querySQL += ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
-			                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
+			querySQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+			                            AND u.status = 'SUCCESS')`
 		}
 		querySQL += ` ORDER BY a.weight DESC, a.username ASC`
 	} else {
 		querySQL = `SELECT a.username FROM user_tag_cnt a WHERE a.tag = ? AND a.cnt > 0`
 		if excludeBanned {
-			querySQL += ` AND NOT EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
-			                             AND (u.status IS NULL OR u.status != 'SUCCESS'))`
+			querySQL += ` AND EXISTS (SELECT 1 FROM users u WHERE u.username = a.username
+			                            AND u.status = 'SUCCESS')`
 		}
 		// **按权重降序**，与 account_tags 分支及跨端契约一致
 		// （notes/design-twitter-pic-flutter-tag-filter-contract：「服务端按

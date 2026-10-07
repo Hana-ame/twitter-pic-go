@@ -53,24 +53,27 @@ sqlite3 /root/twitter/twitter.db \
 
 ### 图片格式
 ```markdown
-![](https://pbs.moonchan.xyz/media/HRaqdcLbAAABRkG?format=jpg&name=orig)
+![](https://twimg.l.moonchan.xyz:8443/media/HRaqdcLbAAABRkG?format=jpg&name=orig)
 ```
 
 ### 视频格式
 ```markdown
-[视频](https://pbs.moonchan.xyz/amplify_video/2093583657336528897/vid/avc1/720x1280/8WLO-K8mHbpA-0j4.mp4?tag=29)
+[视频](https://twimg.l.moonchan.xyz:8443/amplify_video/2093583657336528897/vid/avc1/720x1280/8WLO-K8mHbpA-0j4.mp4?tag=29)
 ```
 
 ### 替换规则
 | 原域名 | 代理域名 |
 |--------|----------|
-| `pbs.twimg.com` | `pbs.moonchan.xyz` |
-| `video.twimg.com` | `pbs.moonchan.xyz` |
+| `pbs.twimg.com` | `twimg.l.moonchan.xyz:8443` |
+| `video.twimg.com` | `twimg.l.moonchan.xyz:8443` |
 
 **注意**：
+- 图片与视频**同一个入口**（`twimg.l.moonchan.xyz:8443`），已取消所有 fallback：无备用域名、无轮询换源
 - 保留完整路径和参数（`?format=jpg&name=orig`、`?tag=29`等）
 - 图片用 `![]()` Markdown语法
 - 视频用 `[文字](URL)` Markdown语法
+- 该入口是**本机 ECH 反代**（`*.l.moonchan.xyz` 解析到 `127.0.0.1`，默认监听 `:8443`），
+  客户端没跑 ech-proxy 时链接不可访问——这是取消 fallback 后的既定取舍
 
 ---
 

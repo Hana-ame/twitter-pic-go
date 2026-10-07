@@ -97,16 +97,11 @@
     // Twitter 缩略图优化：卡片展示仅需 small 规格 (680px)，相比 orig 原图节省 90%+ 带宽
     return raw.replace(/([?&]name=)[^&]+/, "$1small");
   };
-  const IMAGE_BASES = [
-    "https://twimg.l.moonchan.xyz:8443",
-    "https://pbs.moonchan.xyz",
-    "https://video-cf.twimg.com"
-  ];
-  const VIDEO_BASES = [
-    "https://twimg.l.moonchan.xyz:8443",
-    "https://pbs.moonchan.xyz",
-    "https://video-cf.twimg.com"
-  ];
+  /* 媒体唯一入口 = 后端 SSR 注入的 data-base（`GALLERY_MEDIA_BASE`，默认
+     twimg.l.moonchan.xyz:8443，本地 ECH 反代，图片/头像/封面/视频同一基址）。
+     真源在服务端，前端不再重复字面量。用户明确取消所有 fallback：
+     这里不再有候选域名列表，也没有多源轮询换源。 */
+  const MEDIA_BASE = BASE || "https://twimg.l.moonchan.xyz:8443";
 
   const extractPath = (raw, defaultBase) => {
     if (!raw) return "";
@@ -118,86 +113,35 @@
     }
   };
 
-  const getImageCandidates = (raw) => {
-    if (!raw) return [];
-    const path = extractPath(raw, "https://pbs.twimg.com");
-    return IMAGE_BASES.map((b) => b + path);
+  // 图片（含头像/封面）：去掉原始 pbs.twimg.com 主机，挂到唯一入口上。
+  // 对已经是 MEDIA_BASE 的入参幂等（取 path 后再拼，不会叠加域名）。
+  const getImageURL = (raw) => {
+    if (!raw) return "";
+    return MEDIA_BASE + extractPath(raw, "https://pbs.twimg.com");
   };
 
-  const getVideoCandidates = (raw) => {
-    if (!raw) return [];
-    const path = extractPath(raw, "https://video.twimg.com");
-    return VIDEO_BASES.map((b) => b + path);
+  const getVideoURL = (raw) => {
+    if (!raw) return "";
+    return MEDIA_BASE + extractPath(raw, "https://video.twimg.com");
   };
 
-  function loadWithFallback(el, candidates, onSuccess) {
-    if (!el || !candidates || !candidates.length) return;
-    let idx = 0;
-    let done = false;
-    const isVideo = el.tagName === "VIDEO";
-
-    function cleanup() {
-      el.removeEventListener("load", onOk);
-      el.removeEventListener("error", onFail);
-      el.removeEventListener("loadedmetadata", onOk);
-      el.removeEventListener("canplay", onOk);
-    }
-
-    function onOk() {
-      if (done) return;
-      done = true;
-      cleanup();
-      if (typeof onSuccess === "function") onSuccess(candidates[idx], idx);
-    }
-
-    function onFail() {
-      if (done) return;
-      cleanup();
-      idx++;
-      if (idx < candidates.length) {
-        tryCandidate();
+  // 单源加载：一个地址，失败即失败，不换源、不重试。
+  function loadMedia(el, src) {
+    if (!el || !src) return;
+    el.referrerPolicy = "no-referrer";
+    if (el.tagName === "VIDEO") {
+      const wasPlaying = !el.paused;
+      if (el.src !== src) {
+        el.src = src;
+        try { el.load(); } catch (e) {}
       }
-    }
-
-    function tryCandidate() {
-      if (idx >= candidates.length) return;
-      done = false;
-      const src = candidates[idx];
-
-      if (isVideo) {
-        const wasPlaying = !el.paused;
-        el.referrerPolicy = "no-referrer";
-        el.addEventListener("loadedmetadata", onOk, { once: true });
-        el.addEventListener("canplay", onOk, { once: true });
-        el.addEventListener("error", onFail, { once: true });
-        if (el.src !== src) {
-          el.src = src;
-          try { el.load(); } catch (e) {}
-        }
-        if (el.readyState >= 1) {
-          onOk();
-        } else if (wasPlaying) {
-          const p = el.play();
-          if (p && p.catch) p.catch(() => {});
-        }
-      } else {
-        el.referrerPolicy = "no-referrer";
-        el.addEventListener("load", onOk, { once: true });
-        el.addEventListener("error", onFail, { once: true });
-        if (el.src !== src) {
-          el.src = src;
-        }
-        if (el.complete) {
-          if (el.naturalWidth > 0) {
-            onOk();
-          } else {
-            onFail();
-          }
-        }
+      if (wasPlaying) {
+        const p = el.play();
+        if (p && p.catch) p.catch(() => {});
       }
+    } else if (el.src !== src) {
+      el.src = src;
     }
-
-    tryCandidate();
   }
 
   // 卡片标签**全部显示**：不截断、不折 +N。
@@ -241,7 +185,7 @@
           v.autoplay = true;
           v.preload = "metadata";
           ph.replaceWith(v);
-          loadWithFallback(v, getVideoCandidates(videoSrc));
+          loadMedia(v, getVideoURL(videoSrc));
         } else {
           const img = document.createElement("img");
           img.className = "bnr";
@@ -250,7 +194,7 @@
           img.referrerPolicy = "no-referrer";
           img.alt = "";
           ph.replaceWith(img);
-          loadWithFallback(img, getImageCandidates(thumbURL(rawB)));
+          loadMedia(img, getImageURL(thumbURL(rawB)));
         }
       }
     }
@@ -262,7 +206,7 @@
         img.alt = "";
         img.referrerPolicy = "no-referrer";
         av.insertAdjacentElement("afterbegin", img);
-        loadWithFallback(img, getImageCandidates(rawA));
+        loadMedia(img, getImageURL(rawA));
       }
     }
     const nick = el.querySelector(".nk");

@@ -14,16 +14,12 @@
   var aTagsData = document.getElementById('g-atags-data');
   try { if (aTagsData) aTags = JSON.parse(aTagsData.textContent) || {}; } catch (e) {}
 
-  var IMAGE_BASES = [
-    'https://twimg.l.moonchan.xyz:8443',
-    'https://pbs.moonchan.xyz',
-    'https://video-cf.twimg.com'
-  ];
-  var VIDEO_BASES = [
-    'https://twimg.l.moonchan.xyz:8443',
-    'https://pbs.moonchan.xyz',
-    'https://video-cf.twimg.com'
-  ];
+  /* 媒体唯一入口 = 后端 SSR 注入的 data-base（`GALLERY_MEDIA_BASE`，默认
+     twimg.l.moonchan.xyz:8443，本地 ECH 反代，图片/头像/封面/视频同一基址）。
+     真源在服务端，前端不再重复字面量。用户明确取消所有 fallback：
+     这里不再有候选域名列表，也没有多源轮询换源。 */
+  var MEDIA_BASE = (grid.getAttribute('data-base') || '').replace(/\/+$/, '') ||
+    'https://twimg.l.moonchan.xyz:8443';
 
   function extractPath(raw, defaultBase) {
     if (!raw) return '';
@@ -35,86 +31,35 @@
     }
   }
 
-  function getImageCandidates(raw) {
-    if (!raw) return [];
-    var path = extractPath(raw, 'https://pbs.twimg.com');
-    return IMAGE_BASES.map(function (b) { return b + path; });
+  // 图片（含头像/封面）：去掉原始 pbs.twimg.com 主机，挂到唯一入口上。
+  // 对已经是 MEDIA_BASE 的入参幂等（取 path 后再拼，不会叠加域名）。
+  function getImageURL(raw) {
+    if (!raw) return '';
+    return MEDIA_BASE + extractPath(raw, 'https://pbs.twimg.com');
   }
 
-  function getVideoCandidates(raw) {
-    if (!raw) return [];
-    var path = extractPath(raw, 'https://video.twimg.com');
-    return VIDEO_BASES.map(function (b) { return b + path; });
+  function getVideoURL(raw) {
+    if (!raw) return '';
+    return MEDIA_BASE + extractPath(raw, 'https://video.twimg.com');
   }
 
-  function loadWithFallback(el, candidates, onSuccess) {
-    if (!el || !candidates || !candidates.length) return;
-    var idx = 0;
-    var done = false;
-    var isVideo = (el.tagName === 'VIDEO');
-
-    function cleanup() {
-      el.removeEventListener('load', onOk);
-      el.removeEventListener('error', onFail);
-      el.removeEventListener('loadedmetadata', onOk);
-      el.removeEventListener('canplay', onOk);
-    }
-
-    function onOk() {
-      if (done) return;
-      done = true;
-      cleanup();
-      if (typeof onSuccess === 'function') onSuccess(candidates[idx], idx);
-    }
-
-    function onFail() {
-      if (done) return;
-      cleanup();
-      idx++;
-      if (idx < candidates.length) {
-        tryCandidate();
+  // 单源加载：一个地址，失败即失败，不换源、不重试。
+  function loadMedia(el, src) {
+    if (!el || !src) return;
+    el.referrerPolicy = 'no-referrer';
+    if (el.tagName === 'VIDEO') {
+      var wasPlaying = !el.paused;
+      if (el.src !== src) {
+        el.src = src;
+        try { el.load(); } catch (e) {}
       }
-    }
-
-    function tryCandidate() {
-      if (idx >= candidates.length) return;
-      done = false;
-      var src = candidates[idx];
-
-      if (isVideo) {
-        var wasPlaying = !el.paused;
-        el.referrerPolicy = 'no-referrer';
-        el.addEventListener('loadedmetadata', onOk, { once: true });
-        el.addEventListener('canplay', onOk, { once: true });
-        el.addEventListener('error', onFail, { once: true });
-        if (el.src !== src) {
-          el.src = src;
-          try { el.load(); } catch (e) {}
-        }
-        if (el.readyState >= 1) {
-          onOk();
-        } else if (wasPlaying) {
-          var p = el.play();
-          if (p && p.catch) p.catch(function () {});
-        }
-      } else {
-        el.referrerPolicy = 'no-referrer';
-        el.addEventListener('load', onOk, { once: true });
-        el.addEventListener('error', onFail, { once: true });
-        if (el.src !== src) {
-          el.src = src;
-        }
-        if (el.complete) {
-          if (el.naturalWidth > 0) {
-            onOk();
-          } else {
-            onFail();
-          }
-        }
+      if (wasPlaying) {
+        var p = el.play();
+        if (p && p.catch) p.catch(function () {});
       }
+    } else if (el.src !== src) {
+      el.src = src;
     }
-
-    tryCandidate();
   }
 
   var slug = grid.getAttribute('data-slug') || '';
@@ -198,7 +143,7 @@
           n.style.aspectRatio = n.videoWidth + ' / ' + n.videoHeight;
         }
       });
-      loadWithFallback(n, getVideoCandidates(m.url));
+      loadMedia(n, getVideoURL(m.url));
     } else {
       n = document.createElement('img');
       n.loading = 'lazy';
@@ -213,7 +158,7 @@
         }
       });
       var raw = isThumb ? thumbURL(m.url) : m.url;
-      loadWithFallback(n, getImageCandidates(raw));
+      loadMedia(n, getImageURL(raw));
     }
     return n;
   }
@@ -975,6 +920,6 @@
   var uavImg = document.querySelector('.uav img');
   if (uavImg && uavImg.getAttribute('src')) {
     uavImg.referrerPolicy = 'no-referrer';
-    loadWithFallback(uavImg, getImageCandidates(uavImg.getAttribute('src')));
+    loadMedia(uavImg, getImageURL(uavImg.getAttribute('src')));
   }
 })();

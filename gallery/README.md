@@ -61,8 +61,8 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 |---|---|---|
 | `GALLERY_ADDR` | `:8090` | 监听地址 |
 | `GALLERY_JSON_DIR` | `./` | json.gz 目录 |
-| `GALLERY_MEDIA_BASE` | `https://twimg.l.moonchan.xyz:8443` | 图片（含头像/封面/媒体）初始基址；前端按 `twimg.l.moonchan.xyz:8443` → `pbs.moonchan.xyz` → `video-cf.twimg.com`（无referer） 顺序 fallback |
-| `GALLERY_VIDEO_BASE` | `https://twimg.l.moonchan.xyz:8443` | 视频初始基址；前端按 `twimg.l.moonchan.xyz:8443` → `pbs.moonchan.xyz`（视频 302 正常重定向） → `video-cf.twimg.com`（无referer） 顺序 fallback |
+| `GALLERY_MEDIA_BASE` | `https://twimg.l.moonchan.xyz:8443` | **媒体唯一入口**（图片含头像/封面）。已取消所有 fallback：前端不再有候选域名列表，也没有多源轮询/超时降级，失败即失败不换源 |
+| `GALLERY_VIDEO_BASE` | `https://twimg.l.moonchan.xyz:8443` | **视频唯一入口**，与图片同一基址。同样无 fallback；历史上曾单独用 `video.twimg.com` / `pbs.moonchan.xyz`，现已统一 |
 | `GALLERY_LEGACY_BASE` | `https://x.4545810.xyz` | 旧版站点基址；账号页「切换到旧版」跳 `{base}/{user}`，置空隐藏入口 |
 | `GALLERY_PAGE_SIZE` | `12` | 每页媒体数 |
 | `GALLERY_REACTIONS_FILE` | `./reactions.json` | 赞踩计数文件 |

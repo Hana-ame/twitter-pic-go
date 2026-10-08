@@ -15,11 +15,14 @@
   try { if (aTagsData) aTags = JSON.parse(aTagsData.textContent) || {}; } catch (e) {}
 
   /* 媒体唯一入口 = 后端 SSR 注入的 data-base（`GALLERY_MEDIA_BASE`，默认
-     twimg.l.moonchan.xyz:8443，本地 ECH 反代，图片/头像/封面/视频同一基址）。
-     真源在服务端，前端不再重复字面量。用户明确取消所有 fallback：
-     这里不再有候选域名列表，也没有多源轮询换源。 */
+     pbs.moonchan.xyz，公网 Cloudflare，与 twitter-pic-react 的 FIXED_IMAGE_PROXY 对齐；
+     图片/头像/封面/视频同一基址）。真源在服务端，前端不再重复字面量。
+     用户明确取消所有 fallback：这里不再有候选域名列表，也没有多源轮询换源。
+     注意 twimg.l.moonchan.xyz:8443 是**本机 ECH 反代**（*.l.moonchan.xyz 解析 127.0.0.1），
+     公网访客无本机 ech-proxy 时全部图损，故不再作为默认源。
+     下面的字面量只是 data-base 缺失时的兜底，正常路径由服务端注入。 */
   var MEDIA_BASE = (grid.getAttribute('data-base') || '').replace(/\/+$/, '') ||
-    'https://twimg.l.moonchan.xyz:8443';
+    'https://pbs.moonchan.xyz';
 
   function extractPath(raw, defaultBase) {
     if (!raw) return '';

@@ -835,13 +835,23 @@ func mediaURL(base, raw string) string {
 	return out
 }
 
-// defaultMediaBase 媒体唯一入口：twimg.l.moonchan.xyz:8443（本地 ECH 反代）。
-// 图片（含头像/封面）与视频全部走这一个基址；前端不再有候选域名列表，
-// 也没有「多源轮询 / 超时降级」——失败就是失败，不换源。
-const defaultMediaBase = "https://twimg.l.moonchan.xyz:8443"
+// defaultMediaBase 媒体唯一入口：pbs.moonchan.xyz（公网 Cloudflare，与 twitter-pic-react
+// 的 FIXED_IMAGE_PROXY 对齐）。
+// 之前用的 twimg.l.moonchan.xyz:8443 是**本机 ECH 反代**（*.l.moonchan.xyz 解析到
+// 127.0.0.1），依赖本机 ech-proxy；公网访客没有 ech-proxy 时图片/视频全部图损。
+//
+// URL 形态不变：mediaURL / overrideVideoURL 都是「取原 URL 的 path+query 挂到 base 上」，
+// 即 https://pbs.twimg.com/media/X.jpg?name=small -> https://pbs.moonchan.xyz/media/X.jpg?name=small
+// —— 与 react 端 pbs.moonchan.xyz 的同一条路径映射一致，只换 host、去掉 :8443 端口，
+// 路径前缀**不加** /twimg（gallery 的 base+path 拼法本来就没有这层前缀）。
+//
+// 图片与视频共用此基址，保持单源：不加候选域名列表，也不做多源轮询 / 超时降级。
+const defaultMediaBase = "https://pbs.moonchan.xyz"
 
 // defaultVideoBase 视频唯一入口：与图片同一个基址。
-// 历史上视频曾单独用 video.twimg.com / pbs.moonchan.xyz，现已统一到 defaultMediaBase。
+// pbs.moonchan.xyz 的 /amplify_video/... 会 302 跳到 twimg.moonchan.xyz（公网 CF）再回 200，
+// 实测可用；需要在本机走 ECH 反代时用 GALLERY_VIDEO_BASE 单独覆盖（图片不受影响）。
+// 历史上视频曾单独用 video.twimg.com / pbs.moonchan.xyz，现统一到 defaultMediaBase。
 const defaultVideoBase = defaultMediaBase
 
 func overrideVideoURL(videoBase, raw string) string {

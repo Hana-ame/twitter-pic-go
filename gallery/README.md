@@ -61,8 +61,8 @@ twitter-pic-go 内的 SSR 图库包（`package gallery`），由 `server/main.go
 |---|---|---|
 | `GALLERY_ADDR` | `:8090` | 监听地址 |
 | `GALLERY_JSON_DIR` | `./` | json.gz 目录 |
-| `GALLERY_MEDIA_BASE` | `https://twimg.l.moonchan.xyz:8443` | **媒体唯一入口**（图片含头像/封面）。已取消所有 fallback：前端不再有候选域名列表，也没有多源轮询/超时降级，失败即失败不换源 |
-| `GALLERY_VIDEO_BASE` | `https://twimg.l.moonchan.xyz:8443` | **视频唯一入口**，与图片同一基址。同样无 fallback；历史上曾单独用 `video.twimg.com` / `pbs.moonchan.xyz`，现已统一 |
+| `GALLERY_MEDIA_BASE` | `https://pbs.moonchan.xyz` | **媒体唯一入口**（图片含头像/封面），与 twitter-pic-react 的 `FIXED_IMAGE_PROXY` 对齐。已取消所有 fallback：前端不再有候选域名列表，也没有多源轮询/超时降级，失败即失败不换源。URL 形态是 `{base} + 原 path`，即 `pbs.twimg.com/media/X.jpg` → `pbs.moonchan.xyz/media/X.jpg`，**不加** `/twimg` 前缀。⚠️ 历史上曾用 `twimg.l.moonchan.xyz:8443`（本机 ECH 反代，`*.l.moonchan.xyz` 解析 127.0.0.1），公网访客无本机 ech-proxy 时全部图损，已弃用 |
+| `GALLERY_VIDEO_BASE` | `https://pbs.moonchan.xyz` | **视频唯一入口**，默认与图片同一基址。`/amplify_video/...` 会 302 跳到 `twimg.moonchan.xyz`（公网 CF）再回 200，已实测可用。同样无 fallback；本机想走 ECH 反代时可用本项单独覆盖（不影响图片）。历史上曾单独用 `video.twimg.com` / `pbs.moonchan.xyz`，现已统一 |
 | `GALLERY_LEGACY_BASE` | `https://x.4545810.xyz` | 旧版站点基址；账号页「切换到旧版」跳 `{base}/{user}`，置空隐藏入口 |
 | `GALLERY_PAGE_SIZE` | `12` | 每页媒体数 |
 | `GALLERY_REACTIONS_FILE` | `./reactions.json` | 赞踩计数文件 |

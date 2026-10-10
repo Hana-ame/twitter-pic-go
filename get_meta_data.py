@@ -70,7 +70,14 @@ def get_media_data_by_username(username: str):
 
     extractor = twitter.TwitterMediaExtractor(match)
 
-    config_dict = {"cookies": {"auth_token": auth_token()}}
+    # previews：video_info 媒体附带 poster 图（pbs.twimg.com），拿来做视频封面。
+    # cards：外链卡片的缩略图（summary / summary_large_image / unified_card）。
+    # 两者默认都是 False，不开就完全没有 cover 数据。
+    config_dict = {
+        "cookies": {"auth_token": auth_token()},
+        "previews": True,
+        "cards": True,
+    }
 
     extractor.config = lambda key, default=None: config_dict.get(key, default)
 
@@ -115,6 +122,8 @@ def get_media_data_by_username(username: str):
         #             pass
 
         new_timeline_entries = []
+        # tweet_id -> 视频 poster URL（previews=True 时 gallery_dl 给出的 type=preview 图）
+        poster_by_tweet = {}
 
         # items_to_fetch = batch_size if batch_size > 0 else float("inf")
         items_to_fetch = float("inf")
@@ -142,6 +151,9 @@ def get_media_data_by_username(username: str):
                             "followers_count": user.get("followers_count", 0),
                             "friends_count": user.get("friends_count", 0),
                             "profile_image": user.get("profile_image", ""),
+                            # gallery_dl 在 _transform_user 里取 legacy.profile_banner_url；
+                            # 旧版 API 用户没有这个字段（空串），新版 core.avatar 用户才有。
+                            "profile_banner": user.get("profile_banner", ""),
                             "statuses_count": user.get("statuses_count", 0),
                         }
 
@@ -150,19 +162,36 @@ def get_media_data_by_username(username: str):
                         if isinstance(tweet_date, datetime):
                             tweet_date = tweet_date.strftime("%Y-%m-%d %H:%M:%S")
 
-                        timeline_entry = {
+                        # gallery_dl 各来源的 type：
+                        #   图片/视频/GIF  -> "photo" / "video" / "animated_gif"
+                        #   视频 poster    -> "preview"（previews=True 才有）
+                        #   卡片缩略图     -> 无 type 键（_extract_card 只给 url）
+                        #   长文媒体       -> "article:cover" / "article:image" / "article:video"
+                        ttype = tweet_data.get("type") or "card"
+                        tid = tweet_data.get("tweet_id", 0)
+
+                        if ttype == "preview":
+                            # 视频海报不当独立媒体条目，只记为同一推文视频的封面；
+                            # 否则它会混进「图片」列表里当成一张照片。
+                            poster_by_tweet.setdefault(tid, media_url)
+                            continue
+
+                        new_timeline_entries.append({
                             "url": media_url,
                             "date": tweet_date,
-                            "tweet_id": tweet_data.get("tweet_id", 0),
-                        }
-
-                        if "type" in tweet_data:
-                            timeline_entry["type"] = tweet_data["type"]
-
-                        new_timeline_entries.append(timeline_entry)
+                            "tweet_id": tid,
+                            "type": ttype,
+                        })
                         structured_output["total_urls"] += 1
         except StopIteration:
             pass
+
+        # 第二遍：把视频 poster 挂回同一推文的第一条视频/GIF 条目（作 cover）。
+        for entry in new_timeline_entries:
+            if entry["type"] in ("video", "animated_gif"):
+                poster = poster_by_tweet.get(entry["tweet_id"])
+                if poster:
+                    entry["cover"] = poster
 
         structured_output["timeline"].extend(new_timeline_entries)
 

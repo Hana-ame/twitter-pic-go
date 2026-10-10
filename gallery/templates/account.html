@@ -5,6 +5,7 @@
 {{template "header" .}}
 <main>
   {{with .Account}}
+  {{with .Banner}}<div class="ubanner"><img referrerpolicy="no-referrer" src="{{.}}" alt=""></div>{{end}}
   <div class="uhead">
     {{with .Avatar}}<div class="uav"><img referrerpolicy="no-referrer" src="{{.}}" alt=""></div>{{else}}<div class="uav">@</div>{{end}}
     <div class="umeta">
@@ -31,7 +32,7 @@
     {{range .Media}}
       <div class="card{{if .IsVideo}} has-video{{end}}">
         {{if .IsVideo}}
-          <video preload="metadata" src="{{.URL}}"></video>
+          <video preload="metadata" src="{{.URL}}"{{if .Cover}} poster="{{.Cover}}"{{end}}></video>
         {{else}}
           <img loading="lazy" referrerpolicy="no-referrer" src="{{.URL}}" alt="">
         {{end}}

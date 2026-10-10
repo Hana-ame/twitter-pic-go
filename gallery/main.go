@@ -62,9 +62,10 @@ func mustReadStatic(name string) string {
 // ---- 数据模型 ----
 
 type accountInfo struct {
-	Name         string `json:"name"`
-	Nick         string `json:"nick"`
-	ProfileImage string `json:"profile_image"`
+	Name          string `json:"name"`
+	Nick          string `json:"nick"`
+	ProfileImage  string `json:"profile_image"`
+	ProfileBanner string `json:"profile_banner"`
 }
 
 type timelineEntry struct {
@@ -72,6 +73,7 @@ type timelineEntry struct {
 	Date    string `json:"date"`
 	TweetID int64  `json:"tweet_id"`
 	Type    string `json:"type"`
+	Cover   string `json:"cover"`
 }
 
 type document struct {
@@ -85,6 +87,7 @@ type mediaItem struct {
 	URL     string
 	IsVideo bool
 	TweetID int64
+	Cover   string
 }
 
 type accountPage struct {
@@ -92,6 +95,7 @@ type accountPage struct {
 	Name      string
 	Nick      string
 	Avatar    string
+	Banner    string
 	Media     []mediaItem
 	Total     int
 	Filter    string
@@ -518,6 +522,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		Name:      firstNonEmpty(strings.TrimSpace(doc.AccountInfo.Name), slug),
 		Nick:      strings.TrimSpace(doc.AccountInfo.Nick),
 		Avatar:    mediaURL(cfg.mediaBase, doc.AccountInfo.ProfileImage),
+		Banner:    mediaURL(cfg.mediaBase, strings.TrimSpace(doc.AccountInfo.ProfileBanner)),
 		Media:     list[start:end],
 		Total:     len(list),
 		Filter:    filter,
@@ -663,6 +668,8 @@ func buildAll(doc document, mediaBase, videoBase string) []mediaItem {
 			URL:     u,
 			IsVideo: isVideo,
 			TweetID: te.TweetID,
+			// 封面是图片，一律走图片基址（视频封面上偶尔也会是 abs.twimg.com，mediaURL 会原样返回）。
+			Cover: mediaURL(mediaBase, strings.TrimSpace(te.Cover)),
 		})
 	}
 	return out

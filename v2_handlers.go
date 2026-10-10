@@ -27,6 +27,7 @@ import (
 type parsedUserDoc struct {
 	nick       string
 	avatar     string
+	banner     string // 资料背景图，可能为空（老账号 / 旧版 API）
 	totalUrls  int
 	photoCount int
 	videoCount int
@@ -76,15 +77,17 @@ func loadUserDoc(username string) *parsedUserDoc {
 
 	var raw struct {
 		AccountInfo struct {
-			Name         string `json:"name"`
-			Nick         string `json:"nick"`
-			ProfileImage string `json:"profile_image"`
+			Name          string `json:"name"`
+			Nick          string `json:"nick"`
+			ProfileImage  string `json:"profile_image"`
+			ProfileBanner string `json:"profile_banner"`
 		} `json:"account_info"`
 		Timeline []struct {
 			URL     string `json:"url"`
 			Date    string `json:"date"`
 			TweetID int64  `json:"tweet_id"`
 			Type    string `json:"type"`
+			Cover   string `json:"cover"`
 		} `json:"timeline"`
 	}
 
@@ -99,6 +102,7 @@ func loadUserDoc(username string) *parsedUserDoc {
 		nick = strings.TrimSpace(raw.AccountInfo.Name)
 	}
 	avatar := strings.TrimSpace(raw.AccountInfo.ProfileImage)
+	banner := strings.TrimSpace(raw.AccountInfo.ProfileBanner)
 
 	items := make([]V2MediaItem, len(raw.Timeline))
 	photoCnt := 0
@@ -115,12 +119,14 @@ func loadUserDoc(username string) *parsedUserDoc {
 			URL:     t.URL,
 			Type:    t.Type,
 			Date:    t.Date,
+			Cover:   strings.TrimSpace(t.Cover),
 		}
 	}
 
 	doc := &parsedUserDoc{
 		nick:       nick,
 		avatar:     avatar,
+		banner:     banner,
 		totalUrls:  len(items),
 		photoCount: photoCnt,
 		videoCount: videoCnt,
@@ -148,12 +154,12 @@ func saveDocCache(username string, doc *parsedUserDoc) {
 	docCache[username] = doc
 }
 
-func getUserMeta(username string) (nick, avatar string, totalUrls int) {
+func getUserMeta(username string) (nick, avatar, banner string, totalUrls int) {
 	doc := loadUserDoc(username)
 	if doc == nil {
-		return "", "", 0
+		return "", "", "", 0
 	}
-	return doc.nick, doc.avatar, doc.totalUrls
+	return doc.nick, doc.avatar, doc.banner, doc.totalUrls
 }
 
 func resolveUserJsonGz(username string) string {
@@ -216,11 +222,12 @@ func enrichUserMeta(u *FlutterUser) {
 	if u.Tags == nil {
 		u.Tags = make(map[string]int)
 	}
-	fileNick, avatar, totalUrls := getUserMeta(u.Username)
+	fileNick, avatar, banner, totalUrls := getUserMeta(u.Username)
 	if u.Nick == "" {
 		u.Nick = fileNick
 	}
 	u.Avatar = avatar
+	u.Banner = banner
 	u.TotalUrls = totalUrls
 	u.JsonGzURL = formatJsonGzURL(u.Username, u.LastModify)
 }
@@ -260,10 +267,10 @@ func scanFlutterUser(rows *sql.Rows) (FlutterUser, error) {
 // HandleGetTagUsersV2 GET /v2/tags/:tag/users 或 /v2/tag/:tag/users
 //
 // 针对 Flutter 痛点的专项设计：
-// 1. 严格过滤幽灵账号：JOIN users 表且强制要求 u.status = 'SUCCESS'，彻底消灭 404 死链账号。
-// 2. 严格过滤负权账号：只返回当前标签投票 > 0 的有效支持账号。
-// 3. 单次返回完整元数据（username, nick, avatar, total_urls, tags）：
-//    Flutter 无需再发起 N+1 次并发请求到 /<user>.json.gz，彻底避免阻塞与 25rps 撞墙。
+//  1. 严格过滤幽灵账号：JOIN users 表且强制要求 u.status = 'SUCCESS'，彻底消灭 404 死链账号。
+//  2. 严格过滤负权账号：只返回当前标签投票 > 0 的有效支持账号。
+//  3. 单次返回完整元数据（username, nick, avatar, total_urls, tags）：
+//     Flutter 无需再发起 N+1 次并发请求到 /<user>.json.gz，彻底避免阻塞与 25rps 撞墙。
 func HandleGetTagUsersV2(c *gin.Context) {
 	tag := strings.TrimSpace(c.Param("tag"))
 	if tag == "" || len(tag) > 64 {
@@ -844,11 +851,13 @@ func HandleGetUserProfileV2(c *gin.Context) {
 		nick = doc.nick
 	}
 	avatar := ""
+	banner := ""
 	totalUrls := 0
 	photoCnt := 0
 	videoCnt := 0
 	if doc != nil {
 		avatar = doc.avatar
+		banner = doc.banner
 		totalUrls = doc.totalUrls
 		photoCnt = doc.photoCount
 		videoCnt = doc.videoCount
@@ -856,16 +865,17 @@ func HandleGetUserProfileV2(c *gin.Context) {
 
 	c.Header("Cache-Control", "public, max-age=120, s-maxage=300")
 	c.JSON(http.StatusOK, UserProfileResponse{
-		Username:   u.Username,
-		Nick:       nick,
-		Avatar:     avatar,
-		TotalUrls:  totalUrls,
-		PhotoCount: photoCnt,
-		VideoCount: videoCnt,
-		Tags:       u.Tags,
-		LastModify: u.LastModify,
-		Status:     u.Status,
-		JsonGzURL:  formatJsonGzURL(u.Username, u.LastModify),
+		Username:      u.Username,
+		Nick:          nick,
+		Avatar:        avatar,
+		ProfileBanner: banner,
+		TotalUrls:     totalUrls,
+		PhotoCount:    photoCnt,
+		VideoCount:    videoCnt,
+		Tags:          u.Tags,
+		LastModify:    u.LastModify,
+		Status:        u.Status,
+		JsonGzURL:     formatJsonGzURL(u.Username, u.LastModify),
 	})
 }
 

@@ -9,9 +9,11 @@ import (
 // 客户端只需单次请求即可获取全部渲染所需信息（用户名、昵称、头像、媒体总数、标签权重字典、更新时间），
 // 彻底解决旧接口只有裸用户名导致的 N+1 次并发请求、卡死以及幽灵 404 账号问题。
 type FlutterUser struct {
-	Username   string         `json:"username"`
-	Nick       string         `json:"nick"`
-	Avatar     string         `json:"avatar"`
+	Username string `json:"username"`
+	Nick     string `json:"nick"`
+	Avatar   string `json:"avatar"`
+	// Banner 是资料背景图（pbs.twimg.com/profile_banners/…）；没有时为空。
+	Banner     string         `json:"banner,omitempty"`
 	TotalUrls  int            `json:"total_urls"`
 	Tags       map[string]int `json:"tags"`
 	LastModify time.Time      `json:"last_modify"`
@@ -79,8 +81,11 @@ type TagCloudResponse struct {
 type V2MediaItem struct {
 	TweetID int64  `json:"tweet_id"`
 	URL     string `json:"url"`
-	Type    string `json:"type"` // "photo", "video", "animated_gif"
+	Type    string `json:"type"` // "photo", "video", "animated_gif", "card", "article:cover"
 	Date    string `json:"date"`
+	// Cover 是这条媒体的封面/缩略图：视频与 GIF 取 gallery_dl 给出的 poster 图
+	// （pbs.twimg.com）。客户端可拿它做列表占位，不必为每张卡片都拉 mp4。
+	Cover string `json:"cover,omitempty"`
 }
 
 // UserMediaResponse 是用户媒体分页查询响应。
@@ -95,7 +100,7 @@ type UserMediaResponse struct {
 	Offset     int           `json:"offset"`
 	NextCursor int           `json:"next_cursor,omitempty"`
 	HasMore    bool          `json:"has_more"`
-	Filter     string        `json:"filter"` // "all", "photo", "video"
+	Filter     string        `json:"filter"`                // "all", "photo", "video"
 	JsonGzURL  string        `json:"json_gz_url,omitempty"` // 该用户全量静态缓存文件 URL
 	Media      []V2MediaItem `json:"media"`
 }
@@ -112,16 +117,18 @@ type FeedResponse struct {
 // UserProfileResponse 是单用户轻量概况统计信息。
 // 避免为了展示资料卡头图与媒体计数而传输全部媒体列表。
 type UserProfileResponse struct {
-	Username   string         `json:"username"`
-	Nick       string         `json:"nick"`
-	Avatar     string         `json:"avatar"`
-	TotalUrls  int            `json:"total_urls"`
-	PhotoCount int            `json:"photo_count"`
-	VideoCount int            `json:"video_count"`
-	Tags       map[string]int `json:"tags"`
-	LastModify time.Time      `json:"last_modify"`
-	Status     string         `json:"status"`
-	JsonGzURL  string         `json:"json_gz_url,omitempty"` // 该用户全量静态缓存文件 URL
+	Username string `json:"username"`
+	Nick     string `json:"nick"`
+	Avatar   string `json:"avatar"`
+	// ProfileBanner 是资料背景图；json.gz 里没抓到时为空。
+	ProfileBanner string         `json:"profile_banner,omitempty"`
+	TotalUrls     int            `json:"total_urls"`
+	PhotoCount    int            `json:"photo_count"`
+	VideoCount    int            `json:"video_count"`
+	Tags          map[string]int `json:"tags"`
+	LastModify    time.Time      `json:"last_modify"`
+	Status        string         `json:"status"`
+	JsonGzURL     string         `json:"json_gz_url,omitempty"` // 该用户全量静态缓存文件 URL
 }
 
 // VoteTagRequest 是标签投票入参。
@@ -139,4 +146,3 @@ type VoteTagResponse struct {
 	Tags     map[string]int `json:"tags"`
 	Message  string         `json:"message"`
 }
-

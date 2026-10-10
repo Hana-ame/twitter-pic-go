@@ -72,7 +72,8 @@
     return {
       url: m.url,
       id: (m.tweet_id || 0),
-      video: isVid
+      video: isVid,
+      cover: m.cover || ''
     };
   });
 
@@ -139,6 +140,7 @@
       n.controls = !!controls;
       n.playsInline = true;
       n.preload = controls ? 'none' : 'metadata';
+      if (m.cover) n.poster = getImageURL(m.cover);
       if (cachedRatio) n.style.aspectRatio = cachedRatio;
       n.addEventListener('loadedmetadata', function () {
         if (n.videoWidth && n.videoHeight) {

@@ -262,6 +262,58 @@
 
 ---
 
+### 2.10 短链生成（上游 ouo.io）
+
+同一个 path 两种方法：GET 给页面，POST 给机器。上游收益归属本服务的 `OUO_API_KEY`。
+
+```
+GET  /api/v2/shorten          → 200 text/html（自包含前端页面）
+POST /api/v2/shorten          → JSON
+```
+
+根路径别名 `GET /shorten` 也返回同一页面（`server/main.go` 显式注册，否则会被 gallery 的 `NoRoute` 吃掉）。
+
+**请求**
+
+```bash
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/very/long/path?x=1&y=2"}' \
+  http://your.host/api/v2/shorten
+```
+
+**成功响应** `200`
+
+```json
+{"url":"https://example.com/very/long/path?x=1&y=2",
+ "short_url":"https://ouo.io/WgS2jts","provider":"ouo.io"}
+```
+
+**错误码**
+
+| 状态 | `error` | 触发条件 |
+|---|---|---|
+| 400 | `invalid url` | 非 http/https、无 host、超过 2048 字符 |
+| 400 | `invalid json body` / `empty body` | 请求体不是 JSON 或为空 |
+| 413 | `request body too large` | 请求体超过 32KB |
+| 429 | — | 超过 120 次/小时/IP |
+| 502 | `upstream rejected` | 上游 3xx（无效 key） |
+| 502 | `upstream blocked by waf` | 上游 403（Cloudflare WAF 拦 `javascript:` 等） |
+| 502 | `upstream returned unexpected body` | 上游 200 但 body 不是短链 |
+| 502 | `upstream status <n>` | 上游其它 4xx/5xx，状态码原样透传 |
+| 503 | `shorten not configured: OUO_API_KEY is empty` | 服务端未配置 key |
+| 504 | `upstream timeout` | 上游超时或网络不可达（默认 15s） |
+
+**注意**
+
+- **必须校验响应 body，不能只看状态码**。上游在 `?s=` 为空时返回 `200` + 约 13.5KB
+  首页 HTML（假成功），无效 key 则返回 `302`。实现里用
+  `CheckRedirect: http.ErrUseLastResponse` + 短链正则双重防线。
+- 同一 (key, 规范化 URL) 去重返回同一条码，重复调用不会新建。
+- 上游 API **只能生成**：无目标查询、无点击统计、无删除。
+- GET 页面不受限速；POST 受限速与 IP 封禁中间件保护。
+
+---
+
 ## 3. 缓存设计与负载分工（Cloudflare 边缘加速）
 
 通过 Cloudflare 边缘 CDN 接管缓存，移动端与源站实现了双向极端减负：

@@ -30,6 +30,51 @@ Twitter 媒体抓取与图库浏览。
   - **HTTP 304 条件协商**：未发生更新时直接返回 `304 Not Modified`（0 字节负载）。
   - **小内存机器保护**：服务端内部仅保留 $\le 30$ 个用户的极小有界淘汰缓存（<2MB），杜绝内存膨胀。
 
+## 短链生成（上游 ouo.io）
+
+同一个 path 两种方法：**GET 返回前端页面，POST 返回 JSON**。
+
+```
+GET  /shorten                自包含 HTML 页面（渐变卡片 + 输入框 + 生成按钮）
+POST /api/v2/shorten         {"url":"..."} → {"url":...,"short_url":"...","provider":"ouo.io"}
+```
+
+`/api/v2`、`/api/flutter`、`/api/twitter/v2` 三处别名同样可用；页面固定挂在
+`GET /shorten`（`server/main.go` 里显式注册，否则会被 gallery 的 `NoRoute` 吃掉）。
+
+### 配置
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `OUO_API_KEY` | — | ouo.io 的 API key。**空则 POST 返回 503**，绝不回落到任何内置 key |
+| `OUO_BASE_URL` | `https://ouo.io` | 本地打 mock 用 |
+| `OUO_TIMEOUT_MS` | `15000` | 范围 100–60000，越界忽略用默认 |
+
+### 上游协议与两个必须处理的坑
+
+上游是 `GET https://ouo.io/api/{key}?s={url}`，**key 在路径段，`s` 是 query**；
+只支持 GET（POST 一律 302），单请求实测 1.7–4.2s，所以默认超时给 15s。
+
+1. **假成功**：`?s=` 缺失或为空时上游返回 **200 + 约 13.5KB 首页 HTML**，不是 4xx。
+   只看状态码的客户端会把首页当短链返回。实现里必须再校验 body 匹配
+   `^https?://[a-z0-9.-]*ouo\.io/[A-Za-z0-9]+$`。
+2. **错误用 302 表达**：无效 key 返回 `302 Location: https://ouo.io/`。
+   `http.Client` 默认跟随重定向，跟完就变成 200 + 首页 HTML，错误彻底消失。
+   实现里必须 `CheckRedirect: http.ErrUseLastResponse`。
+
+其余实测行为（`/mnt/e/knowledge-base` 里有完整取证）：`ftp://` 放行但
+`javascript:` 被 Cloudflare WAF 403 拦；无 scheme 按 http 处理；同一 (key, 规范化 URL)
+去重返回同一条码；响应带 `cache-control: private, must-revalidate` 与 Laravel 加密
+session cookie，不要缓存也不要持久化 cookie。上游 API **只能生成**——无查询、无统计、
+无删除，页面上不要承诺这些能力。
+
+### 安全
+
+- POST 挂 `RateLimitMiddleware`（120/hour/IP），挂在 `RegisterV2Routes` 的
+  `g.Use(StrictIPBanMiddleware)` 之下；GET 页面**不限速**（页面本身不花钱）
+- 每次生成都真实调用上游，key 永不进日志、不进响应、不下发到页面
+  （`TestHandleShortenFormGET` 有专门的泄漏断言）
+
 ## 标签（账号级）的存储
 
 **只有一个库、只有一张表**：`twitter.db` 的 `account_tags(username, tag, weight)`。

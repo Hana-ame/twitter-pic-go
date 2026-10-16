@@ -89,6 +89,12 @@ func setupRouter(db *sql.DB) *gin.Engine {
 	// 初始化 gallery SSR 处理引擎，与 API 共享同一 DB 连接池
 	galleryHandler := gallery.NewHandler(db)
 
+	// /shorten 短链页的友好别名：直接打开就能看到页面，不必走 /api/v2/shorten。
+	// 必须显式注册——NoRoute 会把所有未匹配的 path 交给 gallery SSR，
+	// 不注册这个 GET 的话 /shorten 会返回 gallery 页面。
+	// 页面里的按钮 fetch /api/v2/shorten（POST），所以这里只挂 GET。
+	r.GET("/shorten", twitter.HandleShortenFormV2)
+
 	// API 相关 path 以外的全部路由，全量交由 Gallery 的 SSR 占据
 	r.NoRoute(func(c *gin.Context) {
 		c.Status(http.StatusOK)

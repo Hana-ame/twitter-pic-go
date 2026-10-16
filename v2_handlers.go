@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Hana-ame/twitter-pic-go/ipban"
+	"github.com/Hana-ame/twitter-pic-go/limit"
 	"github.com/gin-gonic/gin"
 )
 
@@ -1231,4 +1232,19 @@ func RegisterV2Routes(g *gin.RouterGroup) {
 	// 10. 标签云
 	g.GET("/tags/cloud", HandleGetTagCloudV2)
 	g.GET("/tag-cloud", HandleGetTagCloudV2) // 别名
+
+	// 11. 短链生成（上游 ouo.io）
+	//
+	// GET 返回自包含前端页面，POST 返回 JSON。同一个 path 两种方法，
+	// 页面里的按钮直接 fetch 同一路径的 POST。
+	//
+	// 限速单独建一个 limiter，不复用 AddToGroup 里的实例：
+	// 那边是「写操作 25 次/小时」，这里 25 次/小时意味着一次生成后就要等一小时，
+	// 太苛刻；这里按 120 次/小时放宽。仍挂 RateLimitMiddleware 而不是裸跑——
+	// 每次调用都会真实花钱（上游按点击分成），不能无限打。
+	//
+	// 注意 RegisterV2Routes 被挂载到 /api/v2、/api/flutter、/api/twitter/v2 三处，
+	// 三处共享同一个 banMgr（g.Use 已加），但各自有独立的 limiter 实例。
+	g.GET("/shorten", HandleShortenFormV2)
+	g.POST("/shorten", limit.RateLimitMiddleware(limit.NewFastLimiter(120)), HandleShortenV2)
 }

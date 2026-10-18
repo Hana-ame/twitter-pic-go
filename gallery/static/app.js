@@ -1,4 +1,8 @@
-/* twitter-pic gallery 前端：网格分页 + 手机式全屏查看器（横向翻页 / 双指与双击缩放 / 下滑关闭 / chrome 自动隐藏）+ 赞/踩/喜欢 */
+/* twitter-pic gallery 前端：
+ * 1. 媒体资源与视频封面（gallery_dl cover 字段）唯一 CDN 入口为 pbs.moonchan.xyz，取消所有 fallback 与 <video> 预加载；
+ * 2. 视频卡片直接展示 cover 封面图，点开视频时统一经由 ouo.io 跳转（兼具广告展示与访问限流）；
+ * 3. 图片支持网格分页 + 手机式全屏查看器（横向翻页 / 双指与双击缩放 / 下滑关闭 / chrome 自动隐藏）+ 赞/踩/喜欢。
+ */
 (function () {
   'use strict';
 
@@ -9,20 +13,18 @@
   var data;
   try { data = JSON.parse(dataEl.textContent); } catch (e) { return; }
 
-  var aTags = {}; // 账号标签展示计数 {tag: count}（user_tags 权重 + 投票合并，服务端算好）
+  var aTags = {};
   var aTagsEl = document.getElementById('g-atags');
   var aTagsData = document.getElementById('g-atags-data');
   try { if (aTagsData) aTags = JSON.parse(aTagsData.textContent) || {}; } catch (e) {}
 
-  /* 媒体唯一入口 = 后端 SSR 注入的 data-base（`GALLERY_MEDIA_BASE`，默认
-     pbs.moonchan.xyz，公网 Cloudflare，与 twitter-pic-react 的 FIXED_IMAGE_PROXY 对齐；
-     图片/头像/封面/视频同一基址）。真源在服务端，前端不再重复字面量。
-     用户明确取消所有 fallback：这里不再有候选域名列表，也没有多源轮询换源。
-     注意 twimg.l.moonchan.xyz:8443 是**本机 ECH 反代**（*.l.moonchan.xyz 解析 127.0.0.1），
-     公网访客无本机 ech-proxy 时全部图损，故不再作为默认源。
-     下面的字面量只是 data-base 缺失时的兜底，正常路径由服务端注入。 */
+  /* 唯一图片与封面资源 CDN：pbs.moonchan.xyz（无任何 fallback 轮询） */
   var MEDIA_BASE = (grid.getAttribute('data-base') || '').replace(/\/+$/, '') ||
     'https://pbs.moonchan.xyz';
+
+  /* 视频点击后指向的 Go 后端专属视频处理端点（默认 /api/twitter/v2/video） */
+  var VIDEO_ENDPOINT = (grid.getAttribute('data-ouo') || '').replace(/\/+$/, '') ||
+    '/api/twitter/v2/video';
 
   function extractPath(raw, defaultBase) {
     if (!raw) return '';
@@ -34,33 +36,27 @@
     }
   }
 
-  // 图片（含头像/封面）：去掉原始 pbs.twimg.com 主机，挂到唯一入口上。
-  // 对已经是 MEDIA_BASE 的入参幂等（取 path 后再拼，不会叠加域名）。
+  // 图片与视频封面（cover）：直接替换 host 为唯一资源 CDN pbs.moonchan.xyz
   function getImageURL(raw) {
     if (!raw) return '';
     return MEDIA_BASE + extractPath(raw, 'https://pbs.twimg.com');
   }
 
-  function getVideoURL(raw) {
+  // 点开视频时指向 Go 后端专属视频处理端点（/api/twitter/v2/video/<path+query>）
+  // 后端收到请求后将 host 替换为 twimg.moonchan.xyz 并通过 ouo.io 302 重定向到广告中转页
+  function getOuoVideoURL(raw) {
     if (!raw) return '';
-    return MEDIA_BASE + extractPath(raw, 'https://video.twimg.com');
+    var pathAndQuery = extractPath(raw, 'https://video.twimg.com');
+    if (!pathAndQuery) return '';
+    if (pathAndQuery.charAt(0) !== '/') pathAndQuery = '/' + pathAndQuery;
+    return VIDEO_ENDPOINT + pathAndQuery;
   }
 
-  // 单源加载：一个地址，失败即失败，不换源、不重试。
+  // 单源加载图片：一个地址，失败即失败，不换源、不重试。
   function loadMedia(el, src) {
     if (!el || !src) return;
     el.referrerPolicy = 'no-referrer';
-    if (el.tagName === 'VIDEO') {
-      var wasPlaying = !el.paused;
-      if (el.src !== src) {
-        el.src = src;
-        try { el.load(); } catch (e) {}
-      }
-      if (wasPlaying) {
-        var p = el.play();
-        if (p && p.catch) p.catch(function () {});
-      }
-    } else if (el.src !== src) {
+    if (el.src !== src) {
       el.src = src;
     }
   }
@@ -71,19 +67,20 @@
     var isVid = (m.type === 'video' || m.type === 'animated_gif');
     return {
       url: m.url,
+      ouoUrl: isVid ? getOuoVideoURL(m.url) : '',
       id: (m.tweet_id || 0),
       video: isVid,
       cover: m.cover || ''
     };
   });
 
-  /* ---------- URL 状态：type 过滤 + tweet-id 游标 ---------- */
+  /* ---------- URL 状态：type 过滤 + 游标 ---------- */
   function qs() { return new URLSearchParams(location.search); }
   function typeFilter() {
     var t = qs().get('type');
     if (t === 'all') return 'all';
     if (t === 'video') return 'video';
-    return 'photo'; // 默认图片 only
+    return 'photo';
   }
   function cursorID() { var n = parseInt(qs().get('cursor') || '', 10); return (isFinite(n) && n > 0) ? n : 0; }
   function list() {
@@ -100,8 +97,7 @@
   }
   function setURL(t, c) { history.replaceState(null, '', href(t, c)); }
 
-  /* ---- 媒体占位比缓存：按 URL / 实测尺寸给图片与视频留位，避免加载后列内容跳动。
-     列高由 CSS 多列自动配平（见 partials.html 的 .grid），JS 不再重排卡片。 ---- */
+  /* ---- 媒体占位比缓存 ---- */
   var aspectCache = {};
   try {
     var savedAspect = sessionStorage.getItem('tw_aspect_cache');
@@ -117,12 +113,11 @@
   }
 
   function guessAspectFromURL(url) {
-    if (!url) return '';
+    if (!url) return '1 / 1';
     var match = url.match(/\/(\d{2,4})x(\d{2,4})\//);
     if (match && match[1] && match[2]) {
       return match[1] + ' / ' + match[2];
     }
-    // twitter 图片没有尺寸段：先按 1:1 占位，load 后按实测比例修正，避免初始 0 高造成列内容跳动
     return '1 / 1';
   }
 
@@ -131,40 +126,49 @@
     return url.replace(/([?&]name=)[^&]+/, '$1small');
   }
 
-  function mediaNode(m, controls, isThumb) {
+  // 构建图片或视频封面节点（绝不创建 <video> 标签，彻底杜绝视频流预加载）
+  function mediaNode(m, isThumb) {
     var n;
-    var cachedRatio = aspectCache[m.url] || (m.video ? guessAspectFromURL(m.url) : guessAspectFromURL(m.url));
-    if (cachedRatio) aspectCache[m.url] = cachedRatio;
     if (m.video) {
-      n = document.createElement('video');
-      n.controls = !!controls;
-      n.playsInline = true;
-      n.preload = controls ? 'none' : 'metadata';
-      if (m.cover) n.poster = getImageURL(m.cover);
-      if (cachedRatio) n.style.aspectRatio = cachedRatio;
-      n.addEventListener('loadedmetadata', function () {
-        if (n.videoWidth && n.videoHeight) {
-          setAspect(m.url, n.videoWidth + ' / ' + n.videoHeight);
-          n.style.aspectRatio = n.videoWidth + ' / ' + n.videoHeight;
-        }
-      });
-      loadMedia(n, getVideoURL(m.url));
-    } else {
-      n = document.createElement('img');
-      n.loading = 'lazy';
-      n.referrerPolicy = 'no-referrer';
-      n.alt = '';
-      n.draggable = false;
-      if (cachedRatio) n.style.aspectRatio = cachedRatio;
-      n.addEventListener('load', function () {
-        if (n.naturalWidth && n.naturalHeight) {
-          setAspect(m.url, n.naturalWidth + ' / ' + n.naturalHeight);
-          n.style.aspectRatio = n.naturalWidth + ' / ' + n.naturalHeight;
-        }
-      });
-      var raw = isThumb ? thumbURL(m.url) : m.url;
-      loadMedia(n, getImageURL(raw));
+      if (m.cover) {
+        n = document.createElement('img');
+        n.loading = 'lazy';
+        n.referrerPolicy = 'no-referrer';
+        n.alt = '';
+        n.draggable = false;
+        var cRatio = aspectCache[m.cover] || guessAspectFromURL(m.url);
+        if (cRatio) n.style.aspectRatio = cRatio;
+        n.addEventListener('load', function () {
+          if (n.naturalWidth && n.naturalHeight) {
+            setAspect(m.cover, n.naturalWidth + ' / ' + n.naturalHeight);
+            n.style.aspectRatio = n.naturalWidth + ' / ' + n.naturalHeight;
+          }
+        });
+        loadMedia(n, getImageURL(m.cover));
+      } else {
+        n = document.createElement('div');
+        n.className = 'video-cover-ph';
+        n.textContent = '▶ 视频';
+      }
+      return n;
     }
+
+    var cachedRatio = aspectCache[m.url] || guessAspectFromURL(m.url);
+    if (cachedRatio) aspectCache[m.url] = cachedRatio;
+    n = document.createElement('img');
+    n.loading = 'lazy';
+    n.referrerPolicy = 'no-referrer';
+    n.alt = '';
+    n.draggable = false;
+    if (cachedRatio) n.style.aspectRatio = cachedRatio;
+    n.addEventListener('load', function () {
+      if (n.naturalWidth && n.naturalHeight) {
+        setAspect(m.url, n.naturalWidth + ' / ' + n.naturalHeight);
+        n.style.aspectRatio = n.naturalWidth + ' / ' + n.naturalHeight;
+      }
+    });
+    var raw = isThumb ? thumbURL(m.url) : m.url;
+    loadMedia(n, getImageURL(raw));
     return n;
   }
 
@@ -176,10 +180,23 @@
   var modes = Array.prototype.slice.call(document.querySelectorAll('[data-mode]'));
 
   function gridCard(m, gIdx) {
+    if (m.video) {
+      // 视频卡片：显示 pbs.moonchan.xyz 上的 cover 封面，点击时直接通过 ouo.io 跳转
+      var a = document.createElement('a');
+      a.className = 'card has-video';
+      a.dataset.gidx = gIdx;
+      a.href = m.ouoUrl || getOuoVideoURL(m.url);
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.title = '点击通过 ouo.io 打开视频';
+      a.appendChild(mediaNode(m, true));
+      return a;
+    }
+
     var d = document.createElement('div');
-    d.className = 'card' + (m.video ? ' has-video' : '');
+    d.className = 'card';
     d.dataset.gidx = gIdx;
-    var n = mediaNode(m, false, true);
+    var n = mediaNode(m, true);
     n.addEventListener('click', function () { openLightbox(gIdx); });
     d.appendChild(n);
     return d;
@@ -216,10 +233,7 @@
     go(typeFilter(), end < arr.length ? end : 0);
   });
 
-  /* ---------- 手机式全屏查看器 ----------
-     横向 scroll-snap 翻页；图片双指捏合 / 双击缩放（以触点为焦点），放大后单指拖平移；
-     下滑关闭（跟手 + 渐隐）；空白处点击关闭；3.2s 无操作自动隐藏 chrome；
-     桌面：左右圆形按钮 + 滚轮 + 方向键。 */
+  /* ---------- 手机式全屏查看器 ---------- */
   var lb = document.getElementById('lb');
   var track = document.getElementById('lb-track');
   var lbInfo = document.getElementById('lb-info');
@@ -246,20 +260,13 @@
   function setMyATagVote(tag, v) { ls('gallery:atagvote:' + slug + ':' + tag, String(v || 0)); }
   function voteUIShown() { return lg('gallery:atagvote-ui', '1') === '1'; }
   function setVoteUIShown(on) { ls('gallery:atagvote-ui', on ? '1' : '0'); }
-  // 乐观更新：静态示例（无后端，POST 404）时也能看到计数变化；真机随后被服务端返回覆盖。
+
   function applyATagLocal(tag, delta) {
     var n = (aTags[tag] || 0) + delta;
     if (n > 0) { aTags[tag] = n; } else { delete aTags[tag]; }
   }
   function escT(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
-  // 与 twitter API 同口径：单次写请求对单标签最多贡献 ±1（服务端同幅限幅）。
-  // 反向切换（本地票 +1 到 -1，净差 ±2）拆成两笔同向 ±1；同向增量可交换，到达顺序无关。
-  // 发的是**本访客对该标签的目标值**（-1 | 0 | +1，0=撤票），不是差值。
-  // 服务端按 (账号,标签,IP) 记票并对同值幂等，所以：
-  //   - 不需要再"拆两笔同向 ±1"去绕开每请求 ±1 限幅——那是旧累加语义下的补丁，
-  //     目标值语义下反向改票（+1 → -1）本就该是一笔请求（净变化 ±2）；
-  //   - 重复点击/重发都是幂等的，服务端不依赖这里的 localStorage。
-  // 本地的乐观更新只管即时反馈，最终权重一律以响应里的 tags 为权威（整份覆盖）。
+
   function postATag(tag, target) {
     fetch('/api/twitter/tag', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -294,8 +301,6 @@
   function renderATags() {
     if (!aTagsEl) return;
     var show = voteUIShown();
-    // account_tags 保留负权重（与 twitter API 的 GET 同口径），但站点只显示正分，
-    // 与首页卡片/标签筛选、以及 applyATagLocal 的隐藏规则一致。
     var names = Object.keys(aTags).filter(function (t) { return aTags[t] > 0; });
     names.sort(function (a, b) { return aTags[b] - aTags[a] || (a < b ? -1 : 1); });
     var html = '';
@@ -328,11 +333,10 @@
           var t = btn.getAttribute('data-t');
           var dir = parseInt(btn.getAttribute('data-d'), 10) || 1;
           var cur = myATagVote(t);
-          // 该方向已投 -> 目标值 0（撤票）；否则目标值就是该方向本身（含反向改票）。
           var next = (dir === 1) ? (cur === 1 ? 0 : 1) : (cur === -1 ? 0 : -1);
           if (next === cur) return;
           setMyATagVote(t, next);
-          applyATagLocal(t, next - cur); // 只为即时反馈，真实值看响应
+          applyATagLocal(t, next - cur);
           renderATags();
           postATag(t, next);
         });
@@ -348,11 +352,11 @@
       if (!t) return;
       inp.value = '';
       var cur = myATagVote(t);
-      if (cur === 1) return; // 已经是 +1：目标值没变，服务端会幂等，但省一趟请求
+      if (cur === 1) return;
       setMyATagVote(t, 1);
       applyATagLocal(t, 1 - cur);
       renderATags();
-      postATag(t, 1); // 目标值：从 -1 直接改成 +1 也是一笔（旧累加语义要拆两笔）
+      postATag(t, 1);
     });
     inp.addEventListener('blur', function () { inp.hidden = true; });
   }
@@ -370,7 +374,6 @@
     loadCounts(key);
   }
 
-  /* chrome 自动隐藏 */
   var uiTimer = 0;
   function showUI() {
     lb.classList.remove('hide-ui');
@@ -404,12 +407,14 @@
     var st = document.createElement('div'); st.className = 'lb-stage';
     var n = mediaNode(m, false);
     n.classList.add('lb-media');
+    n.addEventListener('dragstart', function (e) { e.preventDefault(); });
     if (m.video) {
-      n.preload = 'none'; n.loop = true;
-      var icon = document.createElement('div'); icon.className = 'lb-playicon'; icon.textContent = '\u25B6';
-      s._v = n; s.appendChild(icon);
-    } else {
-      n.addEventListener('dragstart', function (e) { e.preventDefault(); });
+      s.classList.add('paused');
+      s._ouoUrl = m.ouoUrl || getOuoVideoURL(m.url);
+      var icon = document.createElement('div');
+      icon.className = 'lb-playicon';
+      icon.textContent = '\u25B6';
+      s.appendChild(icon);
     }
     st.appendChild(n); s.appendChild(st);
     s._st = st; s._media = n; s._z = { s: 1, x: 0, y: 0 };
@@ -438,7 +443,7 @@
         return;
       }
       mode = s._z.s > 1.01 ? 'pan' : 'drag';
-      hit = e.target; // pointerup 时 target 已被 setPointerCapture 改道，命中判定记在 down 上
+      hit = e.target;
       downX = lastX = e.clientX; downY = lastY = e.clientY; downT = Date.now(); moved = 0; swY = 0;
       showUI();
     });
@@ -516,37 +521,15 @@
   }
 
   function tap(s, e, hit) {
-    var now = Date.now();
-    if (s._v) {
-      if (now - lastTapOf(s) < 280) {
-        clearTimeout(s._tapTimer);
-        lastTap[s._i] = 0;
-        var r = s.getBoundingClientRect();
-        var clickX = e.clientX - r.left;
-        if (s._v.duration) {
-          if (clickX < r.width * 0.38) {
-            s._v.currentTime = Math.max(0, s._v.currentTime - 5);
-            syncHudState(s._v);
-            showUI();
-            return;
-          } else if (clickX > r.width * 0.62) {
-            s._v.currentTime = Math.min(s._v.duration, s._v.currentTime + 5);
-            syncHudState(s._v);
-            showUI();
-            return;
-          }
-        }
+    if (s._ouoUrl) {
+      if (hit === s._media || hit.classList.contains('lb-playicon')) {
+        window.open(s._ouoUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        closeLightbox();
       }
-      lastTap[s._i] = now;
-      s._tapTimer = setTimeout(function () {
-        if (lb.classList.contains('hide-ui')) {
-          showUI();
-        } else {
-          toggleVideo(s, s._v);
-        }
-      }, 240);
       return;
     }
+    var now = Date.now();
     if (now - lastTapOf(s) < 300) {
       clearTimeout(s._tapTimer); lastTap[s._i] = 0;
       var z = s._z;
@@ -567,250 +550,11 @@
   function lastTapOf(s) { return lastTap[s._i] || 0; }
   function toggleUI() { if (lb.classList.contains('hide-ui')) showUI(); else { clearTimeout(uiTimer); lb.classList.add('hide-ui'); } }
 
-  /* ---------- 视频播放器 HUD 控制器 ---------- */
-  var vHud = document.getElementById('lb-vhud');
-  var vProg = document.getElementById('lb-vprog');
-  var vBuf = document.getElementById('lb-vbuf');
-  var vBar = document.getElementById('lb-vbar');
-  var vThumb = document.getElementById('lb-vthumb');
-  var vTip = document.getElementById('lb-vtip');
-  var vPlay = document.getElementById('lb-vplay');
-  var vTime = document.getElementById('lb-vtime');
-  var vMute = document.getElementById('lb-vmute');
-  var vSlider = document.getElementById('lb-vslider');
-  var vSpeed = document.getElementById('lb-vspeed');
-  var vFS = document.getElementById('lb-vfs');
-
-  var activeVideo = null;
-  var isScrubbing = false;
-
-  function formatTime(sec) {
-    if (!isFinite(sec) || sec < 0) return '00:00';
-    var m = Math.floor(sec / 60);
-    var s = Math.floor(sec % 60);
-    return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
-  }
-
-  function syncHudState(v) {
-    if (!vHud || !v) return;
-    var isPaused = v.paused || v.ended;
-    vHud.classList.toggle('paused', isPaused);
-    var isMuted = v.muted || v.volume === 0;
-    vHud.classList.toggle('muted', isMuted);
-    if (vSlider && !isScrubbing) vSlider.value = isMuted ? 0 : v.volume;
-
-    var curT = v.currentTime || 0;
-    var dur = v.duration || 0;
-    if (vTime) vTime.textContent = formatTime(curT) + ' / ' + formatTime(dur);
-
-    if (!isScrubbing && dur > 0) {
-      var pct = Math.min(100, Math.max(0, (curT / dur) * 100));
-      if (vBar) vBar.style.width = pct + '%';
-      if (vThumb) vThumb.style.left = pct + '%';
-    }
-
-    if (vBuf && dur > 0 && v.buffered && v.buffered.length > 0) {
-      try {
-        var bufEnd = v.buffered.end(v.buffered.length - 1);
-        var bPct = Math.min(100, Math.max(0, (bufEnd / dur) * 100));
-        vBuf.style.width = bPct + '%';
-      } catch (e) {}
-    }
-
-    if (vSpeed) vSpeed.textContent = (v.playbackRate || 1) + 'x';
-
-    var isFS = !!(document.fullscreenElement || document.webkitFullscreenElement);
-    vHud.classList.toggle('is-fs', isFS);
-  }
-
-  function onVTimeUpdate() { if (activeVideo) syncHudState(activeVideo); }
-  function onVProgress() { if (activeVideo) syncHudState(activeVideo); }
-  function onVPlay() { if (activeVideo) syncHudState(activeVideo); }
-  function onVPause() { if (activeVideo) syncHudState(activeVideo); }
-  function onVVol() { if (activeVideo) syncHudState(activeVideo); }
-  function onVMeta() { if (activeVideo) syncHudState(activeVideo); }
-
-  function bindVideoHud(v) {
-    if (!vHud) return;
-    if (activeVideo && activeVideo !== v) unbindVideoHud();
-    activeVideo = v;
-    lb.classList.add('has-vhud');
-    vHud.hidden = false;
-    syncHudState(v);
-
-    v.addEventListener('timeupdate', onVTimeUpdate);
-    v.addEventListener('progress', onVProgress);
-    v.addEventListener('play', onVPlay);
-    v.addEventListener('pause', onVPause);
-    v.addEventListener('volumechange', onVVol);
-    v.addEventListener('loadedmetadata', onVMeta);
-  }
-
-  function unbindVideoHud() {
-    if (!vHud) return;
-    if (activeVideo) {
-      activeVideo.removeEventListener('timeupdate', onVTimeUpdate);
-      activeVideo.removeEventListener('progress', onVProgress);
-      activeVideo.removeEventListener('play', onVPlay);
-      activeVideo.removeEventListener('pause', onVPause);
-      activeVideo.removeEventListener('volumechange', onVVol);
-      activeVideo.removeEventListener('loadedmetadata', onVMeta);
-    }
-    activeVideo = null;
-    vHud.hidden = true;
-    lb.classList.remove('has-vhud');
-  }
-
-  if (vHud) {
-    vHud.addEventListener('pointerdown', function (e) { e.stopPropagation(); showUI(); });
-    vHud.addEventListener('click', function (e) { e.stopPropagation(); showUI(); });
-    vHud.addEventListener('mousemove', function () { showUI(); });
-  }
-
-  if (vPlay) {
-    vPlay.addEventListener('click', function (e) {
-      e.stopPropagation();
-      if (!activeVideo) return;
-      if (activeVideo.paused || activeVideo.ended) {
-        activeVideo.play();
-      } else {
-        activeVideo.pause();
-      }
-      showUI();
-    });
-  }
-
-  if (vMute) {
-    vMute.addEventListener('click', function (e) {
-      e.stopPropagation();
-      if (!activeVideo) return;
-      activeVideo.muted = !activeVideo.muted;
-      if (!activeVideo.muted && activeVideo.volume === 0) {
-        activeVideo.volume = 1;
-      }
-      syncHudState(activeVideo);
-      showUI();
-    });
-  }
-
-  if (vSlider) {
-    vSlider.addEventListener('input', function (e) {
-      e.stopPropagation();
-      if (!activeVideo) return;
-      var val = parseFloat(vSlider.value);
-      activeVideo.volume = val;
-      activeVideo.muted = (val === 0);
-      syncHudState(activeVideo);
-      showUI();
-    });
-  }
-
-  var speedList = [1, 1.25, 1.5, 2, 0.5];
-  if (vSpeed) {
-    vSpeed.addEventListener('click', function (e) {
-      e.stopPropagation();
-      if (!activeVideo) return;
-      var curSpd = activeVideo.playbackRate || 1;
-      var idx = speedList.indexOf(curSpd);
-      var nextSpd = speedList[(idx + 1) % speedList.length];
-      activeVideo.playbackRate = nextSpd;
-      vSpeed.textContent = nextSpd + 'x';
-      showUI();
-    });
-  }
-
-  if (vFS) {
-    vFS.addEventListener('click', function (e) {
-      e.stopPropagation();
-      if (!activeVideo) return;
-      if (document.fullscreenElement || document.webkitFullscreenElement) {
-        if (document.exitFullscreen) document.exitFullscreen();
-        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-      } else {
-        var el = activeVideo;
-        if (el.requestFullscreen) el.requestFullscreen();
-        else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
-        else if (el.webkitEnterFullscreen) el.webkitEnterFullscreen();
-      }
-      showUI();
-    });
-  }
-
-  if (vProg) {
-    function seekByProgEvent(e) {
-      if (!activeVideo || !activeVideo.duration) return;
-      var rect = vProg.getBoundingClientRect();
-      var pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      activeVideo.currentTime = pct * activeVideo.duration;
-      if (vBar) vBar.style.width = (pct * 100) + '%';
-      if (vThumb) vThumb.style.left = (pct * 100) + '%';
-      if (vTime) vTime.textContent = formatTime(activeVideo.currentTime) + ' / ' + formatTime(activeVideo.duration);
-    }
-
-    vProg.addEventListener('pointerdown', function (e) {
-      e.stopPropagation();
-      isScrubbing = true;
-      vProg.classList.add('scrubbing');
-      try { vProg.setPointerCapture(e.pointerId); } catch (err) {}
-      seekByProgEvent(e);
-      showUI();
-    });
-    vProg.addEventListener('pointermove', function (e) {
-      if (activeVideo && activeVideo.duration) {
-        var rect = vProg.getBoundingClientRect();
-        var pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-        if (vTip) {
-          vTip.textContent = formatTime(pct * activeVideo.duration);
-          vTip.style.left = (pct * 100) + '%';
-        }
-      }
-      if (isScrubbing) {
-        e.stopPropagation();
-        seekByProgEvent(e);
-        showUI();
-      }
-    });
-    function endScrub(e) {
-      if (isScrubbing) {
-        isScrubbing = false;
-        vProg.classList.remove('scrubbing');
-        try { vProg.releasePointerCapture(e.pointerId); } catch (err) {}
-        if (activeVideo) syncHudState(activeVideo);
-        showUI();
-      }
-    }
-    vProg.addEventListener('pointerup', endScrub);
-    vProg.addEventListener('pointercancel', endScrub);
-  }
-
-  function playVideo(s, v) {
-    var p = v.play();
-    if (p && p.catch) p.catch(function () { v.muted = true; var q = v.play(); if (q && q.catch) q.catch(function () {}); });
-    s.classList.remove('paused');
-    if (activeVideo === v) syncHudState(v);
-  }
-  function toggleVideo(s, v) {
-    if (v.paused || v.ended) playVideo(s, v);
-    else { v.pause(); s.classList.add('paused'); }
-    if (activeVideo === v) syncHudState(v);
-  }
   function activate(i) {
     var nodes = track.children;
     for (var j = 0; j < nodes.length; j++) {
-      if (j !== i) { var v = nodes[j]._v; if (v) v.pause(); resetZoom(nodes[j]); }
+      if (j !== i) resetZoom(nodes[j]);
     }
-    var c = nodes[i];
-    if (c && c._v) {
-      bindVideoHud(c._v);
-      playVideo(c, c._v);
-    } else {
-      unbindVideoHud();
-    }
-  }
-  function pauseAll() {
-    unbindVideoHud();
-    var nodes = track.children;
-    for (var j = 0; j < nodes.length; j++) { var v = nodes[j]._v; if (v) v.pause(); }
   }
 
   function openLightbox(idx) {
@@ -834,7 +578,6 @@
     lb.hidden = true;
     lb.classList.remove('hide-ui');
     document.documentElement.style.overflow = '';
-    pauseAll();
     track.style.transform = ''; track.style.opacity = ''; track.style.transition = '';
     track.replaceChildren();
     slides = []; cur = 0;
@@ -902,16 +645,6 @@
     if (lb.hidden) return;
     if (e.key === 'Escape') {
       closeLightbox();
-    } else if (e.key === ' ' && activeVideo) {
-      e.preventDefault();
-      if (activeVideo.paused || activeVideo.ended) activeVideo.play();
-      else activeVideo.pause();
-      showUI();
-    } else if ((e.key === 'm' || e.key === 'M') && activeVideo) {
-      e.preventDefault();
-      activeVideo.muted = !activeVideo.muted;
-      syncHudState(activeVideo);
-      showUI();
     } else if (e.key === 'ArrowRight' || e.key === 'j') {
       e.preventDefault(); navTo(1);
     } else if (e.key === 'ArrowLeft' || e.key === 'k') {

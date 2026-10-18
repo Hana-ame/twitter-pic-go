@@ -3,7 +3,7 @@
 // 作为评分互动模块
 // 策略：启动时计算全量数据 -> 压缩写入单一JSON文件 -> 查询时读取文件。
 
-package twitter
+package api
 
 import (
 	"compress/gzip"

@@ -9,7 +9,7 @@
 // 每次请求都合并到属于username这个key的tags当中
 // 以json string格式。
 
-package twitter
+package api
 
 import (
 	"database/sql"

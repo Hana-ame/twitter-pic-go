@@ -1,4 +1,4 @@
-package twitter
+package api
 
 import (
 	"bytes"
@@ -643,3 +643,78 @@ func TestV2JsonGzURLAndConditionalCaching(t *testing.T) {
 }
 
 
+
+func TestV2VideoCoverAndOuoURL(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	r := setupTestEngine()
+
+	tmpDir := t.TempDir()
+	t.Setenv("GALLERY_JSON_DIR", tmpDir)
+
+	docJSON := `{
+		"account_info": {
+			"name": "vid_user",
+			"nick": "视频测试员",
+			"profile_image": "https://pbs.twimg.com/profile_images/1/av.jpg"
+		},
+		"timeline": [
+			{
+				"tweet_id": 201,
+				"url": "https://video.twimg.com/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12",
+				"type": "video",
+				"date": "2026-10-06 10:00:00",
+				"cover": "https://pbs.twimg.com/ext_tw_video_thumb/1916894180884062208/pu/img/X472TmC88Oy-kvGn?format=jpg&name=orig"
+			}
+		]
+	}`
+	gzPath := filepath.Join(tmpDir, "vid_user.json.gz")
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write([]byte(docJSON))
+	_ = zw.Close()
+	if err := os.WriteFile(gzPath, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("write mock gz: %v", err)
+	}
+
+	if _, err := db.Exec(`INSERT INTO users (username, nick, status, last_modify) VALUES ('vid_user', '视频测试员', 'SUCCESS', '2026-10-06 10:00:00')`); err != nil {
+		t.Fatalf("insert vid_user: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/twitter/v2/users/vid_user/timeline?t=2026-10-06", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("timeline failed %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp UserTimelineResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal timeline: %v", err)
+	}
+	if len(resp.Timeline) != 1 {
+		t.Fatalf("expected 1 timeline item, got %d", len(resp.Timeline))
+	}
+	item := resp.Timeline[0]
+	wantCover := "https://pbs.moonchan.xyz/ext_tw_video_thumb/1916894180884062208/pu/img/X472TmC88Oy-kvGn?format=jpg&name=orig"
+	if item.Cover != wantCover {
+		t.Errorf("expected cover %q, got %q", wantCover, item.Cover)
+	}
+	wantOuo := "/api/twitter/v2/video/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12"
+	if item.OuoURL != wantOuo {
+		t.Errorf("expected ouo_url %q, got %q", wantOuo, item.OuoURL)
+	}
+
+	// 验证点击视频专属端点时：直接替换 host 为 twimg.moonchan.xyz 并 302 重定向到 ouo.io 广告中转页
+	wVid := httptest.NewRecorder()
+	reqVid, _ := http.NewRequest("GET", item.OuoURL, nil)
+	r.ServeHTTP(wVid, reqVid)
+	if wVid.Code != http.StatusFound {
+		t.Fatalf("expected 302 from video endpoint, got %d", wVid.Code)
+	}
+	loc := wVid.Header().Get("Location")
+	wantRedirect := "http://ouo.io/qs/6z4kqAz7?s=https%3A%2F%2Ftwimg.moonchan.xyz%2Fext_tw_video%2F1916894180884062208%2Fpu%2Fvid%2Favc1%2F720x1280%2Ftest.mp4%3Ftag%3D12"
+	if loc != wantRedirect {
+		t.Errorf("expected video redirect Location %q, got %q", wantRedirect, loc)
+	}
+}

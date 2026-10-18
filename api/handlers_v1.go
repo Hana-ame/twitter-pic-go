@@ -1,8 +1,24 @@
-// 2026.01.01
-// 似乎缺少了302的逻辑了。
-// 之前的修改版似乎是不见了。
+// ============================================================================
+// 【旧版 API 处理器 (Legacy V1 API Handlers)】
+// 路由前缀：/api/twitter/*
+// 适用对象：twitter-pic-react (main 分支 / 旧版前端)，完整保留所有接口行为与返回格式，绝不修改破坏。
+//
+// 旧版 API 列表：
+//   - GET    /api/twitter/?list=users&after=<u_name>       (旧版获取用户列表，仅含 username/tags/last_modify)
+//   - GET    /api/twitter/?by=username|nick|tag&search=<q> (旧版搜索用户)
+//   - GET    /api/twitter/:fn                              (旧版获取 <username>.json.gz 原始压缩包或 302 跳转)
+//   - POST   /api/twitter/:username                        (旧版提交新用户/更新抓取/修改标签，通过 ?do_not_tag & ?do_not_renew 控制)
+//   - GET    /api/twitter/tags/:username                   (旧版查询单用户标签)
+//   - POST   /api/twitter/tags/:username                   (旧版提交单用户标签)
+//   - POST   /api/twitter/tag · /api/twitter/account-tag   (单标签一 IP 一票投票)
+//   - GET    /api/twitter/emojis?username=<u_name>         (旧版获取用户 Emoji 计数，无参时返回排行榜 JSON)
+//   - GET    /api/twitter/emojis.json.gz                   (旧版获取 Emoji 排行榜 Gzip)
+//   - POST   /api/twitter/emojis?username=<u>&emoji=<e>    (旧版 Emoji 投票)
+//   - DELETE /api/twitter/:username?delete=<key>           (管理员封禁用户)
+//   - PUT    /api/twitter/:username?delete=<key>           (管理员解封用户)
+// ============================================================================
 
-package twitter
+package api
 
 import (
 	"encoding/json"
@@ -208,7 +224,14 @@ func GetMetaData(c *gin.Context) {
 		return
 	}
 
-	c.DataFromReader(200, fileInfo.Size(), "application/json", f, map[string]string{"content-encoding": "gzip"})
+	extraHeaders := map[string]string{
+		"content-encoding": "gzip",
+		"Cache-Control":    "public, max-age=3600, s-maxage=86400, stale-while-revalidate=3600",
+	}
+	if !user.LastModify.IsZero() {
+		extraHeaders["Last-Modified"] = user.LastModify.UTC().Format(http.TimeFormat)
+	}
+	c.DataFromReader(200, fileInfo.Size(), "application/json", f, extraHeaders)
 }
 
 // :fn
@@ -493,6 +516,10 @@ func AddToGroup(g *gin.RouterGroup) {
 	g.GET("/emojis", GetEmojis)
 	g.POST("/emojis", VoteUpEmojiHandler)
 
-	// 新增：面向 Flutter 及现代移动端的新版 API 路由组 (v2)
+	// 视频链接专属重定向端点（/api/twitter/video/*filepath 与 /api/twitter/v2/video/*filepath）
+	g.GET("/video", HandleVideoRedirectV2)
+	g.GET("/video/*filepath", HandleVideoRedirectV2)
+
+	// 新增：面向新版 twitter-pic-react 与 Flutter 的新版 API 路由组 (v2)
 	RegisterV2Routes(g.Group("/v2"))
 }

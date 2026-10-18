@@ -1,327 +1,223 @@
 # twitter-pic-go
 
-Twitter 媒体抓取与图库浏览。
+Twitter 媒体元数据抓取、V1/V2 轻量动态切片 API 与 SSR 沉浸式图库（单进程、单地址统一服务架构）。
 
-## 组件
+---
 
-| 组件 | 路径 | 说明 |
-|------|------|------|
-| TCP 服务器 | `caller.py` | 接收 Go 端发来的 username，调用 `get2.py` 抓取元数据 |
-| 队列处理 | `deamon.py` | 从 pending 文件读取 URL，翻译成抓取命令，排队执行 |
-| Go API | `twitter_handlers.go` | REST API：创建/查询元数据、标签管理、Emoji 投票 |
-| 图库 | `gallery/` | 直接服务 HTML 的图站后端，读取 json.gz 渲染媒体列表 |
-| V2 API (Flutter / 移动端) | `v2_handlers.go` | 面向移动端的轻量动态切片 API（媒体分页、标签反查无幽灵、Feed 聚合） |
-| 标签存储 | `tags/tags.go` | **账号标签的唯一实现**：`account_tags` 读写 + `request_logs` 流水，Go API 与 gallery 共用同一份语义 |
-| IP 封禁 | `ipban/ipban.go` | **封禁的唯一实现**：bans.txt 编译 trie + 链上任一命中 + 热重载 + 统一 IP 口径，Go API 与 gallery 共用同一个单例 |
-| twimg 反代 | `twimg/main.go` | 反向代理 pbs.twimg.com 图片 |
+## 1. 快速导航
 
-## Cloudflare 边缘缓存 与 V2 动态切片 API
+- **[`AGENTS.md`](AGENTS.md)**：**代码修改速查地图**（改前端样式、改灯箱交互、改 API 路由、改标签计票、改爬虫分别去哪个文件找，以及跨端契约护栏）。
+- **[`docs/FRONTEND_GUIDE.md`](docs/FRONTEND_GUIDE.md)**：**Gallery 前端频繁迭代指南**（模块化 CSS/JS 拆分说明、免编译磁盘实时热更新、线上秒级仅热更前端工作流）。
+- **[`docs/API_V2.md`](docs/API_V2.md)**：**V2 动态切片 API 与 Cloudflare 边缘缓存规范**（面向 Flutter 客户端与现代 Web）。
+- **[`gallery/README.md`](gallery/README.md)**：**Gallery SSR 图站包架构与路由说明**。
+- **[`api/README.md`](api/README.md)**：**API 后端包结构说明**。
+- **[`docs/BAN_MANUAL.md`](docs/BAN_MANUAL.md)** & **[`docs/BAN_SUMMARY.md`](docs/BAN_SUMMARY.md)**：**IP 与违规账号封禁运维手册**。
 
-详细接口规范见 **[API_V2.md](API_V2.md)**。
+---
 
-- **边缘缓存由 Cloudflare 统一负责**：
-  - 核心缓存层已由 **Cloudflare CDN** 在边缘直接承接。V2 所有读接口均下发标准 `Cache-Control: public, max-age=..., s-maxage=...` 以及 `Last-Modified`。
-  - Cloudflare 边缘节点自动进行全球就近缓存与 304 条件协商，请求几乎不穿透至源站，完美契合 1 vCPU / 528MB 的小内存源站配置。
-  - **客户端无缓存包袱**：Flutter 移动端及现代 Web **完全无需下载、解压或自行维护 `.json.gz` 缓存文件**。直接请求标准 V2 JSON API 即可享受 Cloudflare 毫秒级边缘加速。
-- **V2 API 负责轻量动态切片（彻底消除客户端与源站负担）**：
-  - **媒体分页切片**：`GET /api/twitter/v2/users/:username/media?limit=24&type=photo` 首屏瀑布流由传统数兆压缩至 **~3KB**，节约 99% 流量与内存。
-  - **标签反查无幽灵**：`GET /api/twitter/v2/tags/:tag/users` 强制 `status = 'SUCCESS'` 且单次带齐头像/昵称/标签，彻底消灭 404 幽灵账号与 N+1 流量风暴。
-  - **冷启动 Feed 聚合**：`GET /api/twitter/v2/feed` 一次请求返回热门标签与推荐用户，源站 30s 内存自愈缓存 + Cloudflare 边缘缓存，0.1ms 响应。
-  - **HTTP 304 条件协商**：未发生更新时直接返回 `304 Not Modified`（0 字节负载）。
-  - **小内存机器保护**：服务端内部仅保留 $\le 30$ 个用户的极小有界淘汰缓存（<2MB），杜绝内存膨胀。
+## 2. 仓库架构（Formal Repository Layout）
 
-## 标签（账号级）的存储
+本项目将后端 **REST API (`api/`)** 与 **Web 图站 (`gallery/`)** 作为两个对等的一级业务包，通过统一入口 `server/main.go`（或 `cmd/server/main.go`）在**同一个监听地址（默认 `:8080`）和同一个 SQLite 数据库连接池（`twitter.db`）**中协同运行：
 
-**只有一个库、只有一张表**：`twitter.db` 的 `account_tags(username, tag, weight)`。
-
-- 两层入口共用 `tags` 包：Go API 的 `GET /api/twitter/tags/:username` /
-  `POST /api/twitter/:username` / `GET /api/twitter/?by=tag&search=<tag>`，与 gallery 的
-  `GET /api/tags?keys=` / `POST /api/tag`（别名 `/api/account-tags`、`/api/account-tag`）。
-- 写语义：见下一节「一 IP 一票」——请求里的 `d` 是**该 IP 的目标值**，不是变化量；
-  `account_tags.weight` 是**物化滚动值** = 历史底数 + Σ票；恰好归零删行、负权重保留；
-  **每次写请求记一行 `request_logs`**（username / tags / ip / ua，两层都记，幂等的是
-  权重不是审计）。
-- 写失败**报 500**，不再吞掉错误回 `200 {"message":"ok"}`；gallery 侧对应 400/500/503。
-  抓取排队（`curlMetaData`）失败不算写失败，只记日志——否则 caller.py 不在时会把
-  一次成功的标签写入判成失败。
-- 读语义：直接按 `account_tags` 现场聚合，不再读旧的 `user_tags` JSON 大字段，
-  也不再有独立的 `tags.db` 快照或 `account_votes.json` 投票文件。
-  两层的过滤口径**逐字一致**：`weight != 0` 都返回（含负权重）、`weight = 0` 都不返回。
-  根 API 侧由 `userSelectQuery` 的 `AND a.weight != 0` 保证，与 `tags.Store.Weights` 对齐，
-  并有测试钉住（`sql_tags_readparity_test.go`）——否则库上一旦出现零权行（外部 sqlite3
-  运维直写、历史脏数据），同一账号两层会给出不同标签集。
-- `by=tag` 的反查只取**正权重**、按权重降序、精确匹配（非 LIKE）、`status='SUCCESS'`、
-  `LIMIT 15`；空结果返回 `[]` 而不是 `null`。
-- gallery 的库路径由 `GALLERY_DB` 指定，默认 `./twitter.db`——与 Go API 同一个文件。
-- 旧的 `user_tags` 表只作为历史遗留存在，服务端启动时一次性回填进
-  `account_tags`（`migrateAccountTags`），此后不再作为数据源被读取。
-
-## 一 IP 一票（标签计票契约）
-
-**给客户端看的就这一节。** 两个入口同一个模型，只是包壳不同。
-
-### 请求与语义
-
-| 入口 | 方法/路径 | 请求体 | `d`/value 的含义 |
-|---|---|---|---|
-| 网页端（图站） | `POST /api/tag`（别名 `/api/account-tag`） | `{"user":"<账号>","tag":"<标签>","d":1}` | **该访客的目标值**：`1` 投 / `-1` 减 / `0` 撤票。`d` **必填** |
-| App（根 API） | `POST /api/twitter/:username?do_not_renew=true` | `{"<标签>":1,"<另一个>":-1}` | 同上，按标签逐项给目标值；`0` = 撤掉该 IP 在这个标签上的票 |
-
-### 客户端最短路径：发「完整期望态」，不要发差分
-
-**这条决定另外两个客户端怎么写。** 客户端**读不到**"我这个 IP 之前投了什么"
-（它只看得见全站聚合权重），所以任何"差分/增量"式的实现都必须自己记账
-（localStorage 或内存里的上一次提交），一丢状态就错。而"目标值 = 我这个 IP 想要的值"
-这个语义**不要求它知道**：撤销就是发 `0`，服务端自己把该 IP 的票清掉。于是正确的实现是
-
-> **一次提交 = 送一份 `{标签: -1 | 0 | +1}` 的完整期望态；取消一个标签 = 发 `0`，
-> 不是把这个 key 删掉。**
-
-- react 侧现有的形状**本来就是全量 map**（`TagSelectorModal.jsx` 把完整 `tagScores`
-  交给 `App.jsx` 的 `handleConfirmTags`，再经 `createMetaData(username, tags, false, true)`
-  打到 `POST /api/twitter/:username?do_not_renew=true`），所以它**不需要结构性重构**，
-  要改的只有一处：`TagSelectorModal.jsx` 里 `if (nextScore === 0) delete newState[tag]`
-  改成**保留 key、值为 0**。
-- Flutter 侧同理：不要做差分，直接把 UI 上的期望态整体发出去。
-- 服务端按 `(账号,标签,IP)` 替换该 IP 的票并**重算**滚动值，因此同一 IP 重复提交同一份
-  期望态天然幂等——**客户端不需要记 diff，localStorage 也不参与任何判定**。
-
-### 「键缺失」与「键为 0」是两件事（必须都能表达）
-
-| 表达 | 含义 | 服务端行为 |
-|---|---|---|
-| map 里**没有**这个标签的 key | 这次不想碰它 | **不动**该标签的任何票（既有票与权重原样保留） |
-| `{"<标签>":0}` | 我要撤掉**我自己**在这个标签上的票 | 删掉 `(账号,标签,该IP)` 的票行并重算权重 |
-
-两者缺一不可：只有"缺 key = 不动"，客户端才能只改一个标签而不影响其它标签；
-只有"值为 0 = 撤票"，客户端才能表达"取消"而不必知道历史。
-图站那条是**逐标签**的 target API（`d` 必填、`d=0` 即撤票），所以它没有"缺 key"这一维，
-但也因此**不能省 `d`**（缺 `d` 是 400，不是"不动"）。
-
-一条票的键是 **(账号, 标签, IP)**，IP 取 `ipban.Principal`（与限流分桶、
-`request_logs.ip` **同一个值**）。所以：
-
-- **幂等**：同一 IP 对同一 (账号,标签) 连发 100 次 `d:1`，权重只动一次。
-  服务端不读任何 cookie / localStorage，换浏览器、开无痕都只是重复投同一张票。
-- **反向改票是一笔**：`+1 → -1` 对权重的影响是 **±2**（旧实现把输入夹到 ±1，
-  于是"从减分改成加分"会被夹成 0 分——那个死结就是这次改语义要消掉的）。
-  夹取的位置在**目标值**上，不在输入差值上。
-- **归一化差别**：图站对越界的 `d`（`2`、`-5`…）直接 **400**（一个把 `d` 当分数发的
-  客户端是有 bug 的，静默夹成 1 会让它以为投了 5 票）；根 API 保留原有的归一化到 ±1
-  （它一次收一组标签的批量体，为一个越界值退回整批不友好）。
-- **`d` 缺失**：图站 400（`0` 现在是有效值，不能拿缺省值当撤票）。
-
-### 样例：同一个访客从 `+1` 改成 `-1`（差值 ±2 是合法的）
-
-底数 `tag_weight_base('A','女性') = 37`，访客 IP 为 `183.34.64.0`：
-
-| # | 客户端发的 | 该 IP 的票行 `tag_votes.value` | `account_tags.weight` | 本次对权重的影响 |
-|---|---|---|---|---|
-| 0 | —（迁移后的初始态） | 无行 | `37` | — |
-| 1 | `{"user":"A","tag":"女性","d":1}` | `+1`（新建） | `38` | `+1` |
-| 2 | `{"user":"A","tag":"女性","d":1}`（重复提交） | `+1`（**连 updated_at 都不动**） | `38` | `0`（幂等） |
-| 3 | `{"user":"A","tag":"女性","d":-1}`（反向改票，**一笔**） | `-1`（替换） | `36` | **`-2`** |
-| 4 | `{"user":"A","tag":"女性","d":0}`（撤票） | 行被删除 | `37` | `+1` |
-
-另一个访客投 `+1` 时，第 3 步的影响依然是 `-2`（权重 = 底数 + Σ所有票）。
-上面这张表就是端到端实测跑过的那条链（见下节兼容实验同批验证）。
-
-### 响应与错误码
-
-- 图站成功：`200 {"user":"<账号>","tags":{<标签>:<权重>, …}}` —— **该账号的权威全量**
-  （含负权重、不含归零行）。客户端应整份覆盖本地缓存，**不要**自己按 ±1 累加显示值。
-- App 成功：`200 {"message":"ok"}`（形态未变；要看权威值用 `GET /api/twitter/tags/:username`）。
-- 图站守卫阶梯（顺序即优先级）：封禁 IP `403` → 库不可写 `503` → 配额超限 `429` →
-  入参非法 `400` → 目标账号被封 `404` → 写失败 `500` → 成功 `200`。
-  4xx 全部**不落库、不落流水**。`429` 按 IP 计（默认 25 次/小时，`GALLERY_TAG_RATE_MAX`），
-  与票数**分开计数**：同一人发 3 次请求扣 3 点配额，但只有 1 票。
-- 拿不到客户端 IP 时**拒绝写入**（500）而不是退化成空串：票桶键变成 `""` 会把全站
-  访客塌成同一个桶，一 IP 一票当场变成"全站共一票"。
-
-### 兼容性：两种错配都会**静默**出错（以下全部实测复现，非推理）
-
-用 `9f1c8d0`（旧，累加语义）与改版后（新，目标值语义）两台服务端各起一个等位旧库形状
-的现场（`女性` 底数 10、`COS` 底数 -3），互打对方的请求：
-
-| 错配 | 现象（实测数字） | 是否报错 |
-|---|---|---|
-| **新客户端 + 旧服务端** | react 那份"完整期望态"被旧服务端当**增量累加**：同一份 `{"女性":1,"COS":1}` 连存 3 次 → `女性 10→11→12→13`，而 `COS` 从 `-3` 被一路"存"到 `-2→-1→`**恰好归零删行**（一个减分标签被反复保存刷到消失） | 图站发 `d:0` 撤票会撞上旧校验 **400**（响亮）；react 走根 API 全是 **200**（静默） |
-| **旧客户端 + 新服务端** | ① 旧网页端"取消 +1"发的是差值 `d:-1` → 新服务端当目标值 → 权重 `10→9`：**取消变成了踩一票**。② 旧 react 端用"删 key"表达取消 → 该 IP 的旧票**撤不掉**：`COS` 停在 `-2` 不动。③ 反向改票拆两笔 `d:-1` → 第一笔生效、第二笔幂等空转（结果正确，属歪打正着） | 全部 **200**，静默 |
-
-**由此得出两条发布硬约束**：
-1. **服务端先行**，且 react 的「删 key 改成发 0」与它同批上线——因为两类 react 错配都是
-   静默 200，灰度期没有任何报警会替你发现它。
-2. 网页端反过来：新 `app.js` 打到旧服务端是**响亮 400**（撤票请求被拒），旧 `app.js`
-   打到新服务端是**静默把取消变成踩票**。所以 `app.js` 与服务端**必须同一份产物**部署，
-   不能分开热更新（静态文件与二进制分别发布时特别注意）。
-
-顺带三点：
-- 新服务端对旧客户端的**破坏是有界的**：幂等使"重复保存刷分"这条路被堵死（实测第 3 次
-  保存权重不再变），只剩"取消撤不掉"与"取消变踩票"两处语义错。
-- 底数不受任何错配影响（快照后不可变），所以**改回正确客户端后权重会自愈回真值**：
-  滚动值每票重算，不累加。
-
-### 读标签时不要把"读不到"当"没有标签"（react 必读）
-
-实测三个响应形态（`GET /api/twitter/tags/:username`）：
-
-| 情况 | 状态码 | body |
-|---|---|---|
-| 有标签 | 200 | `{"username":"legacy","last_modify":"…","tags":{"COS":-3,"女性":11},"status":"SUCCESS"}` |
-| **有账号但零标签** | 200 | `{"username":"alice",…,"tags":{},…}` ← 是 `{}`，**不是 `null`** |
-| **账号不存在** | **500** | `{"error":"查询用户失败: 没有进入 rows.Next()"}` ← **没有 `tags` 字段** |
-
-react 的 `src/api/getTags.ts` **不检查 `res.ok`**（同目录的 `createMetaData.ts` 检查了），
-所以第三行那个 500 会被 resolve 成一个没有 `tags` 的对象；再经 `App.jsx:206` / `App.jsx:247`
-的 `data.tags || {}` 兜底，**"查无此人"和"任何一次 5xx/网络抖动"都会变成"这个账号没有标签"**。
-
-在"完整期望态"语义下必须改掉：`getTags` 里 `if (!res.ok) throw`，调用方**不要把读失败
-兜成空表**。今天它只是显示错误（缺 key = 不动，误提交的空表不会撤销任何人的票）；
-但一旦哪天有人把"缺 key"实现成"清空该账号全部标签"，这个假空表就是一次删库操作。
-**这条比"删 key 改成发 0"更该先做**——它决定误发时会不会造成不可逆后果。
-
-### 存储与恒等式
-
-```
-tag_votes(username, tag, ip, value, updated_at)   PK(username,tag,ip) WITHOUT ROWID  ← 票账本（真源）
-tag_weight_base(username, tag, base)              PK(username,tag)    WITHOUT ROWID  ← 历史底数，快照后不可变
-account_tags(username, tag, weight)               PK(username,tag)    WITHOUT ROWID  ← 物化滚动值
+```text
+twitter-pic-go/
+├── AGENTS.md                  # 修改指南：改什么内容去哪里找 & 核心契约护栏
+├── README.md                  # 项目总览、架构、运行与部署说明（本文档）
+├── Makefile                   # 常用开发、测试、构建与前端热部署命令
+├── build.sh                   # 生产构建与 SCP 部署脚本（支持 --frontend 仅热更前端）
+├── compat.go                  # 根包向 api 子包的向后兼容导出层
+├── bans.txt                   # IP 封禁清单（单 IP / CIDR，10 分钟自动热重载）
+│
+├── server/                    # 统一服务主入口（兼容 CI 与现有部署脚本 `go build ./server`）
+│   ├── main.go                # 初始化共享 SQLite 连接池，在单一端口同时挂载 API 与 Gallery
+│   └── main_test.go           # 单端口路由共存与跨层数据同步集成测试
+│
+├── cmd/                       # 标准 CLI 入口
+│   ├── server/main.go         # 标准统一服务入口（同 server/main.go）
+│   └── gallery/main.go        # 仅启动 Gallery 的独立调试入口
+│
+├── api/                       # 【核心业务包 1】后端 REST API (package api)
+│   ├── router.go              # SetupRouter（统一挂载 API + Gallery）与 AddToGroup
+│   ├── handlers_v1.go         # V1 接口（/api/twitter/*：元数据、标签、Emoji、封禁管理）
+│   ├── handlers_v2.go         # V2 轻量切片接口（/api/v2/*, /api/flutter/*, /api/twitter/v2/*）
+│   ├── models_v2.go           # V2 数据模型（FlutterUser, UserMediaResponse, FeedResponse 等）
+│   ├── db_users.go            # users 表管理、状态更新与用户查询
+│   ├── db_tags.go             # 标签表迁移桥接与按标签查用户
+│   ├── db_emoji.go            # Emoji 投票与日/周/月排行榜压缩文件结算
+│   ├── crawler_client.go      # 向 Python caller.py 发送抓取指令的 TCP 客户端
+│   ├── middleware_ban.go      # Gin 侧 IP 封禁中间件
+│   └── *_test.go              # API 单元与契约回归测试
+│
+├── gallery/                   # 【核心业务包 2】Web 图站 SSR 与模块化前端 (package gallery)
+│   ├── server.go              # 图站 Handler、路由表与跨层缓存失效订阅
+│   ├── assets.go              # 双模前端加载器（//go:embed 内嵌兜底 + 磁盘 mtime 免编译实时热更新）
+│   ├── pages.go               # 首页 (/) 与账号页 (/u/{account}) SSR 渲染控制器
+│   ├── media.go               # .json.gz 解析、媒体代理域名重写、游标分页
+│   ├── tags_handler.go        # 图站标签接口（/api/tag, /api/tags, /api/tag/{tag}, /api/tags/cloud）
+│   ├── reactions.go           # 媒体单图赞/踩持久化（/api/reactions, /api/react）
+│   ├── home_cache.go          # 首页整页 SSR Stale-While-Revalidate 缓存
+│   ├── visibility.go          # 被封账号全路径 404 隐身视图
+│   ├── templates/             # HTML 模板（partials.html, home.html, account.html）
+│   ├── static/                # 前端静态资源
+│   │   ├── css/               # 模块化样式表（base.css, home.css, account.css, lightbox.css）
+│   │   ├── home.js            # 首页交互脚本（搜索、筛选、Gay模式、流式解压预览）
+│   │   └── app.js             # 账号页交互脚本（瀑布流、标签投票、手势灯箱、视频 HUD）
+│   └── *_test.go              # 图站路由、可见性、投票契约与缓存测试
+│
+├── tags/                      # 【共享底层包】账号标签与「一 IP 一票」账本唯一真源
+├── ipban/                     # 【共享底层包】IP 封禁 Radix Trie 与真实访客 IP (Principal) 提取
+├── limit/                     # 【共享底层包】按 IP 每小时限流器与全局限流中间件
+├── twimg/                     # 【共享底层包】内置 pbs.twimg.com 媒体反向代理
+├── Tools/                     # 【内置工具包】sqlite 连接封装与 ginkit 错误/CORS 中间件（无外部 submodule 依赖）
+├── crawler/                   # 【Python 抓取套件】caller.py, deamon.py, get2.py, get_meta_data.py
+└── docs/                      # 【文档中心】API_V2.md, FRONTEND_GUIDE.md, BAN_MANUAL.md, BAN_SUMMARY.md
 ```
 
-**恒等式：`weight = IFNULL(base,0) + IFNULL(Σ votes.value, 0)`**（只对"被票系统管过"的行成立；
-从没被投过的行没有底数，权重就是历史值）。现有权重在一次幂等迁移里整体快照成底数，
-**不清零、不重算**。
+---
 
-票行生命周期：投 / 改 → upsert（值相同则连 `updated_at` 都不动）；撤票 → **删行**
-（不留 `value=0` 的噪声行，且该 IP 之后仍可重投）；**归零删的是 `account_tags` 行，
-票行必须保留**——删了票行，该 IP 以后再也投不了这个标签，权重也无法从底数重算。
+## 3. 单地址运行与路由全景（API + Gallery 同源共存）
 
-一致性校验（随时可跑，两条都该返回 0 行）：
+启动服务后，**`api` 与 `gallery` 运行在同一个监听地址（默认 `:8080`）**，共享同一个 `twitter.db` 连接池与进程内缓存总线（`tags.OnDataChange`）：
 
-```sql
--- ① 不自洽的滚动值
-SELECT a.username, a.tag, a.weight, IFNULL(b.base,0) AS base, IFNULL(v.s,0) AS votes
-FROM account_tags a
-LEFT JOIN tag_weight_base b ON b.username=a.username AND b.tag=a.tag
-LEFT JOIN (SELECT username,tag,SUM(value) s FROM tag_votes GROUP BY username,tag) v
-       ON v.username=a.username AND v.tag=a.tag
-WHERE (b.username IS NOT NULL OR v.username IS NOT NULL)
-  AND a.weight <> IFNULL(b.base,0) + IFNULL(v.s,0);
-
--- ② 有票却该有权重行而缺失的（孤儿票）
-SELECT k.username, k.tag, IFNULL(b.base,0)+IFNULL(k.s,0) AS should_be
-FROM (SELECT username,tag,SUM(value) s FROM tag_votes GROUP BY username,tag) k
-LEFT JOIN tag_weight_base b ON b.username=k.username AND b.tag=k.tag
-LEFT JOIN account_tags a ON a.username=k.username AND a.tag=k.tag
-WHERE IFNULL(b.base,0)+IFNULL(k.s,0) <> 0 AND a.username IS NULL;
+```text
+HTTP Server (LISTEN_ADDR, 默认 :8080)
+ │
+ ├── /api/twitter/*          ──► api 包 (V1 REST API: 元数据 .json.gz、标签、Emoji、管理员封禁)
+ ├── /api/twitter/v2/*       ──► api 包 (V2 动态切片 API: Feed、媒体分页、标签用户、304 缓存)
+ ├── /api/v2/*               ──► api 包 (V2 根路径别名)
+ ├── /api/flutter/*          ──► api 包 (Flutter 专属路径别名)
+ │
+ └── 其余全部路由             ──► gallery 包 (SSR 图站与 Web 交互)
+      ├── GET  / , /index.html          (SSR 首页，带 60s Stale-While-Revalidate 整页缓存)
+      ├── GET  /u/{account}             (SSR 账号瀑布流详情页，支持 ?type=photo|video|all&cursor=)
+      ├── GET  /static/*                (前端静态资源：/static/css/*.css, /static/home.js, /static/app.js)
+      ├── GET  /api/tags , /api/account-tags          (批量查询账号标签权重)
+      ├── POST /api/tag  , /api/account-tag           (图站单标签一 IP 一票投票)
+      ├── GET  /api/tag/{tag}                         (按标签分页反查账号)
+      ├── GET  /api/tags/cloud , /api/tag-cloud       (热门标签云统计)
+      ├── GET  /api/reactions  , POST /api/react      (单张媒体赞/踩互动)
+      └── GET  /healthz                               (健康检查)
 ```
 
-同一份 SQL 也编在代码里（`tags.InvariantCheckSQL` / `tags.OrphanVotesSQL`，
-`Store.InvariantViolations()` 一次跑两条），并有测试证明它**真能抓到**绕过写路径的篡改。
+---
 
-规模：底数表与 `account_tags` 同行数（线上 2.3 万 → 约 1.0 MB）。票行按实测 ~57 B/行
-（`WITHOUT ROWID`，含 `updated_at`）：账号×标签×1 个 IP = 2.3 万行 ≈ 2.3 MB；
-×10 IP ≈ 14 MB；×100 IP ≈ 132 MB。涨到 GB 级需要"每个标签平均上百个不同访客投过"。
-读路径**不查**票账本（只看 `account_tags`），所以计票对读性能零影响；票行只在写入时
-按单行主键点查/聚合。
+## 4. 快速启动、前端热更新与部署工作流
 
-⚠️ `tag_votes.ip` 记**原始 IP（不哈希，用户已定）**，是隐私敏感表，导出/备份按
-`bans.txt` 同等待遇。它也是一张"谁给谁投了什么"的关系表，能反查同一 IP 投过哪些账号。
-
-## IP 封禁
-
-**只有一个实现、一个实例**：`ipban/` 包（只依赖 `net/http` + `net/netip` + `go-iptrie`，
-不吃 gin）。根 API 的 `StrictIPBanMiddleware`（`banManager.go`）与 gallery 的
-`handlePostAccountTag` 各自薄薄包一层，调同一个 `ipban.Shared()`。
-
-- **两条 IP 口径，别混用**：
-  - `ipban.Chain(r)` / `Manager.Decide`：**封禁判定**。RemoteAddr host + XFF **全部**条目，
-    **任一命中即封**。只看 XFF 首项会被 `X-Forwarded-For: <好人IP>, <被封IP>` 绕过。
-  - `ipban.Principal(r)`：**「这个请求是谁」**，用于限流分桶与 `request_logs.ip`。
-    退化顺序 **`CF-Connecting-IP` → XFF 从右往左第 `TRUSTED_PROXY_HOPS` 个 → RemoteAddr**。
-    原先根 API 记整个 XFF 头串、gallery 记首项，两层流水根本对不上，现统一。
-- **`CF-Connecting-IP` 优先**（`CF_CONNECTING_IP` 可关，默认开）：Cloudflare 总是**覆写**
-  这个头，所以经 CF 进来的请求伪造不了它，比数 XFF 跳数可靠。
-  ⚠️ 它可信的**前提**是「源站只允许 CF 回源」。只要存在绕过 CF 直连源站的通路
-  （源站 IP 泄露、别的域名/端口直回源、IPv6 没纳入限制），这个头和 XFF 一样可被任意伪造，
-  那时唯一可靠做法是**防火墙只放行 CF 网段**。bwh 的 ufw 是否已经这么做：**未验证**，
-  所以这里是「写明依赖」，不是「已经安全」。
-- **`TRUSTED_PROXY_HOPS` 默认 2**（CF + nginx 两跳）。判据——**两种配错都会错一格**：
-
-  | nginx 行为 | 到达源站的 XFF | 真实客户端位置 | 该配 |
-  |---|---|---|---|
-  | `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`（**追加**） | `<自报…>, <真实客户端>, <CF 边缘>` | 右数第 **2** | `2` |
-  | 原样**透传**（没有那一行） | `<自报…>, <真实客户端>` | 右数第 **1** | `1` |
-
-  本站实测为**追加**：线上 `request_logs.ip` 的形态是 `183.34.64.0, 104.22.109.48`
-  （左为真实客户端、右为 CF 边缘段），故默认 2。
-- **配错要能看见，不静默假绿**：启动时 `ipban.LogEffectiveConfig()` 打印实际生效口径与
-  封禁表加载条数；链长撑不起配置跳数时归属会退化到「客户端可自报的最左项」，该退化按次
-  计入 `xff-clamped`，并在每次热重载时由 `warnPrincipalAnomaly` 打日志（含来源分布）。
-- **同一份实例**：`Shared()` 用 `sync.Once` 给出进程级单例，热重载协程（`BAN_RELOAD_MINUTES`
-  默认 10 分钟）也只挂这一个。两份内存副本各自 reload 会出现「API 侧已封、gallery 侧没封」。
-- 清单路径 `BANS_FILE`（默认 `bans.txt`）；文件缺失=空表放行（封禁清单丢了不该变成全站 403）；
-  非法行跳过并告警，不因一行脏数据丢掉整张表。
-- 403 响应体统一为 `ipban.Denied{error, reason, ip}`，两层逐字相同。
-
-⚠️ 两个已知权衡：① `TRUSTED_PROXY_HOPS` 配错时 25/IP/h 配额仍可被伪造 XFF 换桶绕过
-（封禁不受影响，它看整条链）；② 「链上任一命中」允许攻击者把别人的 IP 塞进 XFF
-来陷害其被封——这是既有严格策略的固有权衡，收紧就得只查右数 N 项，代价是
-真实 IP 不在链上时漏封。
-
-## 被封账号的可见性
-
-`users.status` 是唯一真源，判定口径**只有一条**：`status = 'SUCCESS'` 才算可见。
-
-- 根 API：`GET /:fn` 对非 SUCCESS 回 200 + `banned.json` 占位（该文件缺失时退化 404）、
-  账号列表与 `by=tag` 都带 `u.status = 'SUCCESS'`。
-- 图站（gallery）：原先**只看磁盘上有没有 `<name>.json.gz`**，完全不看 status，
-  实测置 BANNED 后根侧 `by=tag` 回 `[]` 而图站反查仍列出该账号。现已在全部读路径收口，
-  统一 **404**（不确认「存在但被封」），细节与 URL 影响面见 `gallery/README.md`。
-- 封禁生效时限：图站的 `users.status` 视图按 60s TTL 惰性刷新，不等重启进程。
-- 降级方向是 **fail-open**（读不到 `users` 就不隐身）：把整站藏起来等于自我 DoS，
-  而"谁被封"这件事本身没坏，坏的只是可见性——与 `bans.txt` 缺失=空表放行同向。
-
-## 媒体来源
-
-媒体文件（图片/视频）通过以下方式获取：
-
-### 1. twimg 反代（内置）
-
-`twimg/main.go` 是一个反向代理服务器，监听 `TWIMG_ADDR` 环境变量指定的地址。
-它代理 `pbs.twimg.com` 的图片请求，同时支持 `video.twimg.com` 的 iframe 播放器。
-
-gallery 通过 `GALLERY_MEDIA_BASE` 或 `TWIMG_ADDR` 环境变量来配置媒体 URL 前缀。
-
-### 2. peerfs-proxy（WebRTC 方式）
-
-`peerfs-proxy` 是一个独立的 ECH 代理节点，通过 WebRTC DataChannel 提供 twimg 媒体文件。
-它运行在 `https://peerfs.moonchan.xyz/`，节点 ID 为 `twimg-proxy`。
-
-**作用：** 当 twimg 反代无法直接访问（如网络限制）时，peerfs-proxy 通过 ECH 域前置加密连接到 `video-cf.twimg.com`，绕过封锁获取图片/视频，然后通过 WebRTC 传给浏览器。
-
-**如何使用：**
+### 4.1 本地开发（开启 Gallery 前端免编译实时热更新）
 
 ```bash
-# 浏览器打开 https://peerfs.moonchan.xyz/
-# 连接信令 → 点击 twimg-proxy 节点 → 发送 read 请求读取文件
-
-# 请求格式：
-# {"type":"read","path":"twimg/media/xxx.jpg","offset":0,"size":-1,"reqId":"r1"}
-# 响应：meta → 二进制数据块 → done
+# 启动统一服务（默认监听 :8080）
+make dev
+# 或直接运行：
+LISTEN_ADDR=:8080 GALLERY_DEV=1 GALLERY_FRONTEND_DIR=./gallery go run ./server
 ```
 
-详细协议见 `peerfs-chat/README.md`。
+- **前端实时修改免重启**：直接修改 `gallery/templates/*.html`、`gallery/static/css/*.css` 或 `gallery/static/*.js`，保存后**直接刷新浏览器即可看到最新效果**，无需重新编译 Go 二进制或重启进程（详见 [`docs/FRONTEND_GUIDE.md`](docs/FRONTEND_GUIDE.md)）。
 
-## 数据流
+### 4.2 运行测试与语法自检
 
+```bash
+# 仅检查前端 JS 语法
+make check-js
+
+# 运行 JS 语法检查 + 全量 Go 单元测试与跨层契约测试
+make test
 ```
-Twitter API / X
-    │
-    ▼
-get2.py (Python)  →  生成 <username>.json.gz
-    │
-    ├──→ gallery (图站浏览)
-    │
-    └──→ twimg 反代 / peerfs-proxy (获取实际图片/视频)
+
+### 4.3 编译与生产部署
+
+```bash
+# 1. 仅在本地编译统一二进制（生成 ./bin/twitter-server 与 ./server/server）
+make build
+
+# 2. 仅热更新线上 Gallery 前端（免编译 Go、零停机，仅 SCP 同步 templates 与 static）
+make deploy-fe
+# 等价于：./build.sh --frontend
+
+# 3. 完整编译并部署后端二进制、前端资源与 Python 抓取脚本
+make deploy
+# 等价于：./build.sh
 ```
+
+---
+
+## 5. 核心机制说明
+
+### 5.1 新旧 API 双轨兼容架构（支持 `twitter-pic-react` `main` 旧分支与新分支）
+
+本项目在 `/api/twitter` 下完整保留**旧版 V1 API（供 `twitter-pic-react` `main` 分支使用，不作任何破坏性修改）**，同时在 `/api/twitter/v2`（及 `/api/v2`、`/api/flutter`）提供**新版 V2 API（供 `twitter-pic-react` 新分支、`gallery` 与移动端使用）**：
+
+- **旧版 API（`api/handlers_v1.go` — 供 `twitter-pic-react` `main` 使用）**：
+  - `GET /api/twitter/?list=users&after=`、`GET /api/twitter/?by=username|nick&search=`
+  - `GET /api/twitter/:username.json.gz?t=`、`POST /api/twitter/:username`（`?do_not_tag=true` / `?do_not_renew=true`）
+  - `GET /api/twitter/tags/:username`、`POST /api/twitter/tags/:username`、`POST /api/twitter/tag`
+  - `GET /api/twitter/emojis`、`GET /api/twitter/emojis.json.gz`、`POST /api/twitter/emojis`
+- **新版 API（`api/handlers_v2.go` — 供 `twitter-pic-react` 新分支使用）**：
+  - **视频封面 + `ouo.io` 广告变现**：所有视频条目返回 `cover`（`https://pbs.moonchan.xyz/ext_tw_video_thumb/...?format=jpg&name=orig`）与 `ouo_url`（`http://ouo.io/api/6z4kqAz7?s=https://twimg.moonchan.xyz/...`），前端只渲染封面图，点击视频通过 `ouo.io` 跳转获取广告收益并限流。
+  - **零 N+1 请求**：`GET /api/twitter/v2/users`、`/search`、`/users/batch`、`/ranking` 直接返回含头像、昵称、标签、媒体统计的富卡片（`FlutterUser`）。
+  - **单次时间线与分页切片**：`GET /api/twitter/v2/users/:username/timeline?t=<last_modify>` 与 `/media` 支持 `?t=` 版本化 Cloudflare 边缘强缓存（`s-maxage=86400`）与 `304 Not Modified` 本地协商缓存。
+  - 详细新旧接口对照表见 **[`api/README.md`](api/README.md)** 与 **[`docs/API_V2.md`](docs/API_V2.md)**。
+
+### 5.1b Cloudflare 边缘缓存与本地缓存设计
+详细接口契约见 **[`docs/API_V2.md`](docs/API_V2.md)**：
+- **边缘缓存由 Cloudflare 统一负责**：V2 所有只读接口均下发标准 `Cache-Control: public, max-age=..., s-maxage=...` 及 `Last-Modified`，支持 HTTP `304 Not Modified` 条件协商。
+- **按需动态切片**：
+  - `GET /api/v2/users/:username/media?limit=24&type=photo` 将首屏瀑布流由数兆 `.json.gz` 压缩至 **~3KB**；
+  - `GET /api/v2/tags/:tag/users` 强制校验 `users.status = 'SUCCESS'` 并单次返回头像/昵称/标签，彻底消灭 404 幽灵账号与 N+1 请求风暴；
+  - `GET /api/v2/feed` 提供冷启动聚合，服务端内置 ≤30 用户的极小有界淘汰缓存（<2MB），保护 1 vCPU / 528MB 小内存源站。
+
+### 5.2 标签存储与「一 IP 一票」计票契约
+**唯一真源**：`twitter.db` 中的三张核心表（由 `tags/` 包统一管理）：
+```text
+tag_votes(username, tag, ip, value, updated_at)   PK(username,tag,ip) WITHOUT ROWID  ← 票账本（真源）
+tag_weight_base(username, tag, base)              PK(username,tag)    WITHOUT ROWID  ← 历史底数（快照后不可变）
+account_tags(username, tag, weight)               PK(username,tag)    WITHOUT ROWID  ← 物化滚动值
+```
+- **恒等式**：`account_tags.weight = IFNULL(base, 0) + IFNULL(Σ tag_votes.value, 0)`（随时可通过 `tags.Store.InvariantViolations()` 校验）。
+- **请求与目标值语义**：
+  | 入口 | 方法/路径 | 请求体 | `d` / value 含义 |
+  | :--- | :--- | :--- | :--- |
+  | 图站前端 | `POST /api/tag`（或 `/api/twitter/tag`） | `{"user":"<账号>","tag":"<标签>","d":1}` | **该访客 IP 的目标值**：`1` 投 / `-1` 减 / `0` 撤票（`d` 必填） |
+  | V2 客户端 | `POST /api/v2/users/:username/tags` | `{"tag":"...", "d":1}` 或 `{"tags":{"女性":1,"自拍":0}}` | 单标签目标值或全量期望态字典（`0` = 撤掉该 IP 的票） |
+  | V1 App | `POST /api/twitter/:username?do_not_renew=true` | `{"<标签>":1,"<另一个>":0}` | 按标签逐项给目标值；未出现在 map 中的 key 保持原样不动 |
+- **天然幂等**：同一 IP 重复提交相同目标值，权重只算一票；从 `+1` 改投 `-1` 单笔请求净变化为 `-2`；撤票（`0`）直接删除 `tag_votes` 中的票行并重算滚动值，恰好归零时自动清理 `account_tags` 零权行。每次写请求照记一条 `request_logs` 审计流水。
+
+### 5.3 IP 封禁与客户端真实身份口径（`ipban/`）
+`api` 与 `gallery` 共享同一个进程级单例 `ipban.Shared()`（读取 `BANS_FILE`，默认 `bans.txt`，每 `BAN_RELOAD_MINUTES=10` 分钟热重载）：
+- **封禁判定（`ipban.Chain(r)` / `Manager.Decide(r)`）**：检查 `RemoteAddr` + `X-Forwarded-For` 全部条目 + `CF-Connecting-IP`，**链上任一 IP 命中即返回 403**（统一响应体 `{"error":"Access Denied","reason":"Banned IP detected in chain","ip":"..."}`），防止伪造 XFF 首项绕过封禁。
+- **真实访客身份（`ipban.Principal(r)`）**：用于限流分桶、`tag_votes.ip` 票桶与 `request_logs.ip`。默认优先读取 `CF-Connecting-IP`（可通过 `CF_CONNECTING_IP=0` 关闭），退化时从 `X-Forwarded-For` 右往左取第 `TRUSTED_PROXY_HOPS`（默认 `2`，对应 Cloudflare + Nginx 追加两跳）个地址，最后兜底 `RemoteAddr`。
+
+### 5.4 被封账号的全站隐身（`users.status`）
+- `twitter.db` 的 `users.status` 是唯一真源，仅 `status = 'SUCCESS'` 视为正常公开账号。
+- 当管理员通过 `DELETE /api/twitter/:username?delete=<DELETE_KEY>` 或 SQLite 将账号置为 `BANNED` 时：
+  - API V1 `GET /api/twitter/:fn` 返回 `banned.json`；
+  - API V2 与 Gallery 的全部读路径（首页列表、`#a-data`、标签云计数、`/u/{account}`、`/api/tag/{tag}`、`/api/tags`）及投票写路径（`POST /api/tag`）均将该账号隐身或返回 **404**。
+
+---
+
+## 6. 环境变量总表
+
+| 变量名 | 默认值 | 作用范围 | 说明 |
+| :--- | :--- | :--- | :--- |
+| `LISTEN_ADDR` | `:8080` | 全局服务 | 统一 HTTP 服务监听地址（未设置时回退读取 `GALLERY_ADDR`，再默认 `:8080`） |
+| `DB_PATH` / `GALLERY_DB` | `./twitter.db` | 全局服务 | SQLite 数据库文件路径（API 与 Gallery 共用） |
+| `GALLERY_FRONTEND_DIR` | 自动探测 `./gallery` | Gallery | 前端 `templates/` 与 `static/` 磁盘路径，存在时自动开启文件修改热重载 |
+| `GALLERY_DEV` | `1`（自动） | Gallery | 设为 `0` 时强制禁用磁盘热重载，仅使用编译内嵌的 `//go:embed` 资源 |
+| `GALLERY_JSON_DIR` | `.` | API & Gallery | 存放 `<username>.json.gz` 时间线数据的目录 |
+| `GALLERY_MEDIA_BASE` | `https://pbs.moonchan.xyz` | Gallery | 图片（含头像/封面）代理基址 |
+| `GALLERY_VIDEO_BASE` | `https://twimg.moonchan.xyz` | Gallery | 视频落地基址（点开视频经 `ouo.io` 跳转后的 Cloudflare Worker 目标地址） |
+| `GALLERY_OUO_PREFIX` / `OUO_KEY` | `http://ouo.io/api/6z4kqAz7?s=` | API V2 & Gallery | 点开视频时的 `ouo.io` 广告变现与限流跳转前缀 |
+| `TWIMG_ADDR` / `TWIMG_V2` | `""`（如 `127.26.8.10:8080`） | 配套反代 (`twimg/`) | 启动配套的 `TwimgProxyV2`（`pbs.moonchan.xyz`：图片走本体反代，`.mp4` 强制 302 卸载） |
+| `GALLERY_LEGACY_BASE` | `https://x.4545810.xyz` | Gallery | 旧版界面跳转基址（设为空串隐藏按钮） |
+| `GALLERY_PAGE_SIZE` | `12` | Gallery | 账号页每页媒体卡片数量 |
+| `GALLERY_HOME_CACHE_TTL` | `60` | Gallery | 首页 SSR 整页缓存 TTL（秒） |
+| `GALLERY_REACTIONS_FILE` | `./reactions.json` | Gallery | 单张媒体赞/踩持久化 JSON 文件路径 |
+| `GALLERY_TAG_RATE_MAX` | `25` | Gallery | 每 IP 每小时标签投票次数上限 |
+| `BANS_FILE` | `./bans.txt` | 全局封禁 | IP / CIDR 封禁列表文件路径 |
+| `BAN_RELOAD_MINUTES` | `10` | 全局封禁 | `bans.txt` 自动热重载间隔（分钟） |
+| `CF_CONNECTING_IP` | `1` | 全局 IP 口径 | 是否优先信任 `CF-Connecting-IP` 请求头（设 `0` 关闭） |
+| `TRUSTED_PROXY_HOPS` | `2` | 全局 IP 口径 | XFF 从右往左取真实客户端的跳数（CF + Nginx 追加 = `2`） |
+| `DELETE_KEY` | （必填才生效） | API 管理 | `DELETE`/`PUT /api/twitter/:username?delete=` 封禁/解封密钥 |
+| `CALLER_ADDR` | `127.25.9.19:8080` | API 抓取 | Python `crawler/caller.py` 的 TCP 监听地址 |
+| `CALLER_TOKEN` | `""` | API & 爬虫 | Go 与 `caller.py` 之间的可选共享鉴权令牌 |
+| `TWIMG_ADDR` | `""`（空则不启动） | 内置反代 | 内置 `pbs.twimg.com` 反向代理监听地址 |

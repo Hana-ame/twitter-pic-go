@@ -1,0 +1,122 @@
+/* ==========================================================================
+   Gallery Base Styles (gallery/static/css/base.css)
+   职责：全局设计变量（色板/圆角/阴影）、基础排版重置、顶部导航栏、底部页脚、
+         通用弹窗骨架（Modal）与入场动画。
+   修改指南：
+   - 调整全站主题色、背景色、字体、圆角 → 修改 :root 变量
+   - 调整顶部导航栏 / 加群按钮 / 旧版入口样式 → 修改 header / .lgbtn
+   - 调整弹窗通用遮罩与框体尺寸 → 修改 .modal-*
+   ========================================================================== */
+:root{
+  --bg:#0a0d14;
+  --bg-2:#0f1420;
+  --fg:#f0f2f7;
+  --muted:#7a8399;
+  --faint:#4a5468;
+  --card:#161b28;
+  --card-2:#1d2433;
+  --border:#232a3d;
+  --border-2:#2d3650;
+  --acc:#5b9dff;
+  --acc-2:#bb9af7;
+  --acc-3:#f7768e;
+  --glow:0 0 0 1px rgba(91,157,255,.25),0 4px 20px -4px rgba(91,157,255,.35);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.3);
+  --shadow:0 4px 16px -2px rgba(0,0,0,.4);
+  --shadow-lg:0 12px 32px -6px rgba(0,0,0,.5);
+  --radius:14px;
+  --radius-sm:10px;
+  --radius-pill:999px;
+  --ease:cubic-bezier(.4,0,.2,1);
+}
+*{box-sizing:border-box}
+html{-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;scroll-behavior:smooth}
+body{
+  margin:0;background:
+    radial-gradient(ellipse 80% 60% at 50% -10%,rgba(91,157,255,.06),transparent 60%),
+    radial-gradient(ellipse 60% 50% at 80% 100%,rgba(187,154,247,.04),transparent 60%),
+    var(--bg);color:var(--fg);
+  font:15px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",sans-serif;
+  font-feature-settings:'cv11','ss01','tnum';min-height:100dvh;
+}
+
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:var(--border-2);border-radius:999px;border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:#3d4863}
+::selection{background:rgba(91,157,255,.3);color:#fff}
+:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+
+/* ---- header ---- */
+header{
+  position:sticky;top:0;z-index:20;
+  padding:max(12px, env(safe-area-inset-top, 12px)) max(24px, env(safe-area-inset-right, 24px)) 12px max(24px, env(safe-area-inset-left, 24px));
+  display:flex;align-items:center;justify-content:space-between;gap:12px;
+  background:rgba(10,13,20,.72);
+  backdrop-filter:blur(12px) saturate(1.4);
+  -webkit-backdrop-filter:blur(12px) saturate(1.4);
+  border-bottom:1px solid var(--border);
+}
+header a{color:var(--fg);text-decoration:none;font-weight:600;letter-spacing:-.01em}
+header a:hover{color:var(--acc)}
+.lgbtn{
+  padding:6px 14px;border-radius:var(--radius-pill);
+  background:var(--card);border:1px solid var(--border-2);color:var(--muted);
+  text-decoration:none;font-size:13px;font-weight:500;white-space:nowrap;
+  transition:all .18s var(--ease);
+}
+.lgbtn:hover{color:var(--fg);border-color:var(--acc);background:var(--card-2)}
+.hact{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.lgbtn.join{
+  background:linear-gradient(135deg,var(--acc),var(--acc-2));
+  border-color:transparent;color:#0a0d14;font-weight:700;
+  box-shadow:var(--shadow-sm);
+}
+.lgbtn.join:hover{color:#0a0d14;border-color:transparent;filter:brightness(1.08)}
+
+/* ---- main & typography ---- */
+main{padding:24px;max-width:1500px;margin:0 auto}
+.muted{color:var(--muted)}
+.center{text-align:center}
+h1{font-size:22px;margin:0 0 6px;font-weight:700;letter-spacing:-.02em}
+.pill{display:inline-block;padding:2px 8px;border-radius:var(--radius-pill);background:var(--card-2);color:var(--muted);font-size:12px}
+
+/* ---- pager ---- */
+.pager{display:flex;gap:14px;align-items:center;justify-content:center;margin:24px 0}
+.pager .btn{
+  background:var(--card);color:var(--fg);border:1px solid var(--border-2);
+  border-radius:var(--radius-pill);padding:9px 20px;text-decoration:none;cursor:pointer;
+  transition:all .18s var(--ease);font-weight:500;box-shadow:var(--shadow-sm);
+}
+.pager .btn:hover{border-color:var(--acc);background:var(--card-2);transform:translateY(-1px);box-shadow:var(--shadow)}
+.pager .btn[hidden]{display:none}
+
+/* ---- footer ---- */
+footer{padding:28px;text-align:center;color:var(--faint);font-size:13px}
+
+/* ---- modal common ---- */
+.modal-overlay{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeUp .2s var(--ease)}
+.modal-overlay[hidden]{display:none}
+.modal-box{background:var(--card);border:1px solid var(--border-2);border-radius:var(--radius);max-width:680px;width:100%;max-height:85vh;display:flex;flex-direction:column;box-shadow:var(--shadow-lg);overflow:hidden}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)}
+.modal-title{font-size:16px;font-weight:700;margin:0;display:flex;align-items:center;gap:8px}
+.modal-close{background:transparent;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:4px 8px;border-radius:6px;line-height:1;transition:all .15s}
+.modal-close:hover{color:var(--fg);background:var(--card-2)}
+.modal-body{padding:18px 20px;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+.modal-tip{font-size:13px;color:var(--muted);margin:0}
+.modal-cloud{display:flex;flex-wrap:wrap;gap:8px;padding-top:4px}
+.modal-footer{padding:12px 20px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--bg-2)}
+.modal-stat{font-size:13px;color:var(--muted)}
+.modal-actions{display:flex;gap:10px}
+.modal-btn{padding:6px 14px;border-radius:var(--radius-pill);border:1px solid var(--border-2);background:var(--card);color:var(--fg);font-size:13px;cursor:pointer;transition:all .15s}
+.modal-btn:hover{background:var(--card-2);border-color:var(--acc)}
+.modal-btn.danger{border-color:rgba(247,118,142,.4);color:#fca5a5}
+.modal-btn.danger:hover{background:rgba(247,118,142,.15);border-color:var(--acc-3)}
+.modal-btn.primary{background:var(--acc);color:#fff;border-color:transparent}
+.modal-btn.primary:hover{filter:brightness(1.1)}
+.modal-input-row{display:flex;gap:8px;margin-bottom:6px}
+.modal-input{flex:1;background:var(--card-2);border:1px solid var(--border-2);border-radius:var(--radius-sm);padding:7px 12px;color:var(--fg);font-size:13px}
+.modal-input:focus{outline:none;border-color:var(--acc)}
+
+/* ---- entrance animations ---- */
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}

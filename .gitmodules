@@ -1,4 +1,0 @@
-[submodule "Tools"]
-	path = Tools
-	url = https://github.com/Hana-ame/Tools.git
-	branch = go

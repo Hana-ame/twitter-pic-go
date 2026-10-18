@@ -175,30 +175,17 @@
     if (!m || typeof m !== "object") return;
     const name = el.dataset.n;
     const rawB = typeof m.b === "string" ? m.b : "";
-    if (rawB) {
+    if (rawB && !m.v) {
       const ph = el.querySelector(".bnr-ph");
       if (ph) {
-        if (m.v) {
-          const videoSrc = rawB + (rawB.indexOf("#") >= 0 ? "" : "#t=0.001");
-          const v = document.createElement("video");
-          v.className = "bnr";
-          v.muted = true;
-          v.loop = true;
-          v.playsInline = true;
-          v.autoplay = true;
-          v.preload = "metadata";
-          ph.replaceWith(v);
-          loadMedia(v, getVideoURL(videoSrc));
-        } else {
-          const img = document.createElement("img");
-          img.className = "bnr";
-          img.loading = "lazy";
-          img.decoding = "async";
-          img.referrerPolicy = "no-referrer";
-          img.alt = "";
-          ph.replaceWith(img);
-          loadMedia(img, getImageURL(thumbURL(rawB)));
-        }
+        const img = document.createElement("img");
+        img.className = "bnr";
+        img.loading = "lazy";
+        img.decoding = "async";
+        img.referrerPolicy = "no-referrer";
+        img.alt = "";
+        ph.replaceWith(img);
+        loadMedia(img, getImageURL(thumbURL(rawB)));
       }
     }
     const rawA = typeof m.a === "string" ? m.a : "";
@@ -312,10 +299,14 @@
           if (mu && mu[1]) {
             const mt = (/"type"\s*:\s*"([^"]*)"/.exec(o) || [])[1] || "";
             const isVid = /video|gif/i.test(mt);
-            if (!firstMedia) firstMedia = { url: mu[1], type: mt };
             if (!isVid) { // 优先取第一张图片作为 banner
               tl = { url: mu[1], type: mt };
               break;
+            }
+            // 视频条目只使用 gallery_dl 生成的 cover 字段作为图片封面，绝不回退加载 .mp4 视频流
+            const mc = /"cover"\s*:\s*"([^"]*)"/.exec(o);
+            if (mc && mc[1] && !firstMedia) {
+              firstMedia = { url: mc[1], type: "photo" };
             }
           }
           pos += o.length;

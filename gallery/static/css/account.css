@@ -1,0 +1,103 @@
+/* ==========================================================================
+   Gallery Account Page Styles (gallery/static/css/account.css)
+   职责：账号详情页（/u/{account}）头部 Banner、头像与昵称、账号标签投票胶囊、
+         类型切换标签栏（全部/图片/视频）以及 CSS 多列媒体瀑布流网格（.grid / .card）。
+   修改指南：
+   - 调整账号头图比例或头像尺寸 → 修改 .ubanner / .uhead / .uav
+   - 调整账号页标签与加减票按钮样式 → 修改 .atags / .atag / .atag-vote
+   - 调整瀑布流列数或卡片间距 → 修改 .grid / .card
+   ========================================================================== */
+
+/* ---- account page header ---- */
+.ubanner{
+  width:100%;aspect-ratio:3/1;overflow:hidden;margin:0 0 14px;
+  border:1px solid var(--border);border-radius:var(--radius);background:#0b0d13;
+}
+.ubanner img{width:100%;height:100%;object-fit:cover;object-position:center 35%}
+.uhead{display:flex;align-items:center;gap:16px;margin:0 0 24px}
+.uav{
+  width:56px;height:56px;border-radius:50%;overflow:hidden;flex:none;
+  background:linear-gradient(140deg,#1b2f5c,#2d2a4a);border:1px solid var(--border-2);
+  display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:var(--muted);
+}
+.uav img{width:100%;height:100%;object-fit:cover}
+.umeta{min-width:0}
+.umeta h1{margin:0;font-size:24px;font-weight:700}
+.umeta p{margin:2px 0 0;font-size:14px}
+
+/* ---- account tag voting bar ---- */
+.atags{display:flex;flex-wrap:wrap;gap:6px;margin:-6px 0 16px;align-items:center}
+.atag{display:inline-flex;align-items:center;gap:5px;background:var(--card-2);border:1px solid var(--border-2);color:var(--fg);border-radius:var(--radius-pill);padding:3px 10px;font-size:12.5px;box-shadow:var(--shadow-sm)}
+.atag b{font-weight:600;color:var(--acc);font-size:12px}
+.atag.up{border-color:var(--acc);background:rgba(91,157,255,.12)}
+.atag.down{border-color:var(--acc-3);background:rgba(247,118,142,.12)}
+.atag-vote{border:none;background:rgba(122,131,153,.18);color:var(--muted);border-radius:50%;width:18px;height:18px;font-size:13px;line-height:1;cursor:pointer;padding:0;display:inline-flex;align-items:center;justify-content:center;transition:background .15s,color .15s,transform .1s}
+.atag-vote:hover{background:rgba(122,131,153,.32);color:var(--fg)}
+.atag-vote:active{transform:scale(.9)}
+.atag-vote.up.on{background:var(--acc);color:#fff}
+.atag-vote.down.on{background:var(--acc-3);color:#fff}
+.atag-toggle{cursor:pointer;color:var(--muted);background:transparent;border-style:dashed}
+.atag-toggle:hover{color:var(--acc);border-color:var(--acc)}
+.atag-toggle.on{color:var(--acc);border-color:var(--acc);border-style:solid;background:rgba(91,157,255,.08)}
+.atag-add{cursor:pointer;color:var(--muted);background:transparent;border-style:dashed}
+.atag-add:hover{color:var(--acc);border-color:var(--acc)}
+.atag-input{display:block;margin:0 0 16px;background:var(--card-2);border:1px solid var(--acc);color:var(--fg);border-radius:var(--radius-pill);padding:7px 14px;font-size:13px;outline:none;width:min(280px,70vw);box-shadow:var(--glow)}
+.atag-input::placeholder{color:var(--faint)}
+.atag-input[hidden]{display:none}
+
+/* ---- media grid (account page) ---- */
+.grid{column-count:4;column-gap:16px;column-fill:balance}
+.card{
+  position:relative;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px;
+  display:block;width:100%;margin-bottom:16px;
+  break-inside:avoid;-webkit-column-break-inside:avoid;page-break-inside:avoid;
+  box-shadow:var(--shadow-sm);overflow:hidden;text-decoration:none;color:var(--fg);
+  transition:transform .2s var(--ease),box-shadow .2s var(--ease),border-color .2s var(--ease);
+}
+.card:hover{
+  border-color:var(--acc);transform:translateY(-2px);
+  box-shadow:var(--shadow-lg),0 0 0 1px rgba(91,157,255,.12);
+}
+.card img,.card video{width:100%;height:auto;border-radius:6px;background:var(--card-2);display:block;cursor:zoom-in;aspect-ratio:1/1;min-height:40px}
+.card.has-video::after{
+  content:'▶';position:absolute;bottom:10px;left:10px;
+  background:rgba(0,0,0,.7);color:#fff;font-size:11px;font-weight:600;
+  padding:2px 8px;border-radius:6px;pointer-events:none;
+  -webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);
+}
+
+/* ---- modes / filter ---- */
+.modes{display:flex;gap:8px;margin:0 0 20px;flex-wrap:wrap}
+.modes a{
+  padding:7px 16px;border-radius:var(--radius-pill);background:var(--card);
+  color:var(--muted);text-decoration:none;border:1px solid var(--border-2);font-size:14px;
+  transition:all .18s var(--ease);font-weight:500;
+}
+.modes a:hover{color:var(--fg);border-color:var(--acc);background:var(--card-2)}
+.modes a.active{
+  background:linear-gradient(90deg,rgba(91,157,255,.22),rgba(187,154,247,.18));
+  color:#fff;border-color:var(--acc);box-shadow:var(--glow);
+}
+.modes a.lg{margin-left:auto;color:var(--acc-2);border-color:rgba(187,154,247,.25)}
+.modes a.lg:hover{color:var(--acc-2);border-color:var(--acc-2);background:rgba(187,154,247,.08)}
+
+.grid .card{animation:fadeUp .3s var(--ease) backwards}
+.grid .card:nth-child(1){animation-delay:.02s}
+.grid .card:nth-child(2){animation-delay:.04s}
+.grid .card:nth-child(3){animation-delay:.06s}
+.grid .card:nth-child(4){animation-delay:.08s}
+.grid .card:nth-child(5){animation-delay:.10s}
+.grid .card:nth-child(6){animation-delay:.12s}
+.grid .card:nth-child(7){animation-delay:.14s}
+.grid .card:nth-child(8){animation-delay:.16s}
+.grid .card:nth-child(9){animation-delay:.18s}
+.grid .card:nth-child(10){animation-delay:.20s}
+.grid .card:nth-child(11){animation-delay:.22s}
+.grid .card:nth-child(12){animation-delay:.24s}
+
+.card.has-video img{cursor:pointer}
+.video-cover-ph{
+  width:100%;aspect-ratio:16/9;border-radius:6px;background:var(--card-2);
+  display:flex;align-items:center;justify-content:center;
+  color:var(--muted);font-size:14px;font-weight:600;cursor:pointer;
+}

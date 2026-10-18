@@ -1,25 +1,9 @@
-// 本文件是标签云的进程内缓存。
+// 本文件是标签云的进程内缓存与跨层数据变更通知钩子。
 //
-// 为什么必须缓存：Cloud 的查询是
-//
-//	SELECT tag, COUNT(DISTINCT username) FROM account_tags a
-//	 WHERE weight > 0 AND NOT EXISTS (SELECT 1 FROM users u
-//	         WHERE u.username = a.username AND (u.status IS NULL OR u.status != 'SUCCESS'))
-//	 GROUP BY tag ORDER BY 2 DESC, tag
-//
-// 即 account_tags(23k 行) 对 users(17k 行) 的**反连接**再 GROUP BY。线上实测
-// 单次 ~0.8s。而它挂在两个高频入口上：首页 SSR 与 GET /api/tags/cloud。
-// 不缓存就是每个请求烧 0.8s 的 CPU 与 IO。
-//
-// 刷新时机是**数据变化时失效**，不是定时轮询：
-//   - 标签权重变化  → CastVotes 提交成功后失效（两个前端的写路径都汇到那里）
-//   - 账号被封/解封 → 根包 commitUser 改完 users.status 后失效
+// 刷新时机是数据变化时失效，不是定时轮询：
+//   - 标签权重变化  → CastVotes 提交成功后失效（所有前端的写路径都汇到那里）
+//   - 账号被封/解封 → API commitUser 改完 users.status 后失效
 //   - 历史底数回填  → BackfillVoteBase 完成后失效
-// 这样才能满足"重启不负责刷新"：重启只是让缓存从空开始，之后由写入驱动。
-//
-// cloudTTL 只是**兜底**：运维直接用 sqlite3 改 users.status（[[proj-twitter-pic-ban-flow]]
-// 里的手工封禁路径）绕过了进程，没有事件可挂钩；给个上限保证那种改动最终会体现。
-// 它不是主机制——主机制始终是失效。
 package tags
 
 import (
@@ -31,12 +15,6 @@ import (
 // cloudTTL 是兜底过期时间（覆盖进程外的 sqlite3 直改）。主机制是显式失效。
 const cloudTTL = 10 * time.Minute
 
-// 标签云不设数量上限：缓存全量榜单（而不是按请求的 limit 分别缓存），
-// 取全量后按需切片是 O(1)。
-
-// cloudKey 按 **库** 区分：同一个进程里测试会开多个 twitter.db，若只按
-// (n, excludeBanned) 做键，不同库的结果会互相串。生产里 API 与 gallery
-// 共用同一个 *sql.DB 指针，所以它们命中的是同一条缓存。
 type cloudKey struct {
 	db            *sql.DB
 	excludeBanned bool
@@ -51,9 +29,32 @@ var (
 	cloudMu     sync.Mutex
 	cloudData   = map[cloudKey]cloudEntry{}
 	cloudFlight = map[cloudKey]chan struct{}{}
+
+	hooksMu sync.RWMutex
+	hooks   []func(*sql.DB)
 )
 
-// cloneCounts 返回副本：缓存里的切片绝不能交到调用方手里被改。
+// OnDataChange 注册当标签权重或用户可见状态发生变更时的回调（例如通知 Gallery 首页 SSR 缓存与 API V2 Feed 缓存失效）。
+// 通过在共享的 tags 层提供发布-订阅钩子，API 与 Gallery 无需互相耦合即可在同进程单端口下保持缓存实时同步。
+func OnDataChange(fn func(*sql.DB)) {
+	if fn == nil {
+		return
+	}
+	hooksMu.Lock()
+	hooks = append(hooks, fn)
+	hooksMu.Unlock()
+}
+
+func notifyDataChange(db *sql.DB) {
+	hooksMu.RLock()
+	list := make([]func(*sql.DB), len(hooks))
+	copy(list, hooks)
+	hooksMu.RUnlock()
+	for _, fn := range list {
+		fn(db)
+	}
+}
+
 func cloneCounts(v []Count) []Count {
 	if v == nil {
 		return nil
@@ -83,11 +84,7 @@ func cloudPut(key cloudKey, val []Count) {
 	cloudMu.Unlock()
 }
 
-// InvalidateCloud 清掉某个库的标签云缓存。写路径改完 account_tags 或 users.status
-// 后必须调它，否则读到的还是旧榜单。
-//
-// db 传 nil 时清全部（测试/兜底用）。生产中两个前端共用同一个指针，所以
-// 任一侧的写入都会让另一侧立刻看到新值。
+// InvalidateCloud 清掉某个库的标签云缓存，并触发跨层变更回调。
 func InvalidateCloud(db *sql.DB) {
 	cloudMu.Lock()
 	for k := range cloudData {
@@ -96,10 +93,10 @@ func InvalidateCloud(db *sql.DB) {
 		}
 	}
 	cloudMu.Unlock()
+	notifyDataChange(db)
 }
 
-// RefreshCloud 同步刷新指定库的标签云缓存，读 tag_counts 并填入 cloudData。
-// posttag 写动作提交事务后立即调用，使读请求永远命中热缓存（0ms 响应）。
+// RefreshCloud 同步刷新指定库的标签云缓存，读 tag_counts 并填入 cloudData，同时通知关联缓存失效。
 func (s *Store) RefreshCloud() {
 	if s == nil || s.db == nil {
 		return
@@ -108,12 +105,13 @@ func (s *Store) RefreshCloud() {
 	full, err := s.queryCloudAll(true)
 	if err == nil && len(full) > 0 {
 		cloudPut(key, full)
+		notifyDataChange(s.db)
 	} else {
 		InvalidateCloud(s.db)
 	}
 }
 
-// RefreshCloudByDB 同步刷新指定 sql.DB 的标签云缓存（供根包调用）
+// RefreshCloudByDB 同步刷新指定 sql.DB 的标签云缓存（供 API 包调用）。
 func RefreshCloudByDB(db *sql.DB) {
 	if db == nil {
 		return

@@ -1,0 +1,33 @@
+name: Test
+
+# 专属测试 CI：每次 push master 与 PR 都跑 go vet + go test ./...，
+# 不依赖发版 tag（release.yml 仅在 v* tag 时触发）。覆盖视频直连配额中间件
+# (api/middleware_video_quota_test.go) 等全部单测。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: go vet + go test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5'
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...

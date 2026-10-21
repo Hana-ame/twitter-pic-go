@@ -55,7 +55,6 @@
   // 单源加载图片：一个地址，失败即失败，不换源、不重试。
   function loadMedia(el, src) {
     if (!el || !src) return;
-    el.referrerPolicy = 'no-referrer';
     if (el.src !== src) {
       el.src = src;
     }
@@ -133,7 +132,6 @@
       if (m.cover) {
         n = document.createElement('img');
         n.loading = 'lazy';
-        n.referrerPolicy = 'no-referrer';
         n.alt = '';
         n.draggable = false;
         var cRatio = aspectCache[m.cover] || guessAspectFromURL(m.url);
@@ -157,7 +155,6 @@
     if (cachedRatio) aspectCache[m.url] = cachedRatio;
     n = document.createElement('img');
     n.loading = 'lazy';
-    n.referrerPolicy = 'no-referrer';
     n.alt = '';
     n.draggable = false;
     if (cachedRatio) n.style.aspectRatio = cachedRatio;
@@ -657,7 +654,6 @@
   renderGrid();
   var uavImg = document.querySelector('.uav img');
   if (uavImg && uavImg.getAttribute('src')) {
-    uavImg.referrerPolicy = 'no-referrer';
     loadMedia(uavImg, getImageURL(uavImg.getAttribute('src')));
   }
 })();

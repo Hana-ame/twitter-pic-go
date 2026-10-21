@@ -5,9 +5,9 @@
 {{template "header" .}}
 <main>
   {{with .Account}}
-  {{with .Banner}}<div class="ubanner"><img referrerpolicy="no-referrer" src="{{.}}" alt=""></div>{{end}}
+  {{with .Banner}}<div class="ubanner"><img src="{{.}}" alt=""></div>{{end}}
   <div class="uhead">
-    {{with .Avatar}}<div class="uav"><img referrerpolicy="no-referrer" src="{{.}}" alt=""></div>{{else}}<div class="uav">@</div>{{end}}
+    {{with .Avatar}}<div class="uav"><img src="{{.}}" alt=""></div>{{else}}<div class="uav">@</div>{{end}}
     <div class="umeta">
       <h1>{{if .Nick}}{{.Nick}}{{else}}{{.Name}}{{end}}</h1>
       <p class="muted">@{{.Name}} · <span id="g-count">{{.Total}} media</span> · <span id="g-range"></span></p>
@@ -31,16 +31,16 @@
   <div class="grid" id="g-grid" data-slug="{{.Slug}}" data-per="{{.PageSize}}" data-base="{{.MediaBase}}" data-vbase="{{.VideoBase}}" data-ouo="{{.OuoPrefix}}">
     {{range .Media}}
       {{if .IsVideo}}
-        <a class="card has-video" href="{{.OuoURL}}" target="_blank" rel="noopener noreferrer" title="点击播放视频">
+        <a class="card has-video" href="{{.OuoURL}}" target="_blank" rel="noopener" title="点击播放视频">
           {{if .Cover}}
-            <img loading="lazy" referrerpolicy="no-referrer" src="{{.Cover}}" alt="">
+            <img loading="lazy" src="{{.Cover}}" alt="">
           {{else}}
             <div class="video-cover-ph">▶ 视频</div>
           {{end}}
         </a>
       {{else}}
         <div class="card">
-          <img loading="lazy" referrerpolicy="no-referrer" src="{{.URL}}" alt="">
+          <img loading="lazy" src="{{.URL}}" alt="">
         </div>
       {{end}}
     {{end}}

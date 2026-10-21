@@ -131,7 +131,6 @@
   // 单源加载：一个地址，失败即失败，不换源、不重试。
   function loadMedia(el, src) {
     if (!el || !src) return;
-    el.referrerPolicy = "no-referrer";
     if (el.tagName === "VIDEO") {
       const wasPlaying = !el.paused;
       if (el.src !== src) {
@@ -182,7 +181,6 @@
         img.className = "bnr";
         img.loading = "lazy";
         img.decoding = "async";
-        img.referrerPolicy = "no-referrer";
         img.alt = "";
         ph.replaceWith(img);
         loadMedia(img, getImageURL(thumbURL(rawB)));
@@ -194,7 +192,6 @@
       if (av && !av.querySelector("img")) {
         const img = document.createElement("img");
         img.alt = "";
-        img.referrerPolicy = "no-referrer";
         av.insertAdjacentElement("afterbegin", img);
         loadMedia(img, getImageURL(rawA));
       }

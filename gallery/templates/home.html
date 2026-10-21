@@ -4,7 +4,6 @@
 <body>
 {{template "ageGate" .}}
 {{template "header" .}}
-{{template "ad.html" .}}
 <main class="home">
   <section class="hero">
     <h1 class="big">Twitter&nbsp;Pic <span class="grad">Gallery</span></h1>
@@ -95,5 +94,6 @@
 
 {{template "footer" .}}
 <script>{{.HomeJS}}</script>
+{{/* 广告位（body 底部）：恢复广告投送时在此调用 ad.html 模板；当前已于 2026-10-22 关闭 */}}
 </body>
 </html>

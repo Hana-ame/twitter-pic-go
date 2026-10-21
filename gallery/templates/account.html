@@ -4,7 +4,6 @@
 <body>
 {{template "ageGate" .}}
 {{template "header" .}}
-{{template "ad.html" .}}
 <main>
   {{with .Account}}
   {{with .Banner}}<div class="ubanner"><img src="{{.}}" alt=""></div>{{end}}
@@ -77,5 +76,6 @@
 <script id="g-atags-data" type="application/json">{{.Account.ATagsJSON}}</script>
 <script>{{.AppJS}}</script>
 {{template "footer" .}}
+{{/* 广告位（body 底部）：恢复广告投送时在此调用 ad.html 模板；当前已于 2026-10-22 关闭 */}}
 </body>
 </html>

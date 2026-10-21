@@ -1,6 +1,6 @@
 /* twitter-pic gallery 前端：
  * 1. 媒体资源与视频封面（gallery_dl cover 字段）唯一 CDN 入口为 pbs.moonchan.xyz，取消所有 fallback 与 <video> 预加载；
- * 2. 视频卡片直接展示 cover 封面图，点开视频时统一经由 ouo.io 跳转（兼具广告展示与访问限流）；
+ * 2. 视频卡片直接展示 cover 封面图，点击后经由后端配额中间件跳转（配额内直连，配额外按分钟门控走 ouo.io）；
  * 3. 图片支持网格分页 + 手机式全屏查看器（横向翻页 / 双指与双击缩放 / 下滑关闭 / chrome 自动隐藏）+ 赞/踩/喜欢。
  */
 (function () {
@@ -43,7 +43,7 @@
   }
 
   // 点开视频时指向 Go 后端专属视频处理端点（/api/twitter/v2/video/<path+query>）
-  // 后端收到请求后将 host 替换为 twimg.moonchan.xyz 并通过 ouo.io 302 重定向到广告中转页
+   // 后端收到请求后按配额中间件判定：配额内直连 twimg.moonchan.xyz，配额外按分钟门控走 ouo.io
   function getOuoVideoURL(raw) {
     if (!raw) return '';
     var pathAndQuery = extractPath(raw, 'https://video.twimg.com');
@@ -181,14 +181,14 @@
 
   function gridCard(m, gIdx) {
     if (m.video) {
-      // 视频卡片：显示 pbs.moonchan.xyz 上的 cover 封面，点击时直接通过 ouo.io 跳转
+      // 视频卡片：显示 pbs.moonchan.xyz 上的 cover 封面，点击后经后端配额中间件跳转
       var a = document.createElement('a');
       a.className = 'card has-video';
       a.dataset.gidx = gIdx;
       a.href = m.ouoUrl || getOuoVideoURL(m.url);
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
-      a.title = '点击通过 ouo.io 打开视频';
+      a.title = '点击播放视频';
       a.appendChild(mediaNode(m, true));
       return a;
     }

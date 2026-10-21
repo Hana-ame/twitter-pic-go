@@ -31,7 +31,7 @@
   <div class="grid" id="g-grid" data-slug="{{.Slug}}" data-per="{{.PageSize}}" data-base="{{.MediaBase}}" data-vbase="{{.VideoBase}}" data-ouo="{{.OuoPrefix}}">
     {{range .Media}}
       {{if .IsVideo}}
-        <a class="card has-video" href="{{.OuoURL}}" target="_blank" rel="noopener noreferrer" title="点击通过 ouo.io 打开视频">
+        <a class="card has-video" href="{{.OuoURL}}" target="_blank" rel="noopener noreferrer" title="点击播放视频">
           {{if .Cover}}
             <img loading="lazy" referrerpolicy="no-referrer" src="{{.Cover}}" alt="">
           {{else}}
@@ -54,7 +54,7 @@
   {{end}}
 </main>
 
-<!-- 全屏查看器：图片双指捏合与双击缩放 / 横向翻页 / 下滑关闭；视频显示 cover 封面，点击经 ouo.io 跳转 -->
+<!-- 全屏查看器：图片双指捏合与双击缩放 / 横向翻页 / 下滑关闭；视频显示 cover 封面，点击经后端配额中间件跳转 -->
 <div class="lb" id="lb" hidden>
   <div class="lb-track" id="lb-track" tabindex="-1"></div>
   <div class="lb-topfade"></div>

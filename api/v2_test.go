@@ -705,7 +705,9 @@ func TestV2VideoCoverAndOuoURL(t *testing.T) {
 		t.Errorf("expected ouo_url %q, got %q", wantOuo, item.OuoURL)
 	}
 
-	// 验证点击视频专属端点时：直接替换 host 为 twimg.moonchan.xyz 并 302 重定向到 ouo.io 广告中转页
+	// 验证点击视频专属端点时：配额内首访直接 302 到真实代理地址 twimg.moonchan.xyz（绕过 ouo.io）。
+	// 直连配额中间件按访客 IP 计数：计数 < videoFreeDirectQuota 直连，>= 阈值走 ouo.io。
+	resetVideoVisitCounts()
 	wVid := httptest.NewRecorder()
 	reqVid, _ := http.NewRequest("GET", item.OuoURL, nil)
 	r.ServeHTTP(wVid, reqVid)
@@ -713,8 +715,78 @@ func TestV2VideoCoverAndOuoURL(t *testing.T) {
 		t.Fatalf("expected 302 from video endpoint, got %d", wVid.Code)
 	}
 	loc := wVid.Header().Get("Location")
-	wantRedirect := "http://ouo.io/qs/6z4kqAz7?s=https%3A%2F%2Ftwimg.moonchan.xyz%2Fext_tw_video%2F1916894180884062208%2Fpu%2Fvid%2Favc1%2F720x1280%2Ftest.mp4%3Ftag%3D12"
+	// 首访（计数 1 < 10）直连真实代理地址。
+	wantRedirect := "https://twimg.moonchan.xyz/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12"
 	if loc != wantRedirect {
 		t.Errorf("expected video redirect Location %q, got %q", wantRedirect, loc)
+	}
+}
+
+// TestVideoDirectQuotaMiddleware 钉住视频直连配额中间件的两个分支与按 IP 独立计数。
+// 用最小隔离引擎（只挂 middleware + HandleVideoRedirectV2），不引入 ban/limit/DB。
+func TestVideoDirectQuotaMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/api/twitter/v2/video/*filepath", VideoDirectQuotaMiddleware(), HandleVideoRedirectV2)
+
+	resetVideoVisitCounts()
+	prev := videoFreeDirectQuota
+	videoFreeDirectQuota = 3
+	t.Cleanup(func() {
+		videoFreeDirectQuota = prev
+		resetVideoVisitCounts()
+	})
+
+	const realURL = "https://twimg.moonchan.xyz/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12"
+	const ouoURL = "http://ouo.io/qs/6z4kqAz7?s=https%3A%2F%2Ftwimg.moonchan.xyz%2Fext_tw_video%2F1916894180884062208%2Fpu%2Fvid%2Favc1%2F720x1280%2Ftest.mp4%3Ftag%3D12"
+	endpoint := "/api/twitter/v2/video/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12"
+
+	hit := func(ip string) (int, string) {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", endpoint, nil)
+		req.RemoteAddr = ip + ":11111"
+		r.ServeHTTP(w, req)
+		return w.Code, w.Header().Get("Location")
+	}
+
+	// 配额内（计数 1..3 <= 配额 3）：直接 302 到真实代理地址。
+	for i := 1; i <= videoFreeDirectQuota; i++ {
+		code, loc := hit("203.0.113.1")
+		if code != http.StatusFound {
+			t.Fatalf("in-quota hit %d: expected 302, got %d", i, code)
+		}
+		if loc != realURL {
+			t.Fatalf("in-quota hit %d: expected real URL %q, got %q", i, realURL, loc)
+		}
+	}
+
+	// 第 4 次（计数 >= 配额）：走 ouo.io 广告中转页（与原 HandleVideoRedirectV2 一致）。
+	code, loc := hit("203.0.113.1")
+	if code != http.StatusFound {
+		t.Fatalf("post-quota: expected 302, got %d", code)
+	}
+	if loc != ouoURL {
+		t.Fatalf("post-quota: expected ouo URL %q, got %q", ouoURL, loc)
+	}
+	// 后续仍持续走 ouo.io。
+	if _, loc := hit("203.0.113.1"); loc != ouoURL {
+		t.Fatalf("post-quota 2nd: expected ouo URL %q, got %q", ouoURL, loc)
+	}
+
+	// 不同 IP 独立计数：仍应直连真实地址。
+	code, loc = hit("203.0.113.2")
+	if code != http.StatusFound || loc != realURL {
+		t.Fatalf("new IP: expected real URL %q, got %d %q", realURL, code, loc)
+	}
+
+	// 配额内直连也带 no-cache 头，避免配额耗尽后仍绕过 ouo.io 计费。
+	{
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("GET", endpoint, nil)
+		req.RemoteAddr = "203.0.113.3:11111"
+		r.ServeHTTP(w, req)
+		if cc := w.Header().Get("Cache-Control"); cc != "no-cache, no-store, private, must-revalidate" {
+			t.Fatalf("expected no-cache header on direct redirect, got %q", cc)
+		}
 	}
 }

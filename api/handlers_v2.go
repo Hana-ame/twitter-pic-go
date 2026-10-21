@@ -1665,8 +1665,10 @@ func RegisterV2Routes(g *gin.RouterGroup) {
 	g.GET("/tag-cloud", HandleGetTagCloudV2)
 
 	// 14. 视频链接专属重定向端点（接收视频 path 或 ?url= -> 替换 host 为 twimg.moonchan.xyz -> 经 ouo.io 广告页跳转）
-	g.GET("/video", HandleVideoRedirectV2)
-	g.GET("/video/*filepath", HandleVideoRedirectV2)
+	// VideoDirectQuotaMiddleware：按访客 IP 计数，配额内直连 twimg.moonchan.xyz，
+	// 配额耗尽后放行到 HandleVideoRedirectV2 经 ouo.io 跳转。
+	g.GET("/video", VideoDirectQuotaMiddleware(), HandleVideoRedirectV2)
+	g.GET("/video/*filepath", VideoDirectQuotaMiddleware(), HandleVideoRedirectV2)
 }
 
 func registerFeedInvalidationHook() {

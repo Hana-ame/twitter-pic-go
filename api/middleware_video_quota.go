@@ -6,7 +6,7 @@
 //   /api/v2/video/*、/api/flutter/video/*、/api/twitter/video/*），按「访问者 IP」
 //   对每次点击计数，并决定是直连真实代理地址还是走 ouo.io 广告中转页：
 //
-//     - 计数 <= videoFreeDirectQuota（默认 10）：
+//     - 计数 <= videoFreeDirectQuota（默认 20）：
 //       直接 302 重定向到真实代理地址 https://twimg.moonchan.xyz/<path>?<query>，
 //       绕过 ouo.io 广告页（c.Abort，不再进入 HandleVideoRedirectV2）。
 //     - 计数 > videoFreeDirectQuota：
@@ -34,9 +34,9 @@ import (
 
 // videoFreeDirectQuota 每个访客 IP 的「直连真实地址」免费配额。
 // 计数 <= 该值时直连 https://twimg.moonchan.xyz/...；计数 > 该值时走 ouo.io 广告中转
-// （「计数超过配额 -> 走 ouo.io」）。默认 10：即每个 IP 前 10 次点击直连，第 11 次起走广告。
+// （「计数超过配额 -> 走 ouo.io」）。默认 20：即每个 IP 前 20 次点击直连，第 21 次起走广告。
 // 用 var 而非 const，便于测试按需覆盖为更小的值以快速走通两个分支。
-var videoFreeDirectQuota = 10
+var videoFreeDirectQuota = 20
 
 var (
 	videoVisitMu    sync.RWMutex

@@ -93,6 +93,10 @@ h1{font-size:22px;margin:0 0 6px;font-weight:700;letter-spacing:-.02em}
 
 /* ---- footer ---- */
 footer{padding:28px;text-align:center;color:var(--faint);font-size:13px}
+footer .legal-links{margin:0 0 6px}
+footer .legal-links a{color:var(--acc, #7aa2ff);text-decoration:none;margin:0 6px}
+footer .legal-links a:hover{text-decoration:underline}
+footer p{margin:2px 0}
 
 /* ---- modal common ---- */
 .modal-overlay{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;animation:fadeUp .2s var(--ease)}

@@ -10,6 +10,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/Hana-ame/twitter-pic-go/ipban"
+	"github.com/Hana-ame/twitter-pic-go/limit"
 )
 
 type accountInfo struct {
@@ -120,8 +123,16 @@ func handleGalleryVideoRedirect(w http.ResponseWriter, r *http.Request, cfg conf
 	if key == "" {
 		key = defaultOuoKey
 	}
-	ouoRedirect := "http://ouo.io/qs/" + url.PathEscape(key) + "?s=" + url.QueryEscape(proxyVideoURL)
 	w.Header().Set("Cache-Control", "no-cache, no-store, private, must-revalidate")
+	// 每 IP 每日前 N 个请求直跳真实链接（twimg.moonchan.xyz），不经过 ouo.io。
+	// 与 api.HandleVideoRedirectV2 共用 limit.VideoDirectQuota() 同一份计数，
+	// 确保跨两条视频重定向入口「每 IP 每天」额度不超额；每日重启清零。
+	// 取不到真实客户端 IP 时 Claim 返回 false → 保守走 ouo.io 变现路径。
+	if limit.VideoDirectQuota().Claim(ipban.Principal(r)) {
+		http.Redirect(w, r, proxyVideoURL, http.StatusFound)
+		return
+	}
+	ouoRedirect := "http://ouo.io/qs/" + url.PathEscape(key) + "?s=" + url.QueryEscape(proxyVideoURL)
 	http.Redirect(w, r, ouoRedirect, http.StatusFound)
 }
 

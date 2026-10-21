@@ -30,6 +30,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Hana-ame/twitter-pic-go/ipban"
+	"github.com/Hana-ame/twitter-pic-go/limit"
 	"github.com/gin-gonic/gin"
 )
 
@@ -230,7 +232,12 @@ func ExtractAndBuildProxyVideoURL(req *http.Request, pathParam string) (string, 
 }
 
 // HandleVideoRedirectV2 Gin 处理器：
-// 接收视频链接 -> 直接替换 host 为 twimg.moonchan.xyz（保留完整 path+query） -> 302 重定向到 ouo.io 广告中转页。
+//   - 每 IP 每日前 N 个请求（N=limit.VideoDirectQuota()，默认 10，env VIDEO_DIRECT_QUOTA 可调）：
+//     直接 302 到真实链接 https://twimg.moonchan.xyz/...，不经 ouo.io。
+//   - 超出每日免费额度后：302 到 ouo.io 广告中转页（BuildOuoRedirectTarget），与既有变现路径一致。
+//
+// 「每日」由进程每日重启清空内存实现（见 limit.DailyRestartQuota 注释），
+// 不记录日期。取不到真实客户端 IP 时 Claim 返回 false，保守走 ouo.io。
 func HandleVideoRedirectV2(c *gin.Context) {
 	pathParam := c.Param("filepath")
 	proxyVideoURL, ok := ExtractAndBuildProxyVideoURL(c.Request, pathParam)
@@ -241,8 +248,17 @@ func HandleVideoRedirectV2(c *gin.Context) {
 		return
 	}
 
-	ouoRedirectURL := BuildOuoRedirectTarget(proxyVideoURL)
-	// 严禁缓存 302 广告跳转响应，确保每次点击都能触发 ouo.io 广告计费与限流
+	// 严禁缓存 302 跳转响应（无论直跳还是经 ouo.io），确保每次点击都重新判定额度/触发计费。
 	c.Header("Cache-Control", "no-cache, no-store, private, must-revalidate")
+
+	// 每 IP 每日前 N 个请求直跳真实链接（twimg.moonchan.xyz），不经过 ouo.io。
+	// ipban.Principal 取真实客户端 IP（CF-Connecting-IP → XFF 右数第 N → RemoteAddr），
+	// 与封禁/限流同一口径；解析失败时 Claim 返回 false → 保守走 ouo.io。
+	if limit.VideoDirectQuota().Claim(ipban.Principal(c.Request)) {
+		c.Redirect(http.StatusFound, proxyVideoURL)
+		return
+	}
+
+	ouoRedirectURL := BuildOuoRedirectTarget(proxyVideoURL)
 	c.Redirect(http.StatusFound, ouoRedirectURL)
 }

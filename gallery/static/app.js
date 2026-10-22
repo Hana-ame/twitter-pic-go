@@ -183,7 +183,9 @@
       a.dataset.gidx = gIdx;
       a.href = m.ouoUrl || getDirectVideoURL(m.url);
       a.target = '_blank';
-      a.rel = 'noopener noreferrer';
+      // 保留 Referer（去 noreferrer）并显式声明策略，确保点进 twimg.moonchan.xyz 时带 Referer
+      a.rel = 'noopener';
+      a.referrerPolicy = 'strict-origin-when-cross-origin';
       a.title = '点击播放视频';
       a.appendChild(mediaNode(m, true));
       return a;
@@ -519,7 +521,7 @@
   function tap(s, e, hit) {
     if (s._ouoUrl) {
       if (hit === s._media || hit.classList.contains('lb-playicon')) {
-        window.open(s._ouoUrl, '_blank', 'noopener,noreferrer');
+        window.open(s._ouoUrl, '_blank', 'noopener');
       } else {
         closeLightbox();
       }

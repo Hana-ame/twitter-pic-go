@@ -32,7 +32,7 @@
   <div class="grid" id="g-grid" data-slug="{{.Slug}}" data-per="{{.PageSize}}" data-base="{{.MediaBase}}" data-vbase="{{.VideoBase}}">
     {{range .Media}}
       {{if .IsVideo}}
-        <a class="card has-video" href="{{.OuoURL}}" target="_blank" rel="noopener" title="点击播放视频">
+        <a class="card has-video" href="{{.OuoURL}}" target="_blank" rel="noopener" referrerpolicy="strict-origin-when-cross-origin" title="点击播放视频">
           {{if .Cover}}
             <img loading="lazy" src="{{.Cover}}" alt="">
           {{else}}

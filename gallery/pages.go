@@ -44,7 +44,6 @@ type accountPage struct {
 	ATagsJSON template.JS
 	MediaBase string
 	VideoBase string
-	OuoPrefix string
 	LegacyURL string
 }
 
@@ -191,12 +190,7 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		filter = "photo"
 	}
 
-	ouoPrefix := cfg.ouoPrefix
-	if ouoPrefix == "" {
-		ouoPrefix = resolveOuoPrefix()
-	}
-
-	list := filterMedia(buildAll(doc, cfg.mediaBase, cfg.videoBase, ouoPrefix), filter)
+	list := filterMedia(buildAll(doc, cfg.mediaBase, cfg.videoBase), filter)
 
 	start := clampStart(list, int(parseCursorID(r.URL.Query().Get("cursor"))), cfg.pageSize)
 	end := start + cfg.pageSize
@@ -253,7 +247,6 @@ func handleAccount(w http.ResponseWriter, r *http.Request, cfg config) {
 		ATagsJSON: template.JS(atagJSON),
 		MediaBase: cfg.mediaBase,
 		VideoBase: cfg.videoBase,
-		OuoPrefix: ouoPrefix,
 		LegacyURL: legacyURL(cfg.legacyBase, slug),
 	}
 	render(w, "account.html", pageData{Title: acc.Name, Account: acc, LegacyBase: cfg.legacyBase})

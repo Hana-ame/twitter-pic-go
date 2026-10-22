@@ -38,47 +38,6 @@ const defaultMediaBase = "https://pbs.moonchan.xyz"
 // defaultVideoBase 视频直连代理域名：https://twimg.moonchan.xyz（直接替换 video.twimg.com host）。
 const defaultVideoBase = "https://twimg.moonchan.xyz"
 
-// defaultVideoEndpointPrefix 点开视频时指向的 Go 后端专属视频处理端点。
-// 该端点接收视频 path+query 后，将 host 替换为 twimg.moonchan.xyz 并 302 直连（2026-10-23 起无广告跳转）。
-const defaultVideoEndpointPrefix = "/api/twitter/v2/video"
-
-func resolveOuoPrefix() string {
-	if v, ok := os.LookupEnv("GALLERY_VIDEO_ENDPOINT"); ok && strings.TrimSpace(v) != "" {
-		return strings.TrimRight(strings.TrimSpace(v), "/")
-	}
-	return defaultVideoEndpointPrefix
-}
-
-// buildVideoEndpointURL 将原始视频地址（如 https://video.twimg.com/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/xxx.mp4?tag=12）
-// 转换为 Go 后端视频专属端点链接：
-//   /api/twitter/v2/video/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/xxx.mp4?tag=12
-func buildVideoEndpointURL(endpointPrefix, rawVideoURL string) string {
-	rawVideoURL = strings.TrimSpace(rawVideoURL)
-	if rawVideoURL == "" {
-		return ""
-	}
-	endpointPrefix = strings.TrimRight(strings.TrimSpace(endpointPrefix), "/")
-	if endpointPrefix == "" {
-		endpointPrefix = defaultVideoEndpointPrefix
-	}
-	if strings.HasPrefix(rawVideoURL, endpointPrefix+"/") {
-		return rawVideoURL
-	}
-	u, err := url.Parse(rawVideoURL)
-	if err != nil || u.Path == "" {
-		return endpointPrefix + "?url=" + url.QueryEscape(rawVideoURL)
-	}
-	p := u.Path
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	out := endpointPrefix + p
-	if u.RawQuery != "" {
-		out += "?" + u.RawQuery
-	}
-	return out
-}
-
 // handleGalleryVideoRedirect 供 gallery 独立运行或 /video/{path...} 路由使用的视频重定向处理器：
 // 1. 直接将视频链接的 host 替换为 twimg.moonchan.xyz（完整保留 path 与 query）
 // 2. 302 直连该代理地址（2026-10-23 起广告跳转已关闭，不再经 ouo.io 广告中转页）
@@ -117,7 +76,7 @@ func handleGalleryVideoRedirect(w http.ResponseWriter, r *http.Request, cfg conf
 	http.Redirect(w, r, proxyVideoURL, http.StatusFound)
 }
 
-func buildAll(doc document, mediaBase, videoBase, videoEndpointPrefix string) []mediaItem {
+func buildAll(doc document, mediaBase, videoBase string) []mediaItem {
 	out := make([]mediaItem, 0, len(doc.Timeline))
 	for _, te := range doc.Timeline {
 		raw := strings.TrimSpace(te.URL)
@@ -128,8 +87,10 @@ func buildAll(doc document, mediaBase, videoBase, videoEndpointPrefix string) []
 		u := raw
 		ouo := ""
 		if isVideo {
+			// 视频链接直接指向 twimg.moonchan.xyz 上的原始文件（完整 path+query），
+			// 中间无任何 302 中转（2026-10-23 起广告跳转与端点跳转均已移除）。
 			u = overrideVideoURL(videoBase, raw)
-			ouo = buildVideoEndpointURL(videoEndpointPrefix, raw)
+			ouo = u
 		} else {
 			u = mediaURL(mediaBase, raw)
 		}

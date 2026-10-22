@@ -25,7 +25,6 @@ type config struct {
 	jsonDir       string
 	mediaBase     string
 	videoBase     string
-	ouoPrefix     string
 	legacyBase    string
 	pageSize      int
 	reactionsFile string
@@ -46,7 +45,6 @@ func NewHandler(dbs ...*sql.DB) http.Handler {
 		jsonDir:       envOr("GALLERY_JSON_DIR", "."),
 		mediaBase:     strings.TrimRight(envOr("GALLERY_MEDIA_BASE", defaultMediaBase), "/"),
 		videoBase:     strings.TrimRight(envOr("GALLERY_VIDEO_BASE", defaultVideoBase), "/"),
-		ouoPrefix:     resolveOuoPrefix(),
 		legacyBase:    legacyBase(),
 		pageSize:      envIntOr("GALLERY_PAGE_SIZE", defaultPageSize),
 		reactionsFile: envOr("GALLERY_REACTIONS_FILE", "./reactions.json"),

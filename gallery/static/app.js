@@ -22,9 +22,9 @@
   var MEDIA_BASE = (grid.getAttribute('data-base') || '').replace(/\/+$/, '') ||
     'https://pbs.moonchan.xyz';
 
-  /* 视频点击后指向的 Go 后端专属视频处理端点（默认 /api/twitter/v2/video） */
-  var VIDEO_ENDPOINT = (grid.getAttribute('data-ouo') || '').replace(/\/+$/, '') ||
-    '/api/twitter/v2/video';
+  /* 视频直连基址：twimg.moonchan.xyz（2026-10-23 起广告跳转与 /api/twitter/v2/video 302 端点一并移除，链接即最终地址） */
+  var VIDEO_BASE = (grid.getAttribute('data-vbase') || '').replace(/\/+$/, '') ||
+    'https://twimg.moonchan.xyz';
 
   function extractPath(raw, defaultBase) {
     if (!raw) return '';
@@ -42,14 +42,13 @@
     return MEDIA_BASE + extractPath(raw, 'https://pbs.twimg.com');
   }
 
-  // 点开视频时指向 Go 后端专属视频处理端点（/api/twitter/v2/video/<path+query>）
-   // 后端收到请求后按配额中间件判定：配额内直连 twimg.moonchan.xyz，配额外按分钟门控走 ouo.io
-  function getOuoVideoURL(raw) {
+  // 点开视频时直接指向 twimg.moonchan.xyz 上的原始文件（完整保留 path+query），无任何中间 302
+  function getDirectVideoURL(raw) {
     if (!raw) return '';
     var pathAndQuery = extractPath(raw, 'https://video.twimg.com');
     if (!pathAndQuery) return '';
     if (pathAndQuery.charAt(0) !== '/') pathAndQuery = '/' + pathAndQuery;
-    return VIDEO_ENDPOINT + pathAndQuery;
+    return VIDEO_BASE + pathAndQuery;
   }
 
   // 单源加载图片：一个地址，失败即失败，不换源、不重试。
@@ -66,7 +65,7 @@
     var isVid = (m.type === 'video' || m.type === 'animated_gif');
     return {
       url: m.url,
-      ouoUrl: isVid ? getOuoVideoURL(m.url) : '',
+      ouoUrl: isVid ? getDirectVideoURL(m.url) : '',
       id: (m.tweet_id || 0),
       video: isVid,
       cover: m.cover || ''
@@ -178,11 +177,11 @@
 
   function gridCard(m, gIdx) {
     if (m.video) {
-      // 视频卡片：显示 pbs.moonchan.xyz 上的 cover 封面，点击后经后端配额中间件跳转
+      // 视频卡片：显示 pbs.moonchan.xyz 上的 cover 封面，点击直接打开 twimg.moonchan.xyz 上的视频（无中间 302）
       var a = document.createElement('a');
       a.className = 'card has-video';
       a.dataset.gidx = gIdx;
-      a.href = m.ouoUrl || getOuoVideoURL(m.url);
+      a.href = m.ouoUrl || getDirectVideoURL(m.url);
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
       a.title = '点击播放视频';
@@ -407,7 +406,7 @@
     n.addEventListener('dragstart', function (e) { e.preventDefault(); });
     if (m.video) {
       s.classList.add('paused');
-      s._ouoUrl = m.ouoUrl || getOuoVideoURL(m.url);
+      s._ouoUrl = m.ouoUrl || getDirectVideoURL(m.url);
       var icon = document.createElement('div');
       icon.className = 'lb-playicon';
       icon.textContent = '\u25B6';

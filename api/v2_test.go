@@ -700,20 +700,20 @@ func TestV2VideoCoverAndOuoURL(t *testing.T) {
 	if item.Cover != wantCover {
 		t.Errorf("expected cover %q, got %q", wantCover, item.Cover)
 	}
-	wantOuo := "/api/twitter/v2/video/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12"
+	wantOuo := "https://twimg.moonchan.xyz/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12"
 	if item.OuoURL != wantOuo {
 		t.Errorf("expected ouo_url %q, got %q", wantOuo, item.OuoURL)
 	}
 
-	// 验证点击视频专属端点时：直接 302 到真实代理地址 twimg.moonchan.xyz（2026-10-23 起广告跳转已关闭，不再经 ouo.io）。
+	// ouo_url 即最终直连地址（host 已替换为 twimg.moonchan.xyz），中间无任何 302。
+	// 旧版 /api/twitter/v2/video 端点仍保留（向后兼容）：直接 302 到同一直连地址，不再经 ouo.io / 配额中间件。
 	wVid := httptest.NewRecorder()
-	reqVid, _ := http.NewRequest("GET", item.OuoURL, nil)
+	reqVid, _ := http.NewRequest("GET", "/api/twitter/v2/video/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12", nil)
 	r.ServeHTTP(wVid, reqVid)
 	if wVid.Code != http.StatusFound {
-		t.Fatalf("expected 302 from video endpoint, got %d", wVid.Code)
+		t.Fatalf("expected 302 from legacy video endpoint, got %d", wVid.Code)
 	}
 	loc := wVid.Header().Get("Location")
-	// 首访（计数 1 <= 10）直连真实代理地址。
 	wantRedirect := "https://twimg.moonchan.xyz/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12"
 	if loc != wantRedirect {
 		t.Errorf("expected video redirect Location %q, got %q", wantRedirect, loc)

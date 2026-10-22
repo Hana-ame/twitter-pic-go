@@ -29,7 +29,7 @@
     <p class="muted center" style="margin:24px 0">该账号暂无图片，可切换至 <a href="{{.HrefVideo}}" style="color:var(--acc)">视频 only</a> 查看。</p>
   {{end}}
 
-  <div class="grid" id="g-grid" data-slug="{{.Slug}}" data-per="{{.PageSize}}" data-base="{{.MediaBase}}" data-vbase="{{.VideoBase}}" data-ouo="{{.OuoPrefix}}">
+  <div class="grid" id="g-grid" data-slug="{{.Slug}}" data-per="{{.PageSize}}" data-base="{{.MediaBase}}" data-vbase="{{.VideoBase}}">
     {{range .Media}}
       {{if .IsVideo}}
         <a class="card has-video" href="{{.OuoURL}}" target="_blank" rel="noopener" title="点击播放视频">

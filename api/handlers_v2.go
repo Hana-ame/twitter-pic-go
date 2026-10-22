@@ -7,10 +7,10 @@
 //   - Gallery 现代 Web 组件
 //
 // 新版 API 核心改进与列表：
-//   1. 视频封面 + 直接代理链接（2026-10-23 起广告跳转已关闭）：
+//   1. 视频封面 + 直连播放链接（2026-10-23 起广告跳转与 302 中转均移除）：
 //      所有视频条目自动重写 cover 为 https://pbs.moonchan.xyz/... 封面图地址，
-//      并生成 ouo_url（历史契约字段名）= 本后端视频端点 /api/twitter/v2/video/...，
-//      点击后由服务端 302 直连 https://twimg.moonchan.xyz/...（不再经 ouo.io 广告页）。
+//      并生成 ouo_url（历史契约字段名）= 直连地址 https://twimg.moonchan.xyz/<path>?<query>，
+//      链接即最终播放地址，中间无任何 302 跳转。
 //   2. 消除 N+1 请求风暴：
 //      - GET  /api/twitter/v2/users                        (带头像/昵称/标签/媒体统计的分页用户卡片列表)
 //      - GET  /api/twitter/v2/search                       (支持 username/nick/tag 的富卡片搜索)
@@ -97,12 +97,12 @@ func v2VideoTargetURL(raw string) string {
 	return ReplaceHostDirectly(raw, v2ResolveVideoBase())
 }
 
-// v2BuildOuoURL 构造前端点击视频封面时指向本后端专属视频重定向端点的地址：
-// /api/twitter/v2/video/<video_path>?<video_query>
-// 当用户点击该地址时，由 HandleVideoRedirectV2 替换 host 为 twimg.moonchan.xyz 并 302 直连代理地址。
-// JSON 字段名沿用历史契约 ouo_url（2026-10-23 起值已不含任何 ouo.io 跳转）。
+// v2BuildOuoURL 构造前端点击视频封面时的最终播放地址：
+// 直接将原始视频地址 host 替换为 twimg.moonchan.xyz（完整保留 path+query），链接即最终地址，
+// 中间不存在任何 302 中转（2026-10-23 起 ouo.io 广告跳转与 /api/twitter/v2/video 端点跳转均已移除）。
+// JSON 字段名沿用历史契约 ouo_url。
 func v2BuildOuoURL(rawVideoURL string) string {
-	return BuildVideoEndpointURL(rawVideoURL)
+	return v2VideoTargetURL(rawVideoURL)
 }
 
 // ==================== 用户媒体与元数据轻量缓存 (Bounded Cache) ====================
@@ -199,7 +199,7 @@ func loadUserDoc(username string) *parsedUserDoc {
 	avatar := strings.TrimSpace(raw.AccountInfo.ProfileImage)
 	banner := strings.TrimSpace(raw.AccountInfo.ProfileBanner)
 
-	// 按 URL 去重并填充视频 cover (pbs.moonchan.xyz) 与 ouo_url（历史契约字段名；值为本后端视频端点 /api/twitter/v2/video/...，点击后 302 直连 twimg.moonchan.xyz）
+	// 按 URL 去重并填充视频 cover (pbs.moonchan.xyz) 与 ouo_url（历史契约字段名；值为直连地址 https://twimg.moonchan.xyz/<path>?<query>，无任何 302 中转）
 	seen := make(map[string]struct{}, len(raw.Timeline))
 	items := make([]V2MediaItem, 0, len(raw.Timeline))
 	photoCnt := 0
@@ -905,7 +905,7 @@ func HandleGetUserMediaV2(c *gin.Context) {
 
 // HandleGetUserTimelineV2 GET /v2/users/:username/timeline
 // 面向新版 twitter-pic-react 的完整时间线接口：
-// 单次返回 account_info、tags、emojis 与附带 cover (pbs.moonchan.xyz) + ouo_url（本后端视频端点，302 直连 twimg.moonchan.xyz，无广告跳转）的 timeline。
+// 单次返回 account_info、tags、emojis 与附带 cover (pbs.moonchan.xyz) + ouo_url（直连地址 https://twimg.moonchan.xyz/<path>?<query>，无任何 302 中转）的 timeline。
 // 配合 ?t=<last_modify> 参数，可被 Cloudflare 边缘缓存 24 小时及浏览器本地缓存复用。
 func HandleGetUserTimelineV2(c *gin.Context) {
 	username := strings.TrimSpace(c.Param("username"))

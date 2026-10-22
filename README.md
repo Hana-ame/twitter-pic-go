@@ -153,7 +153,7 @@ make deploy
   - `GET /api/twitter/tags/:username`、`POST /api/twitter/tags/:username`、`POST /api/twitter/tag`
   - `GET /api/twitter/emojis`、`GET /api/twitter/emojis.json.gz`、`POST /api/twitter/emojis`
 - **新版 API（`api/handlers_v2.go` — 供 `twitter-pic-react` 新分支使用）**：
-  - **视频封面 + 直连代理链接（2026-10-23 起广告跳转已关闭）**：所有视频条目返回 `cover`（`https://pbs.moonchan.xyz/ext_tw_video_thumb/...?format=jpg&name=orig`）与 `ouo_url`（历史契约字段名，值为本后端视频端点 `/api/twitter/v2/video/<path>?<query>`，点击后 302 直连 `https://twimg.moonchan.xyz/...`）。
+  - **视频封面 + 直连播放链接（2026-10-23 起广告跳转与 302 中转均移除）**：所有视频条目返回 `cover`（`https://pbs.moonchan.xyz/ext_tw_video_thumb/...?format=jpg&name=orig`）与 `ouo_url`（历史契约字段名，值为直连地址 `https://twimg.moonchan.xyz/<path>?<query>`，链接即最终播放地址，中间无任何 302 跳转）。旧版 `/api/twitter/v2/video/*` 端点保留（向后兼容，直接 302 到同一直连地址，不再经 ouo.io）。
   - **零 N+1 请求**：`GET /api/twitter/v2/users`、`/search`、`/users/batch`、`/ranking` 直接返回含头像、昵称、标签、媒体统计的富卡片（`FlutterUser`）。
   - **单次时间线与分页切片**：`GET /api/twitter/v2/users/:username/timeline?t=<last_modify>` 与 `/media` 支持 `?t=` 版本化 Cloudflare 边缘强缓存（`s-maxage=86400`）与 `304 Not Modified` 本地协商缓存。
   - 详细新旧接口对照表见 **[`api/README.md`](api/README.md)** 与 **[`docs/API_V2.md`](docs/API_V2.md)**。

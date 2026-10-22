@@ -153,7 +153,7 @@ make deploy
   - `GET /api/twitter/tags/:username`、`POST /api/twitter/tags/:username`、`POST /api/twitter/tag`
   - `GET /api/twitter/emojis`、`GET /api/twitter/emojis.json.gz`、`POST /api/twitter/emojis`
 - **新版 API（`api/handlers_v2.go` — 供 `twitter-pic-react` 新分支使用）**：
-  - **视频封面 + `ouo.io` 广告变现**：所有视频条目返回 `cover`（`https://pbs.moonchan.xyz/ext_tw_video_thumb/...?format=jpg&name=orig`）与 `ouo_url`（`http://ouo.io/api/6z4kqAz7?s=https://twimg.moonchan.xyz/...`），前端只渲染封面图，点击视频通过 `ouo.io` 跳转获取广告收益并限流。
+  - **视频封面 + 直连代理链接（2026-10-23 起广告跳转已关闭）**：所有视频条目返回 `cover`（`https://pbs.moonchan.xyz/ext_tw_video_thumb/...?format=jpg&name=orig`）与 `ouo_url`（历史契约字段名，值为本后端视频端点 `/api/twitter/v2/video/<path>?<query>`，点击后 302 直连 `https://twimg.moonchan.xyz/...`）。
   - **零 N+1 请求**：`GET /api/twitter/v2/users`、`/search`、`/users/batch`、`/ranking` 直接返回含头像、昵称、标签、媒体统计的富卡片（`FlutterUser`）。
   - **单次时间线与分页切片**：`GET /api/twitter/v2/users/:username/timeline?t=<last_modify>` 与 `/media` 支持 `?t=` 版本化 Cloudflare 边缘强缓存（`s-maxage=86400`）与 `304 Not Modified` 本地协商缓存。
   - 详细新旧接口对照表见 **[`api/README.md`](api/README.md)** 与 **[`docs/API_V2.md`](docs/API_V2.md)**。
@@ -205,8 +205,8 @@ account_tags(username, tag, weight)               PK(username,tag)    WITHOUT RO
 | `GALLERY_DEV` | `1`（自动） | Gallery | 设为 `0` 时强制禁用磁盘热重载，仅使用编译内嵌的 `//go:embed` 资源 |
 | `GALLERY_JSON_DIR` | `.` | API & Gallery | 存放 `<username>.json.gz` 时间线数据的目录 |
 | `GALLERY_MEDIA_BASE` | `https://pbs.moonchan.xyz` | Gallery | 图片（含头像/封面）代理基址 |
-| `GALLERY_VIDEO_BASE` | `https://twimg.moonchan.xyz` | Gallery | 视频落地基址（点开视频经 `ouo.io` 跳转后的 Cloudflare Worker 目标地址） |
-| `GALLERY_OUO_PREFIX` / `OUO_KEY` | `http://ouo.io/api/6z4kqAz7?s=` | API V2 & Gallery | 点开视频时的 `ouo.io` 广告变现与限流跳转前缀 |
+| `GALLERY_VIDEO_BASE` | `https://twimg.moonchan.xyz` | Gallery | 视频直连落地基址（2026-10-23 起广告跳转已关闭：点开视频由服务端 302 直连该 Worker 地址） |
+| ~~`GALLERY_OUO_PREFIX` / `OUO_KEY`~~ | （已废弃） | — | 2026-10-23 起广告跳转已关闭，`ouo.io` 相关环境变量（`OUO_KEY` / `OUO_MODE` / `OUO_PREFIX` / `GALLERY_OUO_*` / `TWIMG_OUO_PREFIX`）全部不再被读取，可安全删除 |
 | `TWIMG_ADDR` / `TWIMG_V2` | `""`（如 `127.26.8.10:8080`） | 配套反代 (`twimg/`) | 启动配套的 `TwimgProxyV2`（`pbs.moonchan.xyz`：图片走本体反代，`.mp4` 强制 302 卸载） |
 | `GALLERY_LEGACY_BASE` | `https://x.4545810.xyz` | Gallery | 旧版界面跳转基址（设为空串隐藏按钮） |
 | `GALLERY_PAGE_SIZE` | `12` | Gallery | 账号页每页媒体卡片数量 |

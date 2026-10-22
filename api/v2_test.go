@@ -705,9 +705,7 @@ func TestV2VideoCoverAndOuoURL(t *testing.T) {
 		t.Errorf("expected ouo_url %q, got %q", wantOuo, item.OuoURL)
 	}
 
-	// 验证点击视频专属端点时：配额内首访直接 302 到真实代理地址 twimg.moonchan.xyz（绕过 ouo.io）。
-	// 直连配额中间件按访客 IP 计数：计数 < videoFreeDirectQuota 直连，>= 阈值走 ouo.io。
-	resetVideoVisitCounts()
+	// 验证点击视频专属端点时：直接 302 到真实代理地址 twimg.moonchan.xyz（2026-10-23 起广告跳转已关闭，不再经 ouo.io）。
 	wVid := httptest.NewRecorder()
 	reqVid, _ := http.NewRequest("GET", item.OuoURL, nil)
 	r.ServeHTTP(wVid, reqVid)

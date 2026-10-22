@@ -517,10 +517,10 @@ func AddToGroup(g *gin.RouterGroup) {
 	g.POST("/emojis", VoteUpEmojiHandler)
 
 	// 视频链接专属重定向端点（/api/twitter/video/*filepath 与 /api/twitter/v2/video/*filepath）
-	// VideoDirectQuotaMiddleware：按访客 IP 计数，配额内直连 twimg.moonchan.xyz，
-	// 配额耗尽后放行到 HandleVideoRedirectV2 经 ouo.io 跳转。
-	g.GET("/video", VideoDirectQuotaMiddleware(), HandleVideoRedirectV2)
-	g.GET("/video/*filepath", VideoDirectQuotaMiddleware(), HandleVideoRedirectV2)
+	// 2026-10-23 起广告跳转已关闭（视频直连配额中间件随广告一并移除）：
+	// 所有视频请求直接 302 到 https://twimg.moonchan.xyz/<path>?<query>，不再经 ouo.io 广告页。
+	g.GET("/video", HandleVideoRedirectV2)
+	g.GET("/video/*filepath", HandleVideoRedirectV2)
 
 	// 新增：面向新版 twitter-pic-react 与 Flutter 的新版 API 路由组 (v2)
 	RegisterV2Routes(g.Group("/v2"))

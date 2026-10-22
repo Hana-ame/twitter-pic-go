@@ -35,15 +35,12 @@ type document struct {
 // defaultMediaBase 媒体与视频封面唯一 CDN 入口：https://pbs.moonchan.xyz（直接替换 pbs.twimg.com host）。
 const defaultMediaBase = "https://pbs.moonchan.xyz"
 
-// defaultVideoBase 视频经 ouo.io 广告页跳转后的最终代理域名：https://twimg.moonchan.xyz（直接替换 video.twimg.com host）。
+// defaultVideoBase 视频直连代理域名：https://twimg.moonchan.xyz（直接替换 video.twimg.com host）。
 const defaultVideoBase = "https://twimg.moonchan.xyz"
 
 // defaultVideoEndpointPrefix 点开视频时指向的 Go 后端专属视频处理端点。
-// 该端点接收视频 path+query 后，将 host 替换为 twimg.moonchan.xyz 并通过 ouo.io 重定向至广告中转页。
+// 该端点接收视频 path+query 后，将 host 替换为 twimg.moonchan.xyz 并 302 直连（2026-10-23 起无广告跳转）。
 const defaultVideoEndpointPrefix = "/api/twitter/v2/video"
-
-// defaultOuoKey 默认的 ouo.io 广告变现 Key。
-const defaultOuoKey = "6z4kqAz7"
 
 func resolveOuoPrefix() string {
 	if v, ok := os.LookupEnv("GALLERY_VIDEO_ENDPOINT"); ok && strings.TrimSpace(v) != "" {
@@ -84,7 +81,7 @@ func buildVideoEndpointURL(endpointPrefix, rawVideoURL string) string {
 
 // handleGalleryVideoRedirect 供 gallery 独立运行或 /video/{path...} 路由使用的视频重定向处理器：
 // 1. 直接将视频链接的 host 替换为 twimg.moonchan.xyz（完整保留 path 与 query）
-// 2. 通过 ouo.io/qs/6z4kqAz7?s=<encoded_proxy_url> 重定向到 ouo.io 广告中转页面
+// 2. 302 直连该代理地址（2026-10-23 起广告跳转已关闭，不再经 ouo.io 广告中转页）
 func handleGalleryVideoRedirect(w http.ResponseWriter, r *http.Request, cfg config) {
 	videoBase := strings.TrimRight(cfg.videoBase, "/")
 	if videoBase == "" {
@@ -116,13 +113,8 @@ func handleGalleryVideoRedirect(w http.ResponseWriter, r *http.Request, cfg conf
 		}
 	}
 
-	key := strings.TrimSpace(firstNonEmpty(os.Getenv("GALLERY_OUO_KEY"), os.Getenv("OUO_KEY")))
-	if key == "" {
-		key = defaultOuoKey
-	}
-	ouoRedirect := "http://ouo.io/qs/" + url.PathEscape(key) + "?s=" + url.QueryEscape(proxyVideoURL)
 	w.Header().Set("Cache-Control", "no-cache, no-store, private, must-revalidate")
-	http.Redirect(w, r, ouoRedirect, http.StatusFound)
+	http.Redirect(w, r, proxyVideoURL, http.StatusFound)
 }
 
 func buildAll(doc document, mediaBase, videoBase, videoEndpointPrefix string) []mediaItem {

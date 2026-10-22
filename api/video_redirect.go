@@ -1,5 +1,5 @@
 // ============================================================================
-// 【新版 API 专属模块】视频链接重定向与 ouo.io 广告变现处理器 (video_redirect.go)
+// 【新版 API 专属模块】视频链接重定向处理器 (video_redirect.go)
 //
 // 职责与完整链路说明：
 //   1. 前端（twitter-pic-react 新分支 / Gallery）将视频卡片替换为：
@@ -9,26 +9,18 @@
 //        路径式：/api/twitter/v2/video/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/xxx.mp4?tag=12
 //        参数式：/api/twitter/v2/video?url=https://video.twimg.com/ext_tw_video/.../xxx.mp4?tag=12
 //   2. 本端点接收到视频请求后：
-//      - 第一步（直接替换 host 生成代理链接）：
-//        将原视频地址的 host 直接替换为 twimg.moonchan.xyz，完整保留 path 与 query：
-//        https://twimg.moonchan.xyz/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/xxx.mp4?tag=12
-//      - 第二步（通过 ouo.io/qs 或 ouo.io/api 重定向至广告中转页收钱）：
-//        - 默认通过 ouo.io Quick Link (`http://ouo.io/qs/6z4kqAz7?s=<encoded_proxy_url>`)
-//          或调用 `http://ouo.io/api/6z4kqAz7?s=<encoded_proxy_url>` 获取短链后（带内存缓存），
-//          向浏览器返回 HTTP 302 Found 重定向到 ouo.io 广告中转页面；
-//        - 用户在 ouo.io 完成广告跳转后，自动进入 https://twimg.moonchan.xyz/... 播放视频。
+//      将原视频地址的 host 直接替换为 twimg.moonchan.xyz（完整保留 path 与 query），
+//      直接 302 到代理链接（2026-10-23 起广告跳转已关闭，不再经 ouo.io 广告中转页）：
+//      https://twimg.moonchan.xyz/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/xxx.mp4?tag=12
 // ============================================================================
 
 package api
 
 import (
-	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -40,18 +32,8 @@ const (
 	// DefaultVideoProxyHost 视频 Cloudflare Worker 代理 Host（直接替换 video.twimg.com）
 	DefaultVideoProxyHost = "twimg.moonchan.xyz"
 
-	// DefaultOuoKey 默认 ouo.io 广告变现 Key
-	DefaultOuoKey = "6z4kqAz7"
-
 	// DefaultVideoEndpointPrefix 前端点击视频时指向的 Go 后端专属端点前缀
 	DefaultVideoEndpointPrefix = "/api/twitter/v2/video"
-)
-
-var (
-	ouoShortCacheMu sync.RWMutex
-	ouoShortCache   = make(map[string]string)
-	ouoShortKeys    []string
-	ouoHTTPClient   = &http.Client{Timeout: 2 * time.Second}
 )
 
 // ReplaceHostDirectly 将任意 URL 的 host 直接替换为 targetHost（默认 https 协议），
@@ -120,78 +102,6 @@ func resolveVideoProxyHost() string {
 	return DefaultVideoProxyHost
 }
 
-func resolveOuoKey() string {
-	if k := strings.TrimSpace(os.Getenv("GALLERY_OUO_KEY")); k != "" {
-		return k
-	}
-	if k := strings.TrimSpace(os.Getenv("OUO_KEY")); k != "" {
-		return k
-	}
-	return DefaultOuoKey
-}
-
-// BuildOuoRedirectTarget 根据代理后的视频 URL（https://twimg.moonchan.xyz/...）
-// 构造跳转到 ouo.io 广告中转页的最终重定向地址：
-//   - 当 OUO_MODE=api 时：调用 http://ouo.io/api/6z4kqAz7?s=<encoded_url> 获取短链接（如 https://ouo.io/xxxx）并缓存，失败自动回退 qs；
-//   - 默认（或 OUO_MODE=qs 时）：使用 http://ouo.io/qs/6z4kqAz7?s=<encoded_url> 直接 302 到 ouo.io 广告页，随后自动转到 twimg.moonchan.xyz/...
-func BuildOuoRedirectTarget(proxyVideoURL string) string {
-	proxyVideoURL = strings.TrimSpace(proxyVideoURL)
-	if proxyVideoURL == "" {
-		return ""
-	}
-
-	if customPrefix := strings.TrimSpace(os.Getenv("GALLERY_OUO_PREFIX")); customPrefix != "" {
-		return customPrefix + url.QueryEscape(proxyVideoURL)
-	}
-	if customPrefix := strings.TrimSpace(os.Getenv("OUO_PREFIX")); customPrefix != "" {
-		return customPrefix + url.QueryEscape(proxyVideoURL)
-	}
-
-	key := resolveOuoKey()
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("OUO_MODE")))
-
-	// 若启用了 api 模式，先查内存缓存，未命中则请求 http://ouo.io/api/<key>?s=<encoded>
-	if mode == "api" {
-		ouoShortCacheMu.RLock()
-		cached, ok := ouoShortCache[proxyVideoURL]
-		ouoShortCacheMu.RUnlock()
-		if ok && cached != "" {
-			return cached
-		}
-
-		apiURL := "http://ouo.io/api/" + url.PathEscape(key) + "?s=" + url.QueryEscape(proxyVideoURL)
-		resp, err := ouoHTTPClient.Get(apiURL)
-		if err == nil {
-			body, rErr := io.ReadAll(io.LimitReader(resp.Body, 512))
-			resp.Body.Close()
-			if rErr == nil && resp.StatusCode == http.StatusOK {
-				shortURL := strings.TrimSpace(string(body))
-				if strings.HasPrefix(shortURL, "http://ouo.io/") || strings.HasPrefix(shortURL, "https://ouo.io/") {
-					saveOuoShortCache(proxyVideoURL, shortURL)
-					return shortURL
-				}
-			}
-		}
-	}
-
-	// Quick Link 广告中转页（浏览器访问该地址会直接进入 ouo.io 广告倒计时页面，完成后跳转到 proxyVideoURL）
-	return "http://ouo.io/qs/" + url.PathEscape(key) + "?s=" + url.QueryEscape(proxyVideoURL)
-}
-
-func saveOuoShortCache(proxyVideoURL, shortURL string) {
-	ouoShortCacheMu.Lock()
-	defer ouoShortCacheMu.Unlock()
-	if _, exists := ouoShortCache[proxyVideoURL]; !exists {
-		if len(ouoShortKeys) >= 500 {
-			oldest := ouoShortKeys[0]
-			ouoShortKeys = ouoShortKeys[1:]
-			delete(ouoShortCache, oldest)
-		}
-		ouoShortKeys = append(ouoShortKeys, proxyVideoURL)
-	}
-	ouoShortCache[proxyVideoURL] = shortURL
-}
-
 // ExtractAndBuildProxyVideoURL 从 HTTP 请求（支持 /*filepath 路径式与 ?url= 参数式）中提取视频路径与参数，
 // 并通过直接替换 host 构造 https://twimg.moonchan.xyz/<path>?<query> 代理链接。
 func ExtractAndBuildProxyVideoURL(req *http.Request, pathParam string) (string, bool) {
@@ -230,7 +140,8 @@ func ExtractAndBuildProxyVideoURL(req *http.Request, pathParam string) (string, 
 }
 
 // HandleVideoRedirectV2 Gin 处理器：
-// 接收视频链接 -> 直接替换 host 为 twimg.moonchan.xyz（保留完整 path+query） -> 302 重定向到 ouo.io 广告中转页。
+// 接收视频链接 -> 直接替换 host 为 twimg.moonchan.xyz（保留完整 path+query） -> 302 直连代理地址。
+// （2026-10-23 起广告跳转已关闭：不再构造 ouo.io 广告中转链接，一律直接 302 到 https://twimg.moonchan.xyz/...）
 func HandleVideoRedirectV2(c *gin.Context) {
 	pathParam := c.Param("filepath")
 	proxyVideoURL, ok := ExtractAndBuildProxyVideoURL(c.Request, pathParam)
@@ -241,8 +152,7 @@ func HandleVideoRedirectV2(c *gin.Context) {
 		return
 	}
 
-	ouoRedirectURL := BuildOuoRedirectTarget(proxyVideoURL)
-	// 严禁缓存 302 广告跳转响应，确保每次点击都能触发 ouo.io 广告计费与限流
+	// 禁缓存，避免浏览器/CDN 粘住重定向地址。
 	c.Header("Cache-Control", "no-cache, no-store, private, must-revalidate")
-	c.Redirect(http.StatusFound, ouoRedirectURL)
+	c.Redirect(http.StatusFound, proxyVideoURL)
 }

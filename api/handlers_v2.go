@@ -7,9 +7,10 @@
 //   - Gallery 现代 Web 组件
 //
 // 新版 API 核心改进与列表：
-//   1. 视频封面 + ouo.io 广告变现：
+//   1. 视频封面 + 直接代理链接（2026-10-23 起广告跳转已关闭）：
 //      所有视频条目自动重写 cover 为 https://pbs.moonchan.xyz/... 封面图地址，
-//      并生成 ouo_url = "http://ouo.io/api/6z4kqAz7?s=https://twimg.moonchan.xyz/..."。
+//      并生成 ouo_url（历史契约字段名）= 本后端视频端点 /api/twitter/v2/video/...，
+//      点击后由服务端 302 直连 https://twimg.moonchan.xyz/...（不再经 ouo.io 广告页）。
 //   2. 消除 N+1 请求风暴：
 //      - GET  /api/twitter/v2/users                        (带头像/昵称/标签/媒体统计的分页用户卡片列表)
 //      - GET  /api/twitter/v2/search                       (支持 username/nick/tag 的富卡片搜索)
@@ -59,7 +60,6 @@ import (
 const (
 	v2DefaultMediaBase = "https://pbs.moonchan.xyz"
 	v2DefaultVideoBase = "https://twimg.moonchan.xyz"
-	v2DefaultOuoPrefix = "http://ouo.io/api/6z4kqAz7?s="
 )
 
 func v2ResolveMediaBase() string {
@@ -74,22 +74,6 @@ func v2ResolveVideoBase() string {
 		return strings.TrimRight(v, "/")
 	}
 	return v2DefaultVideoBase
-}
-
-func v2ResolveOuoPrefix() string {
-	if v, ok := os.LookupEnv("GALLERY_OUO_PREFIX"); ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
-	}
-	if v, ok := os.LookupEnv("OUO_PREFIX"); ok && strings.TrimSpace(v) != "" {
-		return strings.TrimSpace(v)
-	}
-	if key := strings.TrimSpace(os.Getenv("GALLERY_OUO_KEY")); key != "" {
-		return "http://ouo.io/api/" + url.PathEscape(key) + "?s="
-	}
-	if key := strings.TrimSpace(os.Getenv("OUO_KEY")); key != "" {
-		return "http://ouo.io/api/" + url.PathEscape(key) + "?s="
-	}
-	return v2DefaultOuoPrefix
 }
 
 // v2CoverURL 将 gallery_dl 抓取的 cover 地址重写到唯一资源 CDN https://pbs.moonchan.xyz
@@ -115,7 +99,8 @@ func v2VideoTargetURL(raw string) string {
 
 // v2BuildOuoURL 构造前端点击视频封面时指向本后端专属视频重定向端点的地址：
 // /api/twitter/v2/video/<video_path>?<video_query>
-// 当用户点击该地址时，由 HandleVideoRedirectV2 替换 host 为 twimg.moonchan.xyz 并通过 ouo.io 重定向到广告页。
+// 当用户点击该地址时，由 HandleVideoRedirectV2 替换 host 为 twimg.moonchan.xyz 并 302 直连代理地址。
+// JSON 字段名沿用历史契约 ouo_url（2026-10-23 起值已不含任何 ouo.io 跳转）。
 func v2BuildOuoURL(rawVideoURL string) string {
 	return BuildVideoEndpointURL(rawVideoURL)
 }
@@ -214,7 +199,7 @@ func loadUserDoc(username string) *parsedUserDoc {
 	avatar := strings.TrimSpace(raw.AccountInfo.ProfileImage)
 	banner := strings.TrimSpace(raw.AccountInfo.ProfileBanner)
 
-	// 按 URL 去重并填充视频 cover (pbs.moonchan.xyz) 与 ouo_url (http://ouo.io/api/6z4kqAz7?s=...)
+	// 按 URL 去重并填充视频 cover (pbs.moonchan.xyz) 与 ouo_url（历史契约字段名；值为本后端视频端点 /api/twitter/v2/video/...，点击后 302 直连 twimg.moonchan.xyz）
 	seen := make(map[string]struct{}, len(raw.Timeline))
 	items := make([]V2MediaItem, 0, len(raw.Timeline))
 	photoCnt := 0
@@ -920,7 +905,7 @@ func HandleGetUserMediaV2(c *gin.Context) {
 
 // HandleGetUserTimelineV2 GET /v2/users/:username/timeline
 // 面向新版 twitter-pic-react 的完整时间线接口：
-// 单次返回 account_info、tags、emojis 与附带 cover (pbs.moonchan.xyz) + ouo_url (http://ouo.io/api/6z4kqAz7?s=...) 的 timeline。
+// 单次返回 account_info、tags、emojis 与附带 cover (pbs.moonchan.xyz) + ouo_url（本后端视频端点，302 直连 twimg.moonchan.xyz，无广告跳转）的 timeline。
 // 配合 ?t=<last_modify> 参数，可被 Cloudflare 边缘缓存 24 小时及浏览器本地缓存复用。
 func HandleGetUserTimelineV2(c *gin.Context) {
 	username := strings.TrimSpace(c.Param("username"))
@@ -1664,11 +1649,10 @@ func RegisterV2Routes(g *gin.RouterGroup) {
 	g.GET("/tags/cloud", HandleGetTagCloudV2)
 	g.GET("/tag-cloud", HandleGetTagCloudV2)
 
-	// 14. 视频链接专属重定向端点（接收视频 path 或 ?url= -> 替换 host 为 twimg.moonchan.xyz -> 经 ouo.io 广告页跳转）
-	// VideoDirectQuotaMiddleware：按访客 IP 计数，配额内直连 twimg.moonchan.xyz，
-	// 配额耗尽后放行到 HandleVideoRedirectV2 经 ouo.io 跳转。
-	g.GET("/video", VideoDirectQuotaMiddleware(), HandleVideoRedirectV2)
-	g.GET("/video/*filepath", VideoDirectQuotaMiddleware(), HandleVideoRedirectV2)
+	// 14. 视频链接专属重定向端点（接收视频 path 或 ?url= -> 替换 host 为 twimg.moonchan.xyz -> 302 直连代理地址）
+	// 2026-10-23 起广告跳转已关闭（视频直连配额中间件随广告一并移除）：直接 302，不再经 ouo.io 广告页。
+	g.GET("/video", HandleVideoRedirectV2)
+	g.GET("/video/*filepath", HandleVideoRedirectV2)
 }
 
 func registerFeedInvalidationHook() {

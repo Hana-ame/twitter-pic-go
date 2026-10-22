@@ -4,8 +4,8 @@
 //   - 图片与视频封面（.jpg / .png / format=jpg 等）：由本服务通过 StreamProxy 直接反代
 //     https://pbs.twimg.com（自带 TCP 背压与客户端断开级联取消），配合 Cloudflare 边缘缓存提供高命中率图片加速。
 //   - 视频文件（.mp4）：绝不经过本机 VPS 转发视频流字节（防止透过 CF 的视频请求占满 VPS 出站带宽），
-//     一律返回 302 Found（禁缓存）重定向至外部 Cloudflare Worker（默认 https://twimg.moonchan.xyz，
-//     或通过 TWIMG_OUO_PREFIX 包装为 ouo.io 跳转链接）。
+//     一律返回 302 Found（禁缓存）重定向至外部 Cloudflare Worker（https://twimg.moonchan.xyz，
+//     2026-10-23 起广告跳转已关闭，不再支持 TWIMG_OUO_PREFIX 包装广告链接）。
 package twimg
 
 import (
@@ -385,8 +385,8 @@ func (t *qpsTracker) record() int {
 }
 
 // TwimgProxyV2 twimg 反代（部署于 pbs.moonchan.xyz）：
-//   - 仅扩展名为 .mp4 的请求（视频）302 重定向到外部 Worker（默认 https://twimg.moonchan.xyz，
-//     保留 path+query，禁缓存；若配置了 TWIMG_OUO_PREFIX 则包装为 ouo.io 跳转链接）
+//   - 仅扩展名为 .mp4 的请求（视频）302 重定向到外部 Worker（https://twimg.moonchan.xyz，
+//     保留 path+query，禁缓存；2026-10-23 起广告跳转已关闭，不再支持 TWIMG_OUO_PREFIX 包装）
 //   - 其余请求（.jpg / 视频 cover 封面图 / 头像 / 无扩展名 / query 形如 format=jpg 的图片）
 //     一律由本体直接反代 pbs.twimg.com，不做任何 302，也不看 Cf-Ipcountry
 //   - StreamProxy 基于 request context，客户端断开会级联取消上游请求，避免流量空跑
@@ -408,15 +408,11 @@ func TwimgProxyV2(addr string) error {
 	if videoRedirectBase == "" {
 		videoRedirectBase = "https://twimg.moonchan.xyz"
 	}
-	ouoPrefix := strings.TrimSpace(os.Getenv("TWIMG_OUO_PREFIX"))
 
 	v2Handler := func(c *gin.Context) {
 		if strings.HasSuffix(strings.ToLower(c.Request.URL.Path), ".mp4") {
 			c.Header("Cache-Control", "no-cache, no-store, private")
 			target := videoRedirectBase + c.Request.URL.String()
-			if ouoPrefix != "" {
-				target = ouoPrefix + url.QueryEscape(target)
-			}
 			c.Redirect(http.StatusFound, target)
 			return
 		}

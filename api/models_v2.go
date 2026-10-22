@@ -13,9 +13,10 @@ import (
 //
 // 核心设计：
 //   1. 彻底消除 N+1 请求：FlutterUser 单次携带 username、nick、avatar、banner、total_urls、tags、last_modify。
-//   2. 视频封面 + ouo.io 广告变现：V2MediaItem 为所有视频条目直接提供
+//   2. 视频封面 + 直接代理链接（2026-10-23 起广告跳转已关闭）：V2MediaItem 为所有视频条目直接提供
 //      - cover: pbs.moonchan.xyz 上的封面图地址（如 https://pbs.moonchan.xyz/ext_tw_video_thumb/...?format=jpg&name=orig）
-//      - ouo_url: 点击视频后的 ouo.io 广告跳转链接（http://ouo.io/api/6z4kqAz7?s=https://twimg.moonchan.xyz/...）
+//      - ouo_url: 历史契约字段名，值为本后端视频端点 /api/twitter/v2/video/<path>?<query>，
+//        点击后服务端 302 直连 https://twimg.moonchan.xyz/...（不再经 ouo.io 广告页）
 //   3. 专为 Cloudflare 边缘缓存与浏览器本地缓存（localStorage + HTTP 304）设计。
 // ============================================================================
 
@@ -98,8 +99,9 @@ type V2MediaItem struct {
 	// Cover 是这条媒体的封面/缩略图：视频与 GIF 取 gallery_dl 给出的 poster 图并重写到 pbs.moonchan.xyz
 	// （例如 https://pbs.moonchan.xyz/ext_tw_video_thumb/1916894180884062208/pu/img/X472TmC88Oy-kvGn?format=jpg&name=orig）。
 	Cover string `json:"cover,omitempty"`
-	// OuoURL 是点开视频时的 ouo.io 广告变现与限流跳转地址
-	// （例如 http://ouo.io/api/6z4kqAz7?s=https://twimg.moonchan.xyz/...）。
+	// OuoURL 是点开视频时的请求地址（JSON 字段名沿用历史契约 ouo_url）：
+	// 值为本后端视频端点 /api/twitter/v2/video/<path>?<query>，点击后由服务端 302 直连
+	// https://twimg.moonchan.xyz/...（2026-10-23 起广告跳转已关闭，不再经 ouo.io）。
 	OuoURL string `json:"ouo_url,omitempty"`
 }
 
@@ -127,7 +129,7 @@ type V2AccountInfo struct {
 }
 
 // UserTimelineResponse 是面向新版 twitter-pic-react 的单用户完整视图响应：
-// 一次请求返回 account_info、tags、emojis 与经过 cover + ouo_url 增强的 timeline，
+// 一次请求返回 account_info、tags、emojis 与经过 cover + ouo_url（直连视频端点）增强的 timeline，
 // 支持基于 ?t=<last_modify> 的 Cloudflare 边缘强缓存与浏览器本地缓存。
 type UserTimelineResponse struct {
 	Username      string         `json:"username"`

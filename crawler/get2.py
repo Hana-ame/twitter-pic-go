@@ -172,7 +172,9 @@ def get_media_data_by_username(username: str):
                 raise ValueError("withheld")
             raise
 
-        structured_output = {"account_info": {}, "total_urls": 0, "timeline": []}
+        structured_output = {
+            "account_info": {}, "total_urls": 0, "timeline": [], "texts": {}
+        }
         iterator = iter(extractor)
         new_timeline_entries = []
         # tweet_id -> 该推文的视频封面 URL（previews 抓来的 poster）
@@ -223,6 +225,20 @@ def get_media_data_by_username(username: str):
                             "tweet_id": tid,
                             "type": ttype,
                         })
+                        # 配文与媒体**分开保存**：同一条推文的多张图共用一份正文，
+                        # 不在每个媒体条目里重复；客户端按 tweet_id 关联。
+                        # 正文来自同一次 GraphQL 响应的 tweet_data["content"]，
+                        # 不增加任何 API 调用。
+                        key = str(tid)
+                        if tid and key not in structured_output["texts"]:
+                            content = (tweet_data.get("content") or "").strip()
+                            if content:
+                                structured_output["texts"][key] = {
+                                    "content": content,
+                                    "conversation_id": tweet_data.get("conversation_id") or 0,
+                                    "reply_id": tweet_data.get("reply_id") or 0,
+                                    "quote_id": tweet_data.get("quote_id") or 0,
+                                }
                         structured_output["total_urls"] += 1
         except StopIteration:
             log("遍历结束（到达末尾）", "INFO")
@@ -279,10 +295,18 @@ if not info:
 log(f"账户信息: {info.get('name')} (@{info.get('nick')}), 粉丝: {info.get('followers_count')}")
 
 filename = f"{info.get('name')}.json.gz"
+# 配文与媒体**分开不同的文件**保存：媒体时间线保持原格式（不混入正文），
+# 正文单独写 `<user>.texts.json.gz`，由 API 同路由下发（见 GetMetaData）。
+texts = output.pop("texts", {})
 log(f"正在将数据压缩保存到 {filename}")
 with gzip.open(filename, "wt", encoding="utf-8", compresslevel=9) as f:
     f.write(json.dumps(output))
 log(f"数据已保存到 {filename}")
+
+texts_filename = f"{info.get('name')}.texts.json.gz"
+with gzip.open(texts_filename, "wt", encoding="utf-8", compresslevel=9) as f:
+    f.write(json.dumps({"texts": texts}))
+log(f"配文已保存到 {texts_filename}（{len(texts)} 条）")
 
 # --- 数据库更新（建表处理） ---
 log("开始更新数据库...")

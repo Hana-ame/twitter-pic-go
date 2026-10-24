@@ -177,8 +177,12 @@ func GetMetaData(c *gin.Context) {
 	fn := c.Param("fn")
 
 	username := strings.TrimSuffix(fn, ".json.gz")
+	// 配文单独文件：`<username>.texts.json.gz`（媒体 timeline 与推文正文分开存，
+	// 见 crawler/get2.py）。校验的对象仍是**真实用户名**，服务的是带 .texts 的
+	// 那个文件；命名沿用同一路由，客户端不需要新端点。
+	realUser := strings.TrimSuffix(username, ".texts")
 
-	user, err := getUserTags(username)
+	user, err := getUserTags(realUser)
 	if ginkit.AbortWithError(c, 404, err) {
 		return
 	}

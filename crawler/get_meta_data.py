@@ -102,7 +102,9 @@ def get_media_data_by_username(username: str):
                 raise ValueError("withheld")
             raise
 
-        structured_output = {"account_info": {}, "total_urls": 0, "timeline": []}
+        structured_output = {
+            "account_info": {}, "total_urls": 0, "timeline": [], "texts": {}
+        }
 
         iterator = iter(extractor)
 
@@ -182,6 +184,20 @@ def get_media_data_by_username(username: str):
                             "tweet_id": tid,
                             "type": ttype,
                         })
+                        # 配文与媒体**分开保存**：同一条推文的多张图共用一份正文，
+                        # 不在每个媒体条目里重复；客户端按 tweet_id 关联。
+                        # 正文来自同一次 GraphQL 响应的 tweet_data["content"]，
+                        # 不增加任何 API 调用。
+                        key = str(tid)
+                        if tid and key not in structured_output["texts"]:
+                            content = (tweet_data.get("content") or "").strip()
+                            if content:
+                                structured_output["texts"][key] = {
+                                    "content": content,
+                                    "conversation_id": tweet_data.get("conversation_id") or 0,
+                                    "reply_id": tweet_data.get("reply_id") or 0,
+                                    "quote_id": tweet_data.get("quote_id") or 0,
+                                }
                         structured_output["total_urls"] += 1
         except StopIteration:
             pass
@@ -248,10 +264,16 @@ if not info:
     print("未能获取到用户信息")
     exit(1)
 
+# 配文与媒体分开不同的文件保存（同 get2.py）。
+texts = output.pop("texts", {})
 with gzip.open(
     f"{info.get('name')}.json.gz", "wt", encoding="utf-8", compresslevel=9
 ) as f:
     f.write(json.dumps(output))
+with gzip.open(
+    f"{info.get('name')}.texts.json.gz", "wt", encoding="utf-8", compresslevel=9
+) as f:
+    f.write(json.dumps({"texts": texts}))
 
 # --- 数据库操作部分 ---
 conn = sqlite3.connect("twitter.db", timeout=5)

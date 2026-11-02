@@ -116,7 +116,10 @@ func buildHomeHTML(cfg config) ([]byte, error) {
 		return nil, fmt.Errorf("read json dir: %w", err)
 	}
 	names = cfg.vis.filter(names)
-	const previewN = 120
+	// 首屏只直出 20 个账号卡片（与 static/home.js 的 STEP 对齐）。
+	// 页面里的预览图/头像由 home.js 按视口懒加载；直出更多卡片只会白占首屏 HTML
+	// 体积和 DOM（JS 接管后会重排），并不会让首屏更快。
+	const previewN = 20
 	tagged := cfg.tags.ForUsers(names)
 	lm := cfg.tags.LastModifyFor(names)
 	entries := make([]acctEntry, 0, len(names))

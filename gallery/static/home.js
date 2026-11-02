@@ -48,9 +48,13 @@
   const modalDone = document.getElementById("a-modal-done");
   const modalClear = document.getElementById("a-modal-clear");
   const modalStat = document.getElementById("a-modal-stat");
-  const STEP = 120;
+  const STEP = 20;       // 首屏直出 / 每次「加载更多」的卡片数（20 个够看一屏，不再一次上 120）
   const CONC = 6;        // 并发预览拉取数
   const MAX_SEEK = 8e6;  // 单文件解压后最多扫 8MB
+  // 预览懒加载提前量：卡片进入视口外 200px 就预取，滚动时不至于空档。
+  // 不要再改回「一次性把整页卡片排进队列」——那样首屏会打满 120 个账号的预览
+  // （120 次 /api/twitter/*.json.gz + 最多 240 张图），把首屏带宽和连接池吃光。
+  const LAZY_ROOT_MARGIN = "200px 0px";
 
   const BASE = (grid.dataset.base || "").replace(/\/+$/, "");
   const cache = new Map();
@@ -192,6 +196,8 @@
       if (av && !av.querySelector("img")) {
         const img = document.createElement("img");
         img.alt = "";
+        img.loading = "lazy";
+        img.decoding = "async";
         av.insertAdjacentElement("afterbegin", img);
         loadMedia(img, getImageURL(rawA));
       }
@@ -210,6 +216,7 @@
   function pump() {
     while (inflight < CONC && queue.length) {
       const el = queue.shift();
+      if (!grid.contains(el)) continue; // 已被过滤/重置掉的旧卡片，别再浪费请求
       const name = el.dataset.n;
       if (cache.has(name)) { paint(el, cache.get(name)); continue; }
       inflight++;
@@ -226,10 +233,38 @@
     }
   }
 
-  function schedule() {
-    const todo = grid.querySelectorAll(".acct:not([data-painted])");
-    for (const el of todo) queue.push(el);
-    pump();
+  // ---- 视口懒加载：卡片进入（或接近）视口才拉该账号的预览 ----
+  // 旧实现 schedule() 把当前页所有 .acct 一次性推进队列：首屏 120 张卡片 =
+  // 120 次 /api/twitter/*.json.gz（每个都要流式解压扫描）+ 最多 240 张图
+  // （banner + 头像），首屏带宽、连接池、CF 回源全被占满。现在只拉可见/临近可见的。
+  let io = null;
+  function enqueue(el) {
+    if (!el || el.dataset.queued) return;
+    el.dataset.queued = "1";
+    queue.push(el);
+  }
+  function observeCards(nodes) {
+    const list = nodes ? Array.from(nodes) : [];
+    if (!list.length) return;
+    if (typeof IntersectionObserver !== "function") { // 老浏览器兜底：只排当前这一批
+      list.forEach(enqueue);
+      pump();
+      return;
+    }
+    if (!io) {
+      io = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting) continue;
+          io.unobserve(e.target);
+          enqueue(e.target);
+        }
+        pump();
+      }, { rootMargin: LAZY_ROOT_MARGIN });
+    }
+    for (const el of list) {
+      if (el.dataset.painted || el.dataset.queued) continue;
+      io.observe(el);
+    }
   }
 
   // ---- 流式提取：解压前缀，拿到 account_info + 首条带 url 的 timeline 就停 ----
@@ -390,15 +425,17 @@
   function renderChunk() {
     const slice = view.slice(rendered, rendered + STEP);
     if (slice.length) {
+      const before = grid.children.length;
       grid.insertAdjacentHTML("beforeend", slice.map(cardHTML).join(""));
       rendered += slice.length;
-      schedule();
+      observeCards(Array.prototype.slice.call(grid.children, before));
     }
     update();
   }
 
   function reset(list) {
     view = list; rendered = 0;
+    if (io) { io.disconnect(); io = null; } // 旧卡片全部作废，观察器重建
     grid.innerHTML = "";
     renderChunk();
   }

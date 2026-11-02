@@ -41,7 +41,7 @@
 | 你想要修改的内容 | 目标文件路径 | 关键函数 / 结构体 |
 | :--- | :--- | :--- |
 | **Gallery 路由表（`/`, `/u/{account}`, `/api/tag`, `/api/reactions`, `/static/*` 等）与配置初始化** | `gallery/server.go` | `NewHandler`, `galleryMux`, `config` |
-| **首页与账号页的 SSR 数据组装、首屏预览条数（默认 120）、账号排序规则** | `gallery/pages.go` | `handleHome`, `buildHomeHTML`, `handleAccount`, `pageData`, `homeData`, `accountPage` |
+| **首页与账号页的 SSR 数据组装、首屏预览条数（默认 20，与 `home.js` 的 `STEP` 对齐；预览图按视口懒加载）、账号排序规则** | `gallery/pages.go` | `handleHome`, `buildHomeHTML`, `handleAccount`, `pageData`, `homeData`, `accountPage` |
 | **`.json.gz` 解析、唯一资源 CDN (`pbs.moonchan.xyz`) 与 `cover` 封面重写、点开视频 `ouo.io` 跳转链接构造** | `gallery/media.go` | `buildAll`, `buildOuoURL`, `resolveOuoPrefix`, `mediaURL`, `defaultMediaBase`, `defaultOuoPrefix` |
 | **图站标签接口（`GET /api/tags`, `POST /api/tag`, `GET /api/tag/{tag}`, `GET /api/tags/cloud`）** | `gallery/tags_handler.go` | `handlePostAccountTag`, `handleGetAccountTags`, `handleTagUsers`, `handleTagCloud` |
 | **单张媒体图片/视频的赞踩计数（`GET /api/reactions`, `POST /api/react`, `reactions.json`）** | `gallery/reactions.go` | `reactionStore`, `handleGetReactions`, `handlePostReact` |

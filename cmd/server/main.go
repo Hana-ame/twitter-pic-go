@@ -45,9 +45,16 @@ func main() {
 
 	go twimg.Run(os.Getenv("TWIMG_ADDR"))
 
-	if err := api.RefreshAllRankings(); err != nil {
-		log.Println(err)
-	}
+	// CreateTableV3 启动时已完成首次榜单结算；此处启动后台定时协程每小时自动刷新日/周/月榜
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := api.RefreshAllRankings(); err != nil {
+				log.Printf("RefreshAllRankings 定时刷新失败: %v", err)
+			}
+		}
+	}()
 
 	r := setupRouter(api.DB)
 

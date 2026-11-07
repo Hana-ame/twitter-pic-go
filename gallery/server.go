@@ -158,7 +158,7 @@ func galleryMux(cfg config, reactions *reactionStore) *http.ServeMux {
 	mux.HandleFunc("GET /video/{filepath...}", func(w http.ResponseWriter, r *http.Request) { handleGalleryVideoRedirect(w, r, cfg) })
 	mux.HandleFunc("GET /api/video/{filepath...}", func(w http.ResponseWriter, r *http.Request) { handleGalleryVideoRedirect(w, r, cfg) })
 	mux.HandleFunc("GET /api/reactions", func(w http.ResponseWriter, r *http.Request) { handleGetReactions(w, r, reactions) })
-	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions) })
+	mux.HandleFunc("POST /api/react", func(w http.ResponseWriter, r *http.Request) { handlePostReact(w, r, reactions, cfg) })
 	mux.HandleFunc("GET /api/tag-cloud", func(w http.ResponseWriter, r *http.Request) { handleTagCloud(w, r, cfg) })
 	mux.HandleFunc("GET /api/tags/cloud", func(w http.ResponseWriter, r *http.Request) { handleTagCloud(w, r, cfg) })
 	mux.HandleFunc("GET /api/tag/{tag}", func(w http.ResponseWriter, r *http.Request) { handleTagUsers(w, r, cfg) })

@@ -1,12 +1,12 @@
 // Package gallery 提供 Twitter Pic 的 SSR 图库前端与 Web 交互路由。
 //
 // 本文件（assets.go）实现前端模板与静态资源的「双模加载器」：
-//   1. 内嵌兜底（//go:embed）：编译进单一二进制，任何工作目录下（含单二进制部署、单元测试）开箱即用；
-//   2. 磁盘实时热更新（Live Disk Reload）：面向频繁更新前端的开发与线上热更场景。
-//      当检测到磁盘前端目录（GALLERY_FRONTEND_DIR，或默认 ./gallery / .）下的
-//      templates/*.html、static/css/*.css、static/*.js 发生修改（mtime 变化）时，
-//      无需重新编译 Go 二进制或重启进程，自动重新加载模板与 CSS/JS 并使首页 SSR 缓存失效，
-//      浏览器刷新即刻生效。
+//  1. 内嵌兜底（//go:embed）：编译进单一二进制，任何工作目录下（含单二进制部署、单元测试）开箱即用；
+//  2. 磁盘实时热更新（Live Disk Reload）：面向频繁更新前端的开发与线上热更场景。
+//     当检测到磁盘前端目录（GALLERY_FRONTEND_DIR，或默认 ./gallery / .）下的
+//     templates/*.html、static/css/*.css、static/*.js 发生修改（mtime 变化）时，
+//     无需重新编译 Go 二进制或重启进程，自动重新加载模板与 CSS/JS 并使首页 SSR 缓存失效，
+//     浏览器刷新即刻生效。
 package gallery
 
 import (
@@ -58,8 +58,44 @@ type assetManager struct {
 
 var defaultAssets = newAssetManager()
 
+func executableModTime() time.Time {
+	exe, err := os.Executable()
+	if err != nil {
+		return time.Time{}
+	}
+	info, err := os.Stat(exe)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+// shouldUseDiskBundle 判断是否应启用磁盘前端目录覆盖内置 //go:embed：
+//  1. 显式设置 GALLERY_DEV=0 时强制禁用磁盘覆盖；
+//  2. 显式设置 GALLERY_DEV=1 或 GALLERY_FRONTEND_DIR 非空时强制启用磁盘覆盖；
+//  3. 默认情况下（GALLERY_DEV 未设置，默认视作 0），仅当磁盘前端文件的最新修改时间（mtime）
+//     晚于当前二进制自身修改时间（os.Executable() 的 ModTime()）时才启用磁盘覆盖，
+//     消除生产环境升级二进制后被工作目录下旧版磁盘模板静默覆盖的陷阱，同时保留 --frontend 免编译热更新能力。
+func shouldUseDiskBundle(dir string, diskMtime, exeMtime time.Time) bool {
+	if dir == "" {
+		return false
+	}
+	dev := strings.TrimSpace(os.Getenv("GALLERY_DEV"))
+	if dev == "0" {
+		return false
+	}
+	if dev == "1" || strings.TrimSpace(os.Getenv("GALLERY_FRONTEND_DIR")) != "" {
+		return true
+	}
+	if !exeMtime.IsZero() && diskMtime.After(exeMtime) {
+		return true
+	}
+	return false
+}
+
 func newAssetManager() *assetManager {
 	emb := loadEmbeddedBundle()
+	emb.mtime = executableModTime()
 	dir := resolveFrontendDiskDir()
 	m := &assetManager{
 		diskDir:  dir,
@@ -68,21 +104,23 @@ func newAssetManager() *assetManager {
 	}
 	if dir != "" {
 		if b, mtime, err := loadDiskBundle(dir); err == nil {
-			b.mtime = mtime
-			m.current = b
+			if shouldUseDiskBundle(dir, mtime, emb.mtime) {
+				b.mtime = mtime
+				m.current = b
+			}
 		}
 	}
 	return m
 }
 
 func resolveFrontendDiskDir() string {
+	if strings.TrimSpace(os.Getenv("GALLERY_DEV")) == "0" {
+		return ""
+	}
 	if explicit := strings.TrimSpace(os.Getenv("GALLERY_FRONTEND_DIR")); explicit != "" {
 		if hasFrontendFiles(explicit) {
 			return explicit
 		}
-	}
-	if strings.TrimSpace(os.Getenv("GALLERY_DEV")) == "0" {
-		return ""
 	}
 	for _, cand := range []string{"./gallery", "."} {
 		if hasFrontendFiles(cand) {
@@ -236,11 +274,16 @@ func (m *assetManager) staticHandler() http.Handler {
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if m != nil && m.diskDir != "" {
-			diskStatic := filepath.Join(m.diskDir, "static")
-			if st, err := os.Stat(diskStatic); err == nil && st.IsDir() {
-				w.Header().Set("Cache-Control", "no-cache")
-				http.StripPrefix("/static/", http.FileServer(http.Dir(diskStatic))).ServeHTTP(w, r)
-				return
+			m.mu.RLock()
+			usingDisk := m.current != m.embedded
+			m.mu.RUnlock()
+			if usingDisk {
+				diskStatic := filepath.Join(m.diskDir, "static")
+				if st, err := os.Stat(diskStatic); err == nil && st.IsDir() {
+					w.Header().Set("Cache-Control", "no-cache")
+					http.StripPrefix("/static/", http.FileServer(http.Dir(diskStatic))).ServeHTTP(w, r)
+					return
+				}
 			}
 		}
 		if embeddedHandler != nil {

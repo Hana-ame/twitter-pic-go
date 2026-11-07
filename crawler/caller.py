@@ -1,27 +1,80 @@
 import os
-# import sys
 import shlex
-import threading
 import socket
+import threading
+import queue
 
-# 抓取脚本名。build.sh 上传的是 get_meta_data.py，历史上这里写的是不存在的
-# get2.py，导致队列永远执行失败。
-FETCHER = "get_meta_data.py"
+# 统一使用主力抓取脚本 get2.py（带 CT0 / 源 IP 绑定与完整的 users 统计列更新）
+FETCHER = "get2.py"
 
 # caller.py 的 TCP listener 绑在非 loopback 地址上且能触发命令执行。
 # 设置 CALLER_TOKEN 后要求客户端第一行发送 "token <CALLER_TOKEN>"，
 # 未设置时保持旧行为（向后兼容，不破坏现有部署）。
 CALLER_TOKEN = os.getenv("CALLER_TOKEN", "")
 
+# 有界任务队列与去重集合：防止突发请求无上限派生 Python 抓取进程耗尽 528MB 机器内存
+MAX_QUEUE_SIZE = int(os.getenv("CALLER_QUEUE_SIZE", "100"))
+WORKER_COUNT = int(os.getenv("CALLER_WORKERS", "2"))
 
-def call(username):
+task_queue: "queue.Queue[str]" = queue.Queue(maxsize=MAX_QUEUE_SIZE)
+pending_lock = threading.Lock()
+pending_users: set[str] = set()
+workers_started = False
+
+
+def call(username: str) -> int:
     # 注意：username 来自网络（Go 服务器转发），必须 quote，
     # 否则注入 `;`、`$()` 等字符会直接执行 shell 命令（RCE）。
-    # 发现背景：代码审阅时发现 os.system 直接拼接网络输入。
-    os.system(f"timeout 300s ~/twitter/venv/bin/python3 {FETCHER} {shlex.quote(username)}")
+    return os.system(f"timeout 300s ~/twitter/venv/bin/python3 {FETCHER} {shlex.quote(username)}")
 
 
-def token_ok(first_line):
+def _worker_loop(worker_id: int):
+    while True:
+        username = task_queue.get()
+        try:
+            print(f"[Worker-{worker_id}] 开始抓取: {username}")
+            call(username)
+            print(f"[Worker-{worker_id}] 完成抓取: {username}")
+        except Exception as e:
+            print(f"[Worker-{worker_id}] 抓取 {username} 异常: {e}")
+        finally:
+            with pending_lock:
+                pending_users.discard(username.lower())
+            task_queue.task_done()
+
+
+def ensure_workers_started():
+    global workers_started
+    with pending_lock:
+        if workers_started:
+            return
+        workers_started = True
+        for i in range(max(1, WORKER_COUNT)):
+            t = threading.Thread(target=_worker_loop, args=(i + 1,), daemon=True)
+            t.start()
+
+
+def enqueue_username(username: str) -> str:
+    """将 username 加入有界抓取队列，自动剔除正在队列或执行中的重复 username。"""
+    ensure_workers_started()
+    key = username.strip().lower()
+    if not key:
+        return "empty"
+    with pending_lock:
+        if key in pending_users:
+            print(f"[*] 用户 {username} 已在抓取队列或执行中，跳过重复入队")
+            return "duplicate"
+        try:
+            task_queue.put_nowait(username.strip())
+            pending_users.add(key)
+            print(f"[+] 用户 {username} 已入队（当前队列深度: {task_queue.qsize()}/{MAX_QUEUE_SIZE}）")
+            return "queued"
+        except queue.Full:
+            print(f"[!] 抓取队列已满 ({MAX_QUEUE_SIZE})，丢弃请求: {username}")
+            return "full"
+
+
+def token_ok(first_line: str) -> bool:
     """校验可选的共享令牌。CALLER_TOKEN 为空时不启用鉴权。
 
     两侧都转小写再比较：只 lower 输入侧会让带大写字母的 token 永远校验失败。
@@ -32,20 +85,17 @@ def token_ok(first_line):
 
 
 def handle_client(client_socket, client_address):
-    """处理单个客户端连接的线程函数"""
+    """处理单个客户端连接：校验参数后将任务放入有界队列立即返回，不在连接线程内同步跑爬虫。"""
     print(f"[+] 客户端 {client_address} 已连接")
     try:
-        # 接收客户端发送的数据
-        data = client_socket.recv(1024)  # 一次最多接收1024字节
+        data = client_socket.recv(1024)
         if not data:
             print(f"[-] 客户端 {client_address} 发送了空数据")
             return
-            
-        received_str = data.decode('utf-8').strip() # 解码并去除首尾空白字符
+
+        received_str = data.decode('utf-8').strip()
         print(f"[*] 收到来自 {client_address} 的字符串: {repr(received_str)}")
-        
-        # 可选鉴权：启用 CALLER_TOKEN 时第一行必须是 "token <token>"，
-        # username 取最后一行。未启用时保持旧的单行协议（向后兼容）。
+
         lines = received_str.splitlines()
         username = lines[-1].strip() if lines else ""
         if CALLER_TOKEN:
@@ -56,59 +106,43 @@ def handle_client(client_socket, client_address):
             print(f"[-] 客户端 {client_address} 未提供 username")
             return
 
-        # 使用接收到的字符串执行调用
-        result = call(username)
-        
-        # (可选)将调用结果发送回客户端
-        # response = str(result).encode('utf-8')
-        # client_socket.sendall(response)
-        
+        enqueue_username(username)
+
     except UnicodeDecodeError:
         print(f"[-] 来自 {client_address} 的数据无法解码为 UTF-8 字符串")
     except Exception as e:
         print(f"[-] 处理客户端 {client_address} 请求时发生错误: {e}")
     finally:
-        # 关闭当前客户端连接
         client_socket.close()
         print(f"[-] 与客户端 {client_address} 的连接已关闭")
 
 
-
 def start_tcp_listener(host='127.25.9.19', port=8080):
     """启动TCP监听服务器"""
-    # 创建TCP socket[1,2,3](@ref)
+    ensure_workers_started()
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    
-    # 设置地址重用选项，避免重启服务器时遇到“Address already in use”错误
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    
+
     try:
-        # 绑定IP地址和端口[1,2,3](@ref)
         server_socket.bind((host, port))
-        # 开始监听，设置最大等待连接数[1,2,3](@ref)
-        server_socket.listen(5)
-        print(f"[*] TCP 监听器已启动在 {host}:{port}")
+        server_socket.listen(16)
+        print(f"[*] TCP 监听器已启动在 {host}:{port} (workers={WORKER_COUNT}, max_queue={MAX_QUEUE_SIZE})")
         print("[*] 等待客户端连接...")
-        
+
         while True:
-            # 接受客户端连接[1,2,3](@ref)
             client_sock, client_addr = server_socket.accept()
-            # 为每个新连接创建一个新线程进行处理[6,8](@ref)
             client_thread = threading.Thread(target=handle_client, args=(client_sock, client_addr))
-            client_thread.daemon = True # 设置为守护线程，主程序退出时自动结束
+            client_thread.daemon = True
             client_thread.start()
-            print(f"[*] 活跃连接数: {threading.active_count() - 1}")
-            
+
     except KeyboardInterrupt:
         print("\n[!] 收到中断信号，服务器关闭中...")
     except Exception as e:
         print(f"[!] 服务器运行出错: {e}")
     finally:
-        # 确保服务器Socket被关闭[1,2](@ref)
         server_socket.close()
         print("[-] 服务器已关闭")
-        
-            
+
+
 if __name__ == '__main__':
-    # 创建一个tcp listener, 每当发生链接时,接收一个字符串,字符串用来执行call(s)
     start_tcp_listener()

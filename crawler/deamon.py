@@ -8,7 +8,7 @@ PENDING_INPUT_FILE = "pending.txt"  # 存放原始输入的文件
 
 # 抓取脚本。build.sh 上传的是 get_meta_data.py，这里必须与之一致，
 # 否则队列为空跑不起来（历史上这里写的是不存在的 get2.py）。
-FETCHER = "get_meta_data.py"
+FETCHER = "get2.py"
 FETCHER_BIN = "~/twitter/venv/bin/python3"
 
 def extract_username(raw_text):

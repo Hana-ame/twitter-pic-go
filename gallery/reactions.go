@@ -6,6 +6,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/Hana-ame/twitter-pic-go/ipban"
 )
 
 type reactionCounts struct {
@@ -14,9 +17,11 @@ type reactionCounts struct {
 }
 
 type reactionStore struct {
-	mu   sync.Mutex
-	path string
-	m    map[string]*reactionCounts
+	mu      sync.Mutex
+	path    string
+	m       map[string]*reactionCounts
+	dirty   bool
+	flusher bool
 }
 
 func newReactionStore(path string) *reactionStore {
@@ -25,8 +30,39 @@ func newReactionStore(path string) *reactionStore {
 		if b, err := os.ReadFile(path); err == nil {
 			_ = json.Unmarshal(b, &s.m)
 		}
+		s.flusher = true
+		go s.backgroundFlushLoop(5 * time.Second)
 	}
 	return s
+}
+
+func (s *reactionStore) backgroundFlushLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.Flush()
+	}
+}
+
+func (s *reactionStore) Flush() {
+	s.mu.Lock()
+	if !s.dirty || s.path == "" {
+		s.mu.Unlock()
+		return
+	}
+	s.dirty = false
+	b, err := json.MarshalIndent(s.m, "", "  ")
+	path := s.path
+	s.mu.Unlock()
+
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 func (s *reactionStore) snapshot(keys []string) map[string]reactionCounts {
@@ -43,7 +79,21 @@ func (s *reactionStore) snapshot(keys []string) map[string]reactionCounts {
 	return out
 }
 
+func clampDelta(v int) int {
+	switch {
+	case v > 1:
+		return 1
+	case v < -1:
+		return -1
+	default:
+		return v
+	}
+}
+
 func (s *reactionStore) apply(key string, dl, dd int) reactionCounts {
+	dl = clampDelta(dl)
+	dd = clampDelta(dd)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c := s.m[key]
@@ -59,23 +109,10 @@ func (s *reactionStore) apply(key string, dl, dd int) reactionCounts {
 	if c.Dislikes < 0 {
 		c.Dislikes = 0
 	}
-	s.saveLocked()
+	// 仅标记 dirty，由后台定时（每 5 秒）批量落盘，避免每次点击都在互斥锁内同步执行
+	// json.MarshalIndent + os.WriteFile + os.Rename 阻塞高频请求。
+	s.dirty = true
 	return *c
-}
-
-func (s *reactionStore) saveLocked() {
-	if s.path == "" {
-		return
-	}
-	b, err := json.MarshalIndent(s.m, "", "  ")
-	if err != nil {
-		return
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, s.path)
 }
 
 func handleGetReactions(w http.ResponseWriter, r *http.Request, s *reactionStore) {
@@ -88,7 +125,28 @@ func handleGetReactions(w http.ResponseWriter, r *http.Request, s *reactionStore
 	writeJSON(w, s.snapshot(keys))
 }
 
-func handlePostReact(w http.ResponseWriter, r *http.Request, s *reactionStore) {
+func handlePostReact(w http.ResponseWriter, r *http.Request, s *reactionStore, cfg ...config) {
+	if len(cfg) > 0 {
+		c := cfg[0]
+		if c.bans != nil {
+			if ip, banned := c.bans.Decide(r); banned {
+				ipban.WriteDenied(w, ip)
+				return
+			}
+		}
+		if c.tagLimit != nil {
+			ip := ipban.Principal(r)
+			if !c.tagLimit.Allow(ip) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"code": 429, "message": "请求过于频繁，请一小时后再试",
+				})
+				return
+			}
+		}
+	}
+
 	var req struct {
 		Key string `json:"key"`
 		DL  int    `json:"dl"`
@@ -102,6 +160,10 @@ func handlePostReact(w http.ResponseWriter, r *http.Request, s *reactionStore) {
 		http.Error(w, "key required", http.StatusBadRequest)
 		return
 	}
+	// 将 DL 和 DD 钳制在 [-1, 1] 范围内，防止恶意请求传大数一键篡改赞数
+	req.DL = clampDelta(req.DL)
+	req.DD = clampDelta(req.DD)
+
 	c := s.apply(req.Key, req.DL, req.DD)
 	writeJSON(w, map[string]any{"key": req.Key, "likes": c.Likes, "dislikes": c.Dislikes})
 }

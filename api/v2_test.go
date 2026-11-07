@@ -642,8 +642,6 @@ func TestV2JsonGzURLAndConditionalCaching(t *testing.T) {
 	}
 }
 
-
-
 func TestV2VideoCoverAndOuoURL(t *testing.T) {
 	db := setupTestDB(t)
 	defer db.Close()
@@ -717,5 +715,109 @@ func TestV2VideoCoverAndOuoURL(t *testing.T) {
 	wantRedirect := "https://twimg.moonchan.xyz/ext_tw_video/1916894180884062208/pu/vid/avc1/720x1280/test.mp4?tag=12"
 	if loc != wantRedirect {
 		t.Errorf("expected video redirect Location %q, got %q", wantRedirect, loc)
+	}
+}
+
+// TestV2ScanFlutterUserReadsSQLiteMetaWithoutGunzip 钉住 P0 改进：
+// 列表类 V2 接口（/v2/users、/v2/search、/v2/tags/:tag/users、/v2/ranking）
+// 直接从 SQLite users 表的冗余统计列读取 avatar/banner/total_urls/photo_count/video_count，
+// 无需在磁盘上存在或解压 <username>.json.gz，彻底消除缓存未命中时的同步解压风暴。
+func TestV2ScanFlutterUserReadsSQLiteMetaWithoutGunzip(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+	r := setupTestEngine()
+
+	// 确保没有任何 .json.gz 文件存在
+	t.Setenv("GALLERY_JSON_DIR", t.TempDir())
+	t.Setenv("TWITTER_DIR", t.TempDir())
+
+	if _, err := db.Exec(`
+		INSERT INTO users (username, nick, status, last_modify, avatar, banner, total_urls, photo_count, video_count)
+		VALUES ('sqlite_meta_user', '数据库元数据用户', 'SUCCESS', '2026-10-06 10:00:00',
+		        'https://pbs.twimg.com/avatar_db.jpg', 'https://pbs.twimg.com/banner_db.jpg', 42, 35, 7);
+		INSERT INTO account_tags (username, tag, weight) VALUES ('sqlite_meta_user', '女性', 5);
+		INSERT INTO user_tag_cnt (username, tag, cnt, updated_at) VALUES ('sqlite_meta_user', '女性', 5, '2026-10-06 10:00:00');
+	`); err != nil {
+		t.Fatalf("insert sqlite_meta_user: %v", err)
+	}
+
+	// 1. /api/twitter/v2/users 列表直接读出 SQLite 统计列
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/twitter/v2/users?limit=10", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("users got %d: %s", w.Code, w.Body.String())
+	}
+	var listResp UsersListResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &listResp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(listResp.Users) != 1 {
+		t.Fatalf("expected 1 user, got %d", len(listResp.Users))
+	}
+	u := listResp.Users[0]
+	if u.Avatar != "https://pbs.twimg.com/avatar_db.jpg" || u.Banner != "https://pbs.twimg.com/banner_db.jpg" {
+		t.Errorf("expected SQLite avatar/banner, got avatar=%q banner=%q", u.Avatar, u.Banner)
+	}
+	if u.TotalUrls != 42 || u.PhotoCount != 35 || u.VideoCount != 7 {
+		t.Errorf("expected SQLite counts 42/35/7, got %d/%d/%d", u.TotalUrls, u.PhotoCount, u.VideoCount)
+	}
+
+	// 2. /api/twitter/v2/tags/女性/users 同样直接读出 SQLite 统计列
+	wTag := httptest.NewRecorder()
+	reqTag, _ := http.NewRequest("GET", "/api/twitter/v2/tags/女性/users?limit=10", nil)
+	r.ServeHTTP(wTag, reqTag)
+	if wTag.Code != http.StatusOK {
+		t.Fatalf("tag users got %d", wTag.Code)
+	}
+	var tagResp TagUsersResponse
+	_ = json.Unmarshal(wTag.Body.Bytes(), &tagResp)
+	if len(tagResp.Users) != 1 || tagResp.Users[0].Avatar != "https://pbs.twimg.com/avatar_db.jpg" || tagResp.Users[0].TotalUrls != 42 {
+		t.Errorf("tag users failed to read SQLite meta columns: %+v", tagResp.Users)
+	}
+}
+
+// TestBackfillUsersMetaFromDisk 验证服务启动时一次性从磁盘 .json.gz 补齐缺失统计列的存量账号。
+func TestBackfillUsersMetaFromDisk(t *testing.T) {
+	db := setupTestDB(t)
+	defer db.Close()
+
+	tmpDir := t.TempDir()
+	t.Setenv("GALLERY_JSON_DIR", tmpDir)
+
+	docJSON := `{
+		"account_info": {
+			"name": "legacy_disk_user",
+			"nick": "存量用户",
+			"profile_image": "https://pbs.twimg.com/legacy_av.jpg",
+			"profile_banner": "https://pbs.twimg.com/legacy_bn.jpg"
+		},
+		"timeline": [
+			{"tweet_id": 1, "url": "https://pbs.twimg.com/1.jpg", "type": "photo"},
+			{"tweet_id": 2, "url": "https://video.twimg.com/2.mp4", "type": "video"}
+		]
+	}`
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	_, _ = zw.Write([]byte(docJSON))
+	_ = zw.Close()
+	if err := os.WriteFile(filepath.Join(tmpDir, "legacy_disk_user.json.gz"), buf.Bytes(), 0644); err != nil {
+		t.Fatalf("write gz: %v", err)
+	}
+
+	if _, err := db.Exec(`INSERT INTO users (username, status) VALUES ('legacy_disk_user', 'SUCCESS')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	BackfillUsersMetaFromDisk(db)
+
+	var nick, avatar, banner string
+	var total, photos, videos int
+	if err := db.QueryRow(`SELECT nick, avatar, banner, total_urls, photo_count, video_count FROM users WHERE username = 'legacy_disk_user'`).
+		Scan(&nick, &avatar, &banner, &total, &photos, &videos); err != nil {
+		t.Fatalf("query backfilled row: %v", err)
+	}
+	if nick != "存量用户" || avatar != "https://pbs.twimg.com/legacy_av.jpg" || total != 2 || photos != 1 || videos != 1 {
+		t.Errorf("backfill mismatch: nick=%q avatar=%q total=%d photos=%d videos=%d", nick, avatar, total, photos, videos)
 	}
 }

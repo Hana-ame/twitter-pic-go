@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Hana-ame/twitter-pic-go/tags"
@@ -18,17 +19,27 @@ func CreateTable() error {
 		return fmt.Errorf("数据库连接不可用: %v", err)
 	}
 
-	// 1. 创建表结构
+	// 1. 创建表结构（包含 V2 列表接口所需的冗余统计列，避免列表查询同步解压 .json.gz）
 	// 注意：username 已经是 PRIMARY KEY，数据库会自动为它创建索引
 	queryTable := `CREATE TABLE IF NOT EXISTS users (
         username TEXT PRIMARY KEY,
         nick TEXT,
-		status TEXT,
-        last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        status TEXT,
+        last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        avatar TEXT DEFAULT '',
+        banner TEXT DEFAULT '',
+        total_urls INTEGER DEFAULT 0,
+        photo_count INTEGER DEFAULT 0,
+        video_count INTEGER DEFAULT 0
     );`
 
 	if _, err := DB.Exec(queryTable); err != nil {
 		return fmt.Errorf("创建表失败: %v", err)
+	}
+
+	// 幂等补齐已有旧表缺失的统计列
+	if err := EnsureUsersMetaColumns(DB); err != nil {
+		log.Printf("补齐 users 统计列告警: %v", err)
 	}
 
 	// 2. 创建复合索引
@@ -41,8 +52,87 @@ func CreateTable() error {
 		return fmt.Errorf("创建复合索引失败: %v", err)
 	}
 
+	// 3. 启动时一次性回填缺失统计元数据的存量用户
+	BackfillUsersMetaFromDisk(DB)
+
 	log.Println("表和复合索引创建/检查完成")
 	return nil
+}
+
+// EnsureUsersMetaColumns 幂等检查并为 users 表补充 avatar/banner/total_urls/photo_count/video_count 列。
+func EnsureUsersMetaColumns(db *sql.DB) error {
+	if db == nil {
+		return nil
+	}
+	alterStmts := []string{
+		`ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN banner TEXT DEFAULT ''`,
+		`ALTER TABLE users ADD COLUMN total_urls INTEGER DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN photo_count INTEGER DEFAULT 0`,
+		`ALTER TABLE users ADD COLUMN video_count INTEGER DEFAULT 0`,
+	}
+	for _, stmt := range alterStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			msg := strings.ToLower(err.Error())
+			if !strings.Contains(msg, "duplicate column") {
+				// 忽略列已存在错误（幂等迁移）；其余错误记录后继续，不阻塞启动。
+				log.Printf("users: 迁移统计列失败（忽略）: %v", err)
+			}
+		}
+	}
+	return nil
+}
+
+// BackfillUsersMetaFromDisk 在服务启动时一次性扫描缺失 avatar 且 total_urls == 0 的存量用户，
+// 若磁盘上存在对应的 <username>.json.gz，则解析并写回 SQLite users 表。
+func BackfillUsersMetaFromDisk(db *sql.DB) {
+	if db == nil {
+		return
+	}
+	rows, err := db.Query(`SELECT username FROM users WHERE status = 'SUCCESS' AND COALESCE(avatar, '') = '' AND COALESCE(total_urls, 0) = 0`)
+	if err != nil {
+		return
+	}
+	var names []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err == nil && u != "" {
+			names = append(names, u)
+		}
+	}
+	rows.Close()
+
+	if len(names) == 0 {
+		return
+	}
+
+	updated := 0
+	for _, name := range names {
+		if resolveUserJsonGz(name) == "" {
+			continue
+		}
+		doc := loadUserDoc(name)
+		if doc == nil || (doc.avatar == "" && doc.totalUrls == 0) {
+			continue
+		}
+		_, err := db.Exec(`
+			UPDATE users
+			SET nick = CASE WHEN COALESCE(nick, '') = '' THEN ? ELSE nick END,
+			    avatar = ?,
+			    banner = ?,
+			    total_urls = ?,
+			    photo_count = ?,
+			    video_count = ?
+			WHERE username = ?`,
+			doc.nick, doc.avatar, doc.banner, doc.totalUrls, doc.photoCount, doc.videoCount, name,
+		)
+		if err == nil {
+			updated++
+		}
+	}
+	if updated > 0 {
+		log.Printf("users: 启动回填了 %d 个存量用户的媒体统计列", updated)
+	}
 }
 
 // Base query string to avoid repetition
@@ -80,12 +170,12 @@ func commitUser(username, status string) error {
 	// 用户被封禁或解封时，同步增量更新 tag_counts 标签云表
 	if oldStatus.String == "SUCCESS" && status != "SUCCESS" {
 		_, _ = DB.Exec(`UPDATE tag_counts SET cnt = cnt - 1 
-			WHERE tag IN (SELECT tag FROM user_tag_cnt WHERE username = ? AND cnt > 0);
+			WHERE tag IN (SELECT tag FROM account_tags WHERE username = ? AND weight > 0);
 			DELETE FROM tag_counts WHERE cnt <= 0;`, username)
 		tags.RefreshCloudByDB(DB)
 	} else if oldStatus.String != "SUCCESS" && status == "SUCCESS" {
 		_, _ = DB.Exec(`INSERT INTO tag_counts (tag, cnt)
-			SELECT tag, 1 FROM user_tag_cnt WHERE username = ? AND cnt > 0
+			SELECT tag, 1 FROM account_tags WHERE username = ? AND weight > 0
 			ON CONFLICT(tag) DO UPDATE SET cnt = cnt + 1;`, username)
 		tags.RefreshCloudByDB(DB)
 	}
@@ -204,17 +294,17 @@ func getUserListByUsername(username string) ([]User, error) {
 	return users, nil
 }
 
-func getUserTags(username string) (user User, err error) {
+func getUserTags(username string) (User, error) {
 	query := userSelectQuery + `WHERE u.username = ?`
 
 	rows, err := DB.Query(query, username)
 	if err != nil {
-		return user, fmt.Errorf("查询用户失败: %v", err)
+		return User{}, fmt.Errorf("查询用户失败: %v", err)
 	}
 	defer rows.Close()
 
-	for rows.Next() {
+	if rows.Next() {
 		return scanUser(rows)
 	}
-	return user, fmt.Errorf("查询用户失败: 没有进入 rows.Next()")
+	return User{}, fmt.Errorf("查询用户失败: 没有进入 rows.Next()")
 }

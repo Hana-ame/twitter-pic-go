@@ -351,6 +351,7 @@ func GetEmojisGz(c *gin.Context) {
 	if ginkit.AbortWithError(c, 500, err) {
 		return
 	}
+	defer f.Close()
 
 	fileInfo, err := f.Stat()
 	if ginkit.AbortWithError(c, 500, err) {
@@ -518,7 +519,7 @@ func AddToGroup(g *gin.RouterGroup) {
 	// 新增 Emoji 路由
 	g.GET("/emojis.json.gz", GetEmojisGz)
 	g.GET("/emojis", GetEmojis)
-	g.POST("/emojis", VoteUpEmojiHandler)
+	g.POST("/emojis", StrictIPBanMiddleware(banMgr), limit.RateLimitMiddleware(limiter), VoteUpEmojiHandler)
 
 	// 视频链接专属重定向端点（/api/twitter/video/*filepath 与 /api/twitter/v2/video/*filepath）
 	// 2026-10-23 起广告跳转已关闭（视频直连配额中间件随广告一并移除）：

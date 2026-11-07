@@ -75,19 +75,17 @@ func EnsureVoteSchema(db *sql.DB) error {
 	) WITHOUT ROWID;`); err != nil {
 		return fmt.Errorf("创建 tag_weight_base 失败: %v", err)
 	}
-	// 投票真相表 user_tag_ip
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS user_tag_ip (
-		username   TEXT    NOT NULL,
-		tag        TEXT    NOT NULL,
-		ip         TEXT    NOT NULL,
-		value      INTEGER NOT NULL,
-		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-		PRIMARY KEY (username, tag, ip)
-	) WITHOUT ROWID;`); err != nil {
-		return fmt.Errorf("创建 user_tag_ip 失败: %v", err)
+	// 收敛 user_tag_ip 与 tag_votes：若存在旧的独立表 user_tag_ip，将其票据合并进权威表 tag_votes，
+	// 随后用只读兼容视图 user_tag_ip 过渡，彻底消除每次投票在两张同构表上的双写与重复索引维护。
+	var objType string
+	_ = db.QueryRow(`SELECT type FROM sqlite_master WHERE name = 'user_tag_ip'`).Scan(&objType)
+	if objType == "table" {
+		_, _ = db.Exec(`INSERT OR IGNORE INTO tag_votes (username, tag, ip, value, updated_at)
+			SELECT username, tag, ip, value, updated_at FROM user_tag_ip`)
+		_, _ = db.Exec(`DROP TABLE IF EXISTS user_tag_ip`)
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_user_tag_ip_ip ON user_tag_ip(ip);`); err != nil {
-		return fmt.Errorf("创建 user_tag_ip ip 索引失败: %v", err)
+	if _, err := db.Exec(`CREATE VIEW IF NOT EXISTS user_tag_ip AS SELECT username, tag, ip, value, updated_at FROM tag_votes;`); err != nil {
+		log.Printf("tags: 创建兼容视图 user_tag_ip 告警: %v", err)
 	}
 	return nil
 }
@@ -202,11 +200,10 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 		}
 		target := clampTarget(want)
 
-		// 变更前该用户对此标签的计数
+		// 变更前该用户对此标签的计数（以权威表 account_tags 为准，兼顾 user_tag_cnt）
 		var oldCnt int
-		_ = tx.QueryRow(`SELECT cnt FROM user_tag_cnt WHERE username = ? AND tag = ?`, username, tag).Scan(&oldCnt)
-		if oldCnt == 0 {
-			_ = tx.QueryRow(`SELECT weight FROM account_tags WHERE username = ? AND tag = ?`, username, tag).Scan(&oldCnt)
+		if err := tx.QueryRow(`SELECT weight FROM account_tags WHERE username = ? AND tag = ?`, username, tag).Scan(&oldCnt); err != nil {
+			_ = tx.QueryRow(`SELECT cnt FROM user_tag_cnt WHERE username = ? AND tag = ?`, username, tag).Scan(&oldCnt)
 		}
 
 		if target == VoteUndo {
@@ -217,8 +214,6 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 			if err != nil {
 				return fmt.Errorf("撤票 %s %q 失败: %v", username, tag, err)
 			}
-			_, _ = tx.Exec(`DELETE FROM user_tag_ip WHERE username = ? AND tag = ? AND ip = ?`,
-				username, tag, ip)
 			if n, _ := res.RowsAffected(); n == 0 {
 				continue // 这个 IP 本来就没投过：无事发生，连底数行都不该被顺带造出来
 			}
@@ -227,7 +222,7 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 				return fmt.Errorf("快照底数 %s %q 失败: %v", username, tag, err)
 			}
 			// WHERE 让"重复投同一张票"在库层面什么都不写（值没变就不动 updated_at，
-			// 免得连点 100 次把时间戳刷成噪声）。
+			// 免得连点 100 次把时间戳刷成噪声）。仅写权威账本表 tag_votes，消除双写。
 			if _, err := tx.Exec(`INSERT INTO tag_votes (username, tag, ip, value) VALUES (?, ?, ?, ?)
 				ON CONFLICT (username, tag, ip) DO UPDATE
 				SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
@@ -235,33 +230,27 @@ func (s *Store) CastVotes(username, ip string, targets map[string]int, ua string
 				username, tag, ip, target); err != nil {
 				return fmt.Errorf("记票 %s %q=%d 失败: %v", username, tag, target, err)
 			}
-			if _, err := tx.Exec(`INSERT INTO user_tag_ip (username, tag, ip, value) VALUES (?, ?, ?, ?)
-				ON CONFLICT (username, tag, ip) DO UPDATE
-				SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-				WHERE user_tag_ip.value IS NOT excluded.value`,
-				username, tag, ip, target); err != nil {
-				return fmt.Errorf("记票 user_tag_ip %s %q=%d 失败: %v", username, tag, target, err)
-			}
 		}
 
-		if _, err := tx.Exec(rollupSQL, username, tag, username, tag, username, tag); err != nil {
+		// 一次计算新权重 newCnt = base + SUM(tag_votes.value)，直接写入 account_tags 与 user_tag_cnt，
+		// 消除两次重复的 SUM 子查询与两次事后 SELECT 查询，缩短 BEGIN IMMEDIATE 写锁持有时间。
+		var newCnt int
+		if err := tx.QueryRow(`
+			SELECT IFNULL((SELECT base FROM tag_weight_base WHERE username = ? AND tag = ?), 0)
+			     + IFNULL((SELECT SUM(value) FROM tag_votes WHERE username = ? AND tag = ?), 0)`,
+			username, tag, username, tag).Scan(&newCnt); err != nil {
+			return fmt.Errorf("计算权重 %s %q 失败: %v", username, tag, err)
+		}
+
+		if _, err := tx.Exec(`INSERT INTO account_tags (username, tag, weight) VALUES (?, ?, ?)
+			ON CONFLICT (username, tag) DO UPDATE SET weight = excluded.weight`,
+			username, tag, newCnt); err != nil {
 			return fmt.Errorf("重算权重 %s %q 失败: %v", username, tag, err)
 		}
-		// 重算唯一真相表 user_tag_cnt，更新 updated_at 为当前时间
-		const rollupUserTagCnt = `INSERT INTO user_tag_cnt (username, tag, cnt, updated_at)
-			SELECT ?, ?, IFNULL((SELECT base FROM tag_weight_base WHERE username = ? AND tag = ?), 0)
-			             + IFNULL((SELECT SUM(value) FROM user_tag_ip WHERE username = ? AND tag = ?), 0),
-			             CURRENT_TIMESTAMP
-			ON CONFLICT (username, tag) DO UPDATE SET cnt = excluded.cnt, updated_at = CURRENT_TIMESTAMP`
-		if _, err := tx.Exec(rollupUserTagCnt, username, tag, username, tag, username, tag); err != nil {
+		if _, err := tx.Exec(`INSERT INTO user_tag_cnt (username, tag, cnt, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT (username, tag) DO UPDATE SET cnt = excluded.cnt, updated_at = CURRENT_TIMESTAMP`,
+			username, tag, newCnt); err != nil {
 			return fmt.Errorf("重算 user_tag_cnt %s %q 失败: %v", username, tag, err)
-		}
-
-		// 变更后该用户对此标签的计数
-		var newCnt int
-		_ = tx.QueryRow(`SELECT cnt FROM user_tag_cnt WHERE username = ? AND tag = ?`, username, tag).Scan(&newCnt)
-		if newCnt == 0 {
-			_ = tx.QueryRow(`SELECT weight FROM account_tags WHERE username = ? AND tag = ?`, username, tag).Scan(&newCnt)
 		}
 
 		// 同步增量维护全局标签云汇总表 tag_counts

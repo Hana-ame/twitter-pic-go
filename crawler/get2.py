@@ -21,7 +21,7 @@ load_dotenv()
 
 # ==================== 出口 IP ====================
 # BIND_IP = "117.55.237.217"   # 先使用 IPv4（已验证 IPv6 不通）
-BIND_IP = None             # 如需默认路由，取消注释这行并注释上行
+BIND_IP = os.getenv("BIND_IP") or None  # 如需默认路由，留空即可
 # =================================================
 
 if BIND_IP:
@@ -53,25 +53,25 @@ def auth_token():
 def ct0_token():
     return os.getenv("CT0")  # 可能为 None
 
-username = sys.argv[1] if len(sys.argv) > 1 else "lulu463098"
-log(f"目标用户名: {username}")
-
-# ---------- 跳过检查（数据库表缺失不影响） ----------
-def should_skip_processing(username):
+def should_skip_processing(username, db_path="twitter.db"):
     # 如果表不存在，直接返回 False 继续抓取
-    conn = sqlite3.connect("twitter.db", timeout=5)
+    conn = sqlite3.connect(db_path, timeout=5)
     try:
         conn.execute("PRAGMA journal_mode=WAL;")
         cursor = conn.cursor()
-        # 检查表是否存在
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'")
         if not cursor.fetchone():
             log("表 users 不存在，跳过检查", "WARN")
             return False
         cursor.execute("SELECT last_modify FROM users WHERE username = ?", (username,))
         result = cursor.fetchone()
-        if result:
-            last_modify = datetime.strptime(result[0], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        if result and result[0]:
+            raw_ts = str(result[0]).strip()
+            # 兼容 YYYY-MM-DD HH:MM:SS 与 ISO8601
+            try:
+                last_modify = datetime.strptime(raw_ts[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                last_modify = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
             now_utc = datetime.now(timezone.utc)
             diff = now_utc - last_modify
             if diff <= timedelta(days=1):
@@ -89,10 +89,6 @@ def should_skip_processing(username):
     finally:
         conn.close()
 
-if should_skip_processing(username):
-    log("直接返回，不执行后续操作", "INFO")
-    exit(0)
-
 # ---------- 核心抓取函数 ----------
 def get_media_data_by_username(username: str):
     log(f"开始获取用户 {username} 的媒体数据")
@@ -106,11 +102,9 @@ def get_media_data_by_username(username: str):
         raise ValueError("AUTH_TOKEN is empty!")
 
     ct0 = ct0_token()
-    # 构建 cookies
     cookies = {"auth_token": auth}
     if ct0:
         cookies["ct0"] = ct0
-    # 构建 headers
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
@@ -124,19 +118,13 @@ def get_media_data_by_username(username: str):
         "cookies": cookies,
         "headers": headers,
         "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        # previews：video_info 媒体附带 poster 图（pbs.twimg.com/tweet_video_thumb /
-        # amplify_video_thumb），拿来做视频封面。默认 False，不开就完全没有 cover。
-        # cards：外链卡片缩略图（summary / summary_large_image / unified_card），
-        # 这类文件不带 type，下面统一标成 "card" 以免被当成普通图片。
         "previews": True,
         "cards": True,
     }
 
-    # 创建 extractor，并配置
     extractor = twitter.TwitterMediaExtractor(match)
     extractor.config = lambda key, default=None: config_dict.get(key, default)
 
-    # ---------- 绑定源 IP（如果指定） ----------
     if BIND_IP:
         log(f"正在为请求绑定源 IP: {BIND_IP}")
         session = requests.Session()
@@ -144,9 +132,7 @@ def get_media_data_by_username(username: str):
         adapter.max_retries = 3
         session.mount('http://', adapter)
         session.mount('https://', adapter)
-        # 将 headers 也加入 session，确保所有请求携带
         session.headers.update(headers)
-        # 注入到 extractor
         extractor.session = session
         log("源 IP 绑定完成")
     else:
@@ -177,7 +163,6 @@ def get_media_data_by_username(username: str):
         }
         iterator = iter(extractor)
         new_timeline_entries = []
-        # tweet_id -> 该推文的视频封面 URL（previews 抓来的 poster）
         poster_by_tweet = {}
         items_fetched = 0
         log("开始遍历媒体 timeline...")
@@ -203,7 +188,6 @@ def get_media_data_by_username(username: str):
                             "followers_count": user.get("followers_count", 0),
                             "friends_count": user.get("friends_count", 0),
                             "profile_image": user.get("profile_image", ""),
-                            # 资料背景图，gallery_dl 的 _transform_user 已算好
                             "profile_banner": user.get("profile_banner", ""),
                             "statuses_count": user.get("statuses_count", 0),
                         }
@@ -211,8 +195,6 @@ def get_media_data_by_username(username: str):
                     if "pbs.twimg.com" in media_url or "video.twimg.com" in media_url:
                         ttype = tweet_data.get("type") or "card"
                         tid = tweet_data.get("tweet_id", 0)
-                        # type == "preview" 是视频海报本身，不算独立媒体：
-                        # 记下来稍后回填给同推文那条 video / animated_gif 当 cover。
                         if ttype == "preview":
                             poster_by_tweet.setdefault(tid, media_url)
                             continue
@@ -225,10 +207,6 @@ def get_media_data_by_username(username: str):
                             "tweet_id": tid,
                             "type": ttype,
                         })
-                        # 配文与媒体**分开保存**：同一条推文的多张图共用一份正文，
-                        # 不在每个媒体条目里重复；客户端按 tweet_id 关联。
-                        # 正文来自同一次 GraphQL 响应的 tweet_data["content"]，
-                        # 不增加任何 API 调用。
                         key = str(tid)
                         if tid and key not in structured_output["texts"]:
                             content = (tweet_data.get("content") or "").strip()
@@ -243,7 +221,6 @@ def get_media_data_by_username(username: str):
         except StopIteration:
             log("遍历结束（到达末尾）", "INFO")
 
-        # 把海报回填给同推文的视频/动图条目，缺图不影响条目本身。
         covered = 0
         for entry in new_timeline_entries:
             if entry["type"] in ("video", "animated_gif"):
@@ -281,87 +258,128 @@ def get_media_data_by_username(username: str):
 
     return structured_output
 
-# ---------- 主流程 ----------
-log("========== 开始执行主流程 ==========")
-output = get_media_data_by_username(username)
-info: Any = output.get("account_info")
 
-if not info:
-    log("未能获取到用户信息，退出", "ERROR")
-    if "error" in output:
-        log(f"错误详情: {output['error']}", "ERROR")
-    exit(1)
+def compute_media_counts(timeline):
+    """按 URL 去重统计 total_urls, photo_count, video_count（与 Go 侧 loadUserDoc 口径一致）。"""
+    seen = set()
+    photo_cnt = 0
+    video_cnt = 0
+    for item in timeline or []:
+        raw_url = (item.get("url") or "").strip()
+        if not raw_url or raw_url in seen:
+            continue
+        seen.add(raw_url)
+        ttype = (item.get("type") or "").strip().lower()
+        if ttype in ("video", "animated_gif", "article:video"):
+            video_cnt += 1
+        else:
+            photo_cnt += 1
+    return len(seen), photo_cnt, video_cnt
 
-log(f"账户信息: {info.get('name')} (@{info.get('nick')}), 粉丝: {info.get('followers_count')}")
 
-filename = f"{info.get('name')}.json.gz"
-# 配文与媒体**分开不同的文件**保存：媒体时间线保持原格式（不混入正文），
-# 正文单独写 `<user>.texts.json.gz`，由 API 同路由下发（见 GetMetaData）。
-texts = output.pop("texts", {})
-log(f"正在将数据压缩保存到 {filename}")
-with gzip.open(filename, "wt", encoding="utf-8", compresslevel=9) as f:
-    f.write(json.dumps(output))
-log(f"数据已保存到 {filename}")
+def update_database(info: dict, timeline: list, db_path="twitter.db"):
+    """将用户资料与媒体统计列（avatar/banner/total_urls/photo_count/video_count）直接写入 users 表。"""
+    total_urls, photo_cnt, video_cnt = compute_media_counts(timeline)
+    db_username = info.get("name") or ""
+    nick = info.get("nick") or db_username
+    avatar = (info.get("profile_image") or "").strip()
+    banner = (info.get("profile_banner") or "").strip()
 
-texts_filename = f"{info.get('name')}.texts.json.gz"
-with gzip.open(texts_filename, "wt", encoding="utf-8", compresslevel=9) as f:
-    f.write(json.dumps({"texts": texts}))
-log(f"配文已保存到 {texts_filename}（{len(texts)} 条）")
+    conn = sqlite3.connect(db_path, timeout=5)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                nick TEXT,
+                status TEXT,
+                last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                avatar TEXT DEFAULT '',
+                banner TEXT DEFAULT '',
+                total_urls INTEGER DEFAULT 0,
+                photo_count INTEGER DEFAULT 0,
+                video_count INTEGER DEFAULT 0
+            )
+        """)
+        for col_ddl in (
+            "ALTER TABLE users ADD COLUMN avatar TEXT DEFAULT ''",
+            "ALTER TABLE users ADD COLUMN banner TEXT DEFAULT ''",
+            "ALTER TABLE users ADD COLUMN total_urls INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN photo_count INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN video_count INTEGER DEFAULT 0",
+        ):
+            try:
+                cursor.execute(col_ddl)
+            except sqlite3.OperationalError:
+                pass
 
-# --- 数据库更新（建表处理） ---
-log("开始更新数据库...")
-conn = sqlite3.connect("twitter.db", timeout=5)
-try:
-    conn.execute("PRAGMA journal_mode=WAL;")
-    cursor = conn.cursor()
-    # 确保表存在
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            username TEXT PRIMARY KEY,
-            nick TEXT,
-            status TEXT,
-            last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_tags (
-            username TEXT PRIMARY KEY,
-            tags TEXT,
-            last_modify TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+        user_query = """
+        INSERT INTO users (username, nick, status, last_modify, avatar, banner, total_urls, photo_count, video_count)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?)
+        ON CONFLICT(username)
+        DO UPDATE SET
+            nick = excluded.nick,
+            status = excluded.status,
+            last_modify = CURRENT_TIMESTAMP,
+            avatar = excluded.avatar,
+            banner = excluded.banner,
+            total_urls = excluded.total_urls,
+            photo_count = excluded.photo_count,
+            video_count = excluded.video_count
+        """
+        cursor.execute(user_query, (db_username, nick, "SUCCESS", avatar, banner, total_urls, photo_cnt, video_cnt))
+        conn.commit()
+        log(f"用户 {db_username} 在 users 表更新成功 (total={total_urls}, photos={photo_cnt}, videos={video_cnt})")
+    except Exception as e:
+        log(f"数据库操作失败: {e}", "ERROR")
+        conn.rollback()
+    finally:
+        conn.close()
+        log("数据库连接已关闭")
 
-    user_query = """
-    INSERT INTO users (username, nick, status, last_modify)
-    VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(username)
-    DO UPDATE SET
-        nick = excluded.nick,
-        last_modify = CURRENT_TIMESTAMP
-    """
-    cursor.execute(user_query, (info.get("name"), info.get("nick"), "SUCCESS"))
-    log(f"用户 {info.get('name')} 在 users 表更新成功")
 
-    db_username = info.get("name")
-    update_query = """
-    UPDATE user_tags
-    SET username = ?, last_modify = CURRENT_TIMESTAMP
-    WHERE username = ? COLLATE NOCASE
-    """
-    cursor.execute(update_query, (db_username, db_username))
-    if cursor.rowcount > 0:
-        log(f"用户 {db_username} 在 user_tags 表更新成功")
-    else:
-        log(f"用户 {db_username} 在 user_tags 表中不存在，未更新", "WARN")
+def main():
+    username = sys.argv[1] if len(sys.argv) > 1 else "lulu463098"
+    log(f"目标用户名: {username}")
 
-    conn.commit()
-    log("数据库事务提交成功")
+    if should_skip_processing(username):
+        log("直接返回，不执行后续操作", "INFO")
+        sys.exit(0)
 
-except Exception as e:
-    log(f"数据库操作失败: {e}", "ERROR")
-    conn.rollback()
-finally:
-    conn.close()
-    log("数据库连接已关闭")
+    log("========== 开始执行主流程 ==========")
+    output = get_media_data_by_username(username)
+    info: Any = output.get("account_info")
 
-log("========== 主流程执行完毕 ==========")
+    if not info:
+        log("未能获取到用户信息，退出", "ERROR")
+        if "error" in output:
+            log(f"错误详情: {output['error']}", "ERROR")
+        sys.exit(1)
+
+    log(f"账户信息: {info.get('name')} (@{info.get('nick')}), 粉丝: {info.get('followers_count')}")
+
+    timeline = output.get("timeline", [])
+    filename = f"{info.get('name')}.json.gz"
+    texts = output.pop("texts", {})
+    log(f"正在将数据压缩保存到 {filename}")
+    tmp_filename = f"{filename}.tmp"
+    with gzip.open(tmp_filename, "wt", encoding="utf-8", compresslevel=9) as f:
+        f.write(json.dumps(output))
+    os.replace(tmp_filename, filename)
+    log(f"数据已保存到 {filename}")
+
+    texts_filename = f"{info.get('name')}.texts.json.gz"
+    tmp_texts = f"{texts_filename}.tmp"
+    with gzip.open(tmp_texts, "wt", encoding="utf-8", compresslevel=9) as f:
+        f.write(json.dumps({"texts": texts}))
+    os.replace(tmp_texts, texts_filename)
+    log(f"配文已保存到 {texts_filename}（{len(texts)} 条）")
+
+    log("开始更新数据库...")
+    update_database(info, timeline)
+    log("========== 主流程执行完毕 ==========")
+
+
+if __name__ == "__main__":
+    main()

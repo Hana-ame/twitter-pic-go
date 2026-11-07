@@ -325,6 +325,11 @@ func checkNotModified(c *gin.Context, modtime time.Time) bool {
 	return false
 }
 
+// enrichUserMeta 仅填充 JsonGzURL 与默认空 Tags Map，不再在列表扫描循环中
+// 同步打开并解压磁盘上的 <username>.json.gz（避免缓存未命中时单次列表/排行请求
+// 同步解压几十个 .json.gz 拖垮 1 vCPU 源站）。
+// avatar / banner / total_urls / photo_count / video_count 已冗余存储在 users 表中，
+// 由 scanFlutterUser 直接从 SQLite 行读取。
 func enrichUserMeta(u *FlutterUser) {
 	if u == nil {
 		return
@@ -332,15 +337,9 @@ func enrichUserMeta(u *FlutterUser) {
 	if u.Tags == nil {
 		u.Tags = make(map[string]int)
 	}
-	fileNick, avatar, banner, totalUrls, photoCnt, videoCnt := getUserMeta(u.Username)
 	if u.Nick == "" {
-		u.Nick = fileNick
+		u.Nick = u.Username
 	}
-	u.Avatar = avatar
-	u.Banner = banner
-	u.TotalUrls = totalUrls
-	u.PhotoCount = photoCnt
-	u.VideoCount = videoCnt
 	u.JsonGzURL = formatJsonGzURL(u.Username, u.LastModify)
 }
 
@@ -348,6 +347,8 @@ func enrichUserMeta(u *FlutterUser) {
 
 const v2UserSelectQuery = `
 	SELECT u.username, COALESCE(u.nick, ''), u.status, u.last_modify,
+	       COALESCE(u.avatar, ''), COALESCE(u.banner, ''),
+	       COALESCE(u.total_urls, 0), COALESCE(u.photo_count, 0), COALESCE(u.video_count, 0),
 	       COALESCE((SELECT json_group_object(a.tag, a.weight)
 	                 FROM account_tags a
 	                 WHERE a.username = u.username AND a.weight != 0), '{}')
@@ -358,7 +359,12 @@ func scanFlutterUser(rows *sql.Rows) (FlutterUser, error) {
 	var u FlutterUser
 	var tagsRaw string
 
-	err := rows.Scan(&u.Username, &u.Nick, &u.Status, &u.LastModify, &tagsRaw)
+	err := rows.Scan(
+		&u.Username, &u.Nick, &u.Status, &u.LastModify,
+		&u.Avatar, &u.Banner,
+		&u.TotalUrls, &u.PhotoCount, &u.VideoCount,
+		&tagsRaw,
+	)
 	if err != nil {
 		return u, err
 	}
@@ -466,6 +472,8 @@ func HandleGetTagUsersV2(c *gin.Context) {
 
 	querySQL := `
 		SELECT u.username, COALESCE(u.nick, ''), u.status, u.last_modify,
+		       COALESCE(u.avatar, ''), COALESCE(u.banner, ''),
+		       COALESCE(u.total_urls, 0), COALESCE(u.photo_count, 0), COALESCE(u.video_count, 0),
 		       COALESCE((SELECT json_group_object(at.tag, at.weight)
 		                 FROM account_tags at
 		                 WHERE at.username = u.username AND at.weight != 0), '{}')
@@ -484,6 +492,8 @@ func HandleGetTagUsersV2(c *gin.Context) {
 		}
 		fallbackQuerySQL := `
 			SELECT u.username, COALESCE(u.nick, ''), u.status, u.last_modify,
+			       COALESCE(u.avatar, ''), COALESCE(u.banner, ''),
+			       COALESCE(u.total_urls, 0), COALESCE(u.photo_count, 0), COALESCE(u.video_count, 0),
 			       COALESCE((SELECT json_group_object(at.tag, at.weight)
 			                 FROM account_tags at
 			                 WHERE at.username = u.username AND at.weight != 0), '{}')
@@ -922,11 +932,17 @@ func HandleGetUserTimelineV2(c *gin.Context) {
 	var u FlutterUser
 	var tagsRaw string
 	query := `SELECT u.username, COALESCE(u.nick, ''), u.status, u.last_modify,
+	          COALESCE(u.avatar, ''), COALESCE(u.banner, ''),
+	          COALESCE(u.total_urls, 0), COALESCE(u.photo_count, 0), COALESCE(u.video_count, 0),
 	          COALESCE((SELECT json_group_object(a.tag, a.weight)
 	                    FROM account_tags a
 	                    WHERE a.username = u.username AND a.weight != 0), '{}')
 	          FROM users u WHERE u.username = ?`
-	err := DB.QueryRow(query, username).Scan(&u.Username, &u.Nick, &u.Status, &u.LastModify, &tagsRaw)
+	err := DB.QueryRow(query, username).Scan(
+		&u.Username, &u.Nick, &u.Status, &u.LastModify,
+		&u.Avatar, &u.Banner, &u.TotalUrls, &u.PhotoCount, &u.VideoCount,
+		&tagsRaw,
+	)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
@@ -1042,22 +1058,24 @@ func HandleGetUserProfileV2(c *gin.Context) {
 
 	emojis, _ := GetUserEmojis(username)
 
-	doc := loadUserDoc(username)
 	nick := u.Nick
-	if nick == "" && doc != nil {
-		nick = doc.nick
-	}
-	avatar := ""
-	banner := ""
-	totalUrls := 0
-	photoCnt := 0
-	videoCnt := 0
-	if doc != nil {
-		avatar = doc.avatar
-		banner = doc.banner
-		totalUrls = doc.totalUrls
-		photoCnt = doc.photoCount
-		videoCnt = doc.videoCount
+	avatar := u.Avatar
+	banner := u.Banner
+	totalUrls := u.TotalUrls
+	photoCnt := u.PhotoCount
+	videoCnt := u.VideoCount
+	if avatar == "" && totalUrls == 0 {
+		doc := loadUserDoc(username)
+		if doc != nil {
+			if nick == "" {
+				nick = doc.nick
+			}
+			avatar = doc.avatar
+			banner = doc.banner
+			totalUrls = doc.totalUrls
+			photoCnt = doc.photoCount
+			videoCnt = doc.videoCount
+		}
 	}
 
 	c.Header("Cache-Control", "public, max-age=120, s-maxage=300, stale-while-revalidate=120")
@@ -1633,8 +1651,8 @@ func RegisterV2Routes(g *gin.RouterGroup) {
 
 	// 10. Emoji 计数、投票与内嵌富卡片的排行榜
 	g.GET("/users/:username/emojis", HandleGetUserEmojisV2)
-	g.POST("/users/:username/emojis", HandleVoteEmojiV2)
-	g.POST("/emojis/vote", HandleVoteEmojiV2)
+	g.POST("/users/:username/emojis", limit.RateLimitMiddleware(limiter), HandleVoteEmojiV2)
+	g.POST("/emojis/vote", limit.RateLimitMiddleware(limiter), HandleVoteEmojiV2)
 	g.GET("/ranking", HandleGetRankingV2)
 	g.GET("/emojis/ranking", HandleGetRankingV2)
 

@@ -821,14 +821,28 @@ func (s *Store) tagCountsNotUndercounting(materialized []Count) bool {
 	if s == nil || s.db == nil || len(materialized) == 0 {
 		return false
 	}
-	for _, c := range materialized {
-		var real int
-		err := s.db.QueryRow(
-			`SELECT COUNT(DISTINCT username) FROM account_tags WHERE tag = ? AND weight > 0`,
-			c.Tag).Scan(&real)
-		if err != nil {
+	// 单次 GROUP BY 聚合查询读入 Map 比对，避免对全站每个标签循环执行独立 COUNT 查询（消除 N+1 SQLite 抖动）。
+	rows, err := s.db.Query(`SELECT tag, COUNT(DISTINCT username) FROM account_tags WHERE weight > 0 GROUP BY tag`)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+
+	realCounts := make(map[string]int, len(materialized))
+	for rows.Next() {
+		var tag string
+		var cnt int
+		if err := rows.Scan(&tag, &cnt); err != nil {
 			return false
 		}
+		realCounts[tag] = cnt
+	}
+	if err := rows.Err(); err != nil {
+		return false
+	}
+
+	for _, c := range materialized {
+		real := realCounts[c.Tag]
 		// account_tags 还没有这行（只存在于 user_tag_cnt 的新票路径），跳过。
 		if real == 0 {
 			continue

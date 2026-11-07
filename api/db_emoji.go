@@ -227,36 +227,59 @@ func calculateRankMap(timeRange string) (map[string][]RankItem, error) {
 	return result, nil
 }
 
-// saveGzFile 将数据 Gzip 压缩后写入文件
+// saveGzFile 将数据 Gzip 压缩后通过 .tmp + os.Rename 原子写入文件（避免并发读到半截文件）
 func saveGzFile(filename string, data AllRankData) error {
-	file, err := os.Create(filename)
+	tmp := filename + ".tmp"
+	file, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
-	// 使用 BestCompression 最大化压缩文本数据
 	gzWriter, err := gzip.NewWriterLevel(file, gzip.BestCompression)
 	if err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
-	defer gzWriter.Close()
 
 	encoder := json.NewEncoder(gzWriter)
-	// 不缩进，进一步减小体积
-	return encoder.Encode(data)
+	if err := encoder.Encode(data); err != nil {
+		_ = gzWriter.Close()
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := gzWriter.Close(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, filename)
 }
 
-// saveJSONFile 将数据 Gzip 压缩后写入文件
+// saveJSONFile 将数据序列化为 JSON 后通过 .tmp + os.Rename 原子写入文件
 func saveJSONFile(filename string, data AllRankData) error {
-	file, err := os.Create(filename)
+	tmp := filename + ".tmp"
+	file, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
 
 	encoder := json.NewEncoder(file)
-	return encoder.Encode(data)
+	if err := encoder.Encode(data); err != nil {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, filename)
 }
 
 // ================= 查询接口 (读取压缩文件) =================

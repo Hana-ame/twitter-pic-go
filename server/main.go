@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -19,6 +20,16 @@ import (
 
 func main() {
 	_ = godotenv.Load(".env")
+
+	// 内存上限：本机 528MB / 1 vCPU，给其他服务与内核留出余量，
+	// 把 Go 堆钉在 ~240MB，避免流量峰值时堆无限制膨胀吃光整机内存
+	// （历史事故：内存耗尽 → 内核 page allocation failure → CPU 100%）。
+	// GOMEMLIMIT 环境变量由 Go runtime 启动时自动读取；只有未设置时才补默认值。
+	// （注意：不能调 debug.SetMemoryLimit(-1)，那会禁用限制并覆盖环境变量。）
+	const memLimit = 240 << 20 // 240 MiB
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(memLimit)
+	}
 
 	// DB 与表结构先就位：API 与 Gallery 共用同一个 twitter.db 连接池
 	// （account_tags + user_tag_cnt + tag_votes + request_logs 是唯一真源）。
